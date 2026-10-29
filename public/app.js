@@ -20,7 +20,7 @@ const el = (tag, props = {}, ...kids) => {
 };
 
 const state = {
-  tasks: new Map(), agents: [], projects: [], providers: [], stats: null, settings: {}, templates: [], schedules: [], costs: null,
+  tasks: new Map(), agents: [], projects: [], providers: [], system: null, logs: [], stats: null, settings: {}, templates: [], schedules: [], costs: null,
   open: null, view: 'office',
 };
 
@@ -73,15 +73,18 @@ function showView(v) {
   for (const b of document.querySelectorAll('#tabs button')) b.setAttribute('aria-selected', String(b.dataset.view === v));
   for (const s of document.querySelectorAll('.view')) s.hidden = s.id !== `view-${v}`;
   if (v === 'costs') refreshCosts();
+  clearInterval(showView.timer);
+  if (v === 'system') { refreshSystem(); showView.timer = setInterval(refreshSystem, 2000); }
   render();
 }
 
 function render() {
   const s = state.stats;
-  $('#stats').textContent = s ? `Claude ${s.active.claude}/${s.limit?.claude ?? '?'} · Ollama ${s.active.ollama}/${s.limit?.ollama ?? '?'} · ${s.waiting} en espera · hoy ${money(state.costs?.today)}` : '';
+  $('#stats').textContent = s ? `Claude ${s.active.claude}/${s.limit?.claude ?? '?'} · Ollama ${s.active.ollama}/${s.limit?.ollama ?? '?'} · ${s.waiting} en espera${s.paused ? ' · COLA EN PAUSA' : ''} · hoy ${money(state.costs?.today)}` : '';
   office.update({ agents: state.agents, tasks: [...state.tasks.values()], stats: s ? { ...s, costToday: state.costs?.today ?? 0 } : null });
   if (state.view === 'board') renderBoard();
   if (state.view === 'routines') renderRoutines();
+  if (state.view === 'system' && state.system) renderSystem();
   if (state.open) drawer(state.tasks.get(state.open));
 }
 
@@ -275,6 +278,7 @@ function setupForms() {
   $('#new-btn').onclick = () => openTaskDialog(syncHint);
   $('#obj-btn').onclick = () => openObjDialog();
   $('#new-routine').onclick = () => openRoutineDialog(syncTpl);
+  setupSystem();
   $('#d-close').onclick = () => { state.open = null; $('#drawer').hidden = true; };
   for (const b of document.querySelectorAll('#tabs button')) b.onclick = () => showView(b.dataset.view);
   $('#settings-form').onsubmit = guard(async (e) => {
@@ -322,7 +326,7 @@ async function refreshCosts() {
   const [costs, audit] = await Promise.all([api('/api/costs'), api('/api/audit')]);
   state.costs = costs;
   const f = $('#settings-form');
-  for (const [k, v] of Object.entries(state.settings)) if (f[k] && document.activeElement !== f[k]) f[k].value = v;
+  fillSettings();
   const budget = costs.daily_budget_usd;
   $('#costs-summary').textContent = `Hoy: ${money(costs.today)}${budget ? ` de ${money(budget)} (${Math.round((costs.today / budget) * 100)}%)` : ' (sin límite)'}`;
   table($('#costs-agents'), ['Agente', 'Tareas', 'USD'], costs.byAgent.map((a) => [a.agent, a.tasks, money(a.cost_usd)]));
@@ -330,12 +334,174 @@ async function refreshCosts() {
   table($('#audit'), ['Hora', 'Acción', 'Tarea', 'Detalle'], audit.slice(0, 40).map((a) => [a.ts, a.action, a.task_id ?? '', a.detail]));
 }
 
+// ---------- sistema ----------
+const fmtBytes = (n) => (n == null ? '—' : n > 1e9 ? `${(n / 1e9).toFixed(1)} GB` : n > 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1e3))} KB`);
+/** SQLite guarda 'YYYY-MM-DD HH:MM:SS' en UTC sin zona; el runner guarda ISO. Ambos se interpretan bien. */
+const parseTs = (s) => new Date(/Z|[+-]\d\d:?\d\d$/.test(s) ? s : `${s.replace(' ', 'T')}Z`);
+const fmtDur = (s) => { if (s == null) return '—'; s = Math.round(s); const h = Math.floor(s / 3600); const m = Math.floor((s % 3600) / 60); return h ? `${h} h ${m} min` : m ? `${m} min ${s % 60} s` : `${s} s`; };
+const dot = (ok) => el('span', { className: ok ? 'dot-ok' : 'dot-bad' });
+const kv = (rows) => el('dl', { className: 'kv' }, ...rows.flatMap(([k, v]) => [el('dt', { textContent: k }), el('dd', {}, v)]));
+const span = (t) => el('span', { textContent: t });
+
+function fillSettings() {
+  const f = $('#settings-form');
+  for (const [k, v] of Object.entries(state.settings)) if (f[k] && document.activeElement !== f[k]) f[k].value = v;
+}
+
+/** Reconstruye un contenedor solo si sus datos cambiaron (así no se pierde lo que estás escribiendo). */
+function renderIfChanged(box, data, build) {
+  const sig = JSON.stringify(data);
+  if (box.dataset.sig === sig) return;
+  box.dataset.sig = sig;
+  box.replaceChildren(...build());
+}
+
+function pushLog(entry) {
+  state.logs.push(entry);
+  if (state.logs.length > 400) state.logs.shift();
+  if (state.view !== 'system') return;
+  const level = $('#log-level').value;
+  if (level === 'error' && entry.level !== 'error') return;
+  if (level === 'warn' && entry.level === 'info') return;
+  const box = $('#sys-log');
+  const stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 24;
+  box.append(logRow(entry));
+  while (box.children.length > 400) box.firstChild.remove();
+  if (stick) box.scrollTop = box.scrollHeight;
+}
+const logRow = (e) => el('div', { className: e.level }, el('span', { className: 't', textContent: new Date(e.ts).toLocaleTimeString() + ' ' }), span(e.msg));
+
+function renderLogs() {
+  const level = $('#log-level').value;
+  const box = $('#sys-log');
+  box.replaceChildren(...state.logs.filter((e) => !level || (level === 'error' ? e.level === 'error' : e.level !== 'info')).map(logRow));
+  box.scrollTop = box.scrollHeight;
+}
+
+function renderSystem() {
+  const s = state.system;
+  // chips
+  const setChip = (id, text, cls) => { const c = $(id); c.textContent = text; c.className = `chip ${cls}`; };
+  setChip('#chip-queue', s.queue.paused ? 'cola en pausa' : `cola activa · ${s.queue.running.length} en curso`, s.queue.paused ? 'warn' : 'ok');
+  setChip('#chip-claude', s.claude.ok ? `claude ${s.claude.version.split(' ')[0]}` : 'claude no disponible', s.claude.ok ? 'ok' : 'bad');
+  setChip('#chip-ollama', s.ollama.ok ? `ollama · ${s.ollama.models.length} modelos` : 'ollama apagado', s.ollama.ok ? 'ok' : 'warn');
+  const on = s.providers.filter((p) => p.configured && p.needsKey || (p.custom && !p.needsKey)).length;
+  setChip('#chip-apis', `${on} proveedor(es) en internet`, on ? 'ok' : 'warn');
+  $('#queue-toggle').textContent = s.queue.paused ? 'Reanudar cola' : 'Pausar cola';
+  $('#queue-toggle').className = s.queue.paused ? 'primary' : '';
+
+  // estado general
+  $('#sys-health').replaceChildren(kv([
+    ['Servidor', span(`en línea hace ${fmtDur(s.server.uptime_s)} · Node ${s.server.node} · pid ${s.server.pid}`)],
+    ['Base de datos', span(`${fmtBytes(s.db.size_bytes)} · ${Object.entries(s.db.tasks).map(([k, v]) => `${v} ${k}`).join(', ') || 'vacía'}`)],
+    ['Claude Code', el('span', {}, dot(s.claude.ok), span(s.claude.ok ? s.claude.version : s.claude.error))],
+    ['Ollama', el('span', {}, dot(s.ollama.ok), span(s.ollama.ok ? `${s.ollama.models.length} modelos · cargados: ${s.ollama.loaded.map((m) => `${m.name} (${fmtBytes(m.size)})`).join(', ') || 'ninguno'}` : s.ollama.error))],
+    ['Proyectos', el('span', {}, dot(s.paths.htdocs.exists), span(`${s.paths.htdocs.path} · ${s.paths.htdocs.projects} proyectos`))],
+    ...s.paths.extra.map((e) => [`@${e.name.slice(1)}`, el('span', {}, dot(e.exists), span(`${e.path} (solo lectura)`))]),
+  ]));
+
+  // cola
+  const q = s.queue;
+  const gauge = (name, key) => {
+    const used = q.active[key] ?? 0; const lim = q.limit[key] ?? 1;
+    return el('div', { className: 'gauge' }, span(`${name}: ${used}/${lim}`), el('div', { className: 'bar' }, el('i', { className: used >= lim ? 'full' : '', style: `width:${Math.min(100, (used / lim) * 100)}%` })));
+  };
+  const apiUsed = Object.entries(q.active).filter(([k]) => !['claude', 'ollama'].includes(k)).reduce((a, [, v]) => a + v, 0);
+  const rows = [gauge('Claude', 'claude'), gauge('Ollama', 'ollama'),
+    el('div', { className: 'gauge' }, span(`Internet: ${apiUsed}/${q.limit.api}`), el('div', { className: 'bar' }, el('i', { className: apiUsed >= q.limit.api ? 'full' : '', style: `width:${Math.min(100, (apiUsed / q.limit.api) * 100)}%` })))];
+  const list = el('div', { className: 'mini-list' });
+  for (const t of q.running) { const b = el('button', { className: 'mini' }, span(`▶ #${t.id} ${t.title}`), el('span', { className: 'muted', textContent: `${t.agent} · ${t.engine} · ${fmtDur(Math.max(0, (Date.now() - parseTs(t.started_at)) / 1000))}` })); b.onclick = () => openDrawer(t.id); list.append(b); }
+  for (const w of q.waiting) { const b = el('button', { className: 'mini' }, span(`⏳ #${w.id} ${w.title}`), el('span', { className: 'muted', textContent: w.reason })); b.onclick = () => openDrawer(w.id); list.append(b); }
+  if (!list.children.length) list.append(el('p', { className: 'hint', textContent: 'Nada en curso.' }));
+  $('#sys-queue').replaceChildren(...rows, list);
+
+  // actividad
+  const a = s.activity;
+  const act = el('div', {}, el('div', { className: 'stat-row' },
+    el('div', { className: 'stat' }, el('b', { textContent: String(a.total) }), span('tareas terminadas')),
+    el('div', { className: 'stat' }, el('b', { textContent: a.successRate == null ? '—' : `${Math.round(a.successRate * 100)}%` }), span('éxito')),
+    el('div', { className: 'stat' }, el('b', { textContent: fmtDur(a.avgSeconds) }), span('duración media')),
+    el('div', { className: 'stat' }, el('b', { textContent: money(a.cost_today) }), span('costo hoy'))));
+  const byEngine = el('div', { className: 'mini-list' }, ...a.byEngine.map((e) => el('div', { className: 'mini' }, span(e.engine), el('span', { className: 'muted', textContent: `${e.ok} ok · ${e.failed} fallos · ${money(e.cost_usd)}` }))));
+  const fails = el('div', { className: 'mini-list' }, ...(s.failures.length ? [el('h3', { textContent: 'Fallos recientes' })] : []),
+    ...s.failures.map((f) => { const b = el('button', { className: 'mini err' }, span(`#${f.id} ${f.title}`), el('span', { className: 'muted', textContent: (f.error || '').slice(0, 60) })); b.onclick = () => openDrawer(f.id); return b; }));
+  $('#sys-activity').replaceChildren(act, byEngine, fails);
+
+  // rutinas
+  $('#sys-schedules').replaceChildren(...(s.schedules.length ? s.schedules : [null]).map((r) => r
+    ? el('div', { className: 'mini' }, span(`${r.enabled ? '' : '⏸ '}${r.name}`), el('span', { className: 'muted', textContent: r.next_run ? `próxima ${new Date(r.next_run).toLocaleString()}` : 'pausada' }))
+    : el('p', { className: 'hint', textContent: 'Sin rutinas programadas.' })));
+
+  // proveedores (solo se reconstruye si cambian los datos, para no perder lo que escribes)
+  renderIfChanged($('#sys-providers'), s.providers, () => s.providers.map(providerRow));
+  fillSettings();
+}
+
+function providerRow(p) {
+  const row = el('div', { className: 'prov-row' });
+  const status = !p.needsKey ? 'sin clave (local)' : p.configured ? `activo · clave ${p.keyHint}` : 'sin configurar';
+  row.append(el('strong', { textContent: p.name }), el('span', {}, el('span', { className: p.configured ? 'dot-ok' : 'dot-off' }), span(`${status} · ${p.model}`)));
+  const btns = el('span', { className: 'btns' });
+  const res = el('div', { className: 'res' });
+  const keyform = el('form', { className: 'keyform', hidden: true });
+  const input = el('input', { type: 'password', placeholder: `Pega la clave de ${p.name}`, autocomplete: 'off', spellcheck: false });
+  keyform.append(input, el('button', { className: 'primary', type: 'submit', textContent: 'Guardar' }), el('button', { type: 'button', textContent: 'Cancelar', onclick: () => { keyform.hidden = true; input.value = ''; } }));
+  keyform.onsubmit = guard(async (e) => {
+    e.preventDefault();
+    await api(`/api/system/providers/${p.name}/key`, { method: 'PUT', body: JSON.stringify({ key: input.value.trim() }) });
+    input.value = '';
+    toast(`Clave de ${p.name} guardada`, false);
+    await refreshState(); await refreshSystem();
+  });
+  if (p.configured) {
+    btns.append(el('button', { textContent: 'Probar', onclick: guard(async () => {
+      res.className = 'res'; res.textContent = 'Probando…';
+      const r = await post(`/api/system/providers/${p.name}/test`);
+      res.className = `res ${r.ok ? 'ok' : 'bad'}`; res.textContent = r.ok ? `✓ Conexión correcta (${r.ms} ms)` : `✕ ${r.error}`;
+    }) }));
+  }
+  if (p.needsKey) {
+    btns.append(el('button', { textContent: p.configured ? 'Cambiar clave' : 'Poner clave', onclick: () => { keyform.hidden = false; input.focus(); } }));
+    if (p.configured) {
+      btns.append(el('button', { className: 'danger', textContent: 'Quitar', onclick: guard(async () => {
+        if (!(await confirmDialog('Quitar clave', `Se borrará la clave de ${p.name} del archivo .env.`))) return;
+        await api(`/api/system/providers/${p.name}/key`, { method: 'DELETE' });
+        await refreshState(); await refreshSystem();
+      }) }));
+    }
+  }
+  row.append(btns, keyform, res);
+  return row;
+}
+
+async function refreshSystem() {
+  try {
+    state.system = await api('/api/system');
+    if (!state.logs.length) { state.logs = await api('/api/logs?limit=200'); renderLogs(); }
+    renderSystem();
+  } catch (e) { /* el servidor puede estar reiniciando */ }
+}
+
+function setupSystem() {
+  $('#queue-toggle').onclick = guard(async () => { await post(`/api/queue/${state.system?.queue.paused ? 'resume' : 'pause'}`); await refreshSystem(); });
+  $('#cancel-all').onclick = guard(async () => {
+    if (!(await confirmDialog('Cancelar todo', 'Se detendrán todas las tareas en curso y en espera.'))) return;
+    const r = await post('/api/queue/cancel-all');
+    toast(`${r.cancelled} tarea(s) canceladas`, false);
+    await refreshSystem();
+  });
+  $('#log-level').onchange = renderLogs;
+}
+
 // ---------- datos en vivo ----------
 let office;
 async function refreshState() {
   const s = await api('/api/state');
+  const provSig = JSON.stringify(s.providers ?? []);
+  const provChanged = provSig !== JSON.stringify(state.providers);
   Object.assign(state, { agents: s.agents, projects: s.projects, providers: s.providers ?? [], stats: s.stats, settings: s.settings, templates: s.templates, schedules: s.schedules, costs: s.costs });
   state.tasks = new Map(s.tasks.map((t) => [t.id, t]));
+  if (provChanged && openTaskDialog) fillSelects(); // un proveedor nuevo aparece en el selector sin recargar
   render();
 }
 
@@ -346,6 +512,12 @@ function connect() {
     if (m.type === 'task') {
       state.tasks.set(m.task.id, m.task);
       if (m.event && state.open === m.task.id) logLine(m.event);
+      render();
+    } else if (m.type === 'log') {
+      pushLog(m.entry);
+    } else if (m.type === 'queue') {
+      if (state.stats) state.stats.paused = m.paused;
+      if (state.system) state.system.queue.paused = m.paused;
       render();
     } else if (m.type === 'deleted') {
       state.tasks.delete(m.id);

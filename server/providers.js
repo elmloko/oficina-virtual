@@ -95,3 +95,33 @@ export async function chat(provider, { model, system, prompt, signal, fetchFn = 
   if (!text) throw new Error(`${provider.name} no devolvió texto`);
   return { text, usage, model: m };
 }
+
+/** Últimos 4 caracteres de la clave para reconocerla sin exponerla. */
+export const maskKey = (key) => (key ? `••••${key.slice(-4)}` : '');
+
+/** Todos los proveedores conocidos (con o sin clave) para administrarlos desde la web. */
+export function knownProviders(env = process.env) {
+  return [...BUILTIN, ...parseCustom(env.CUSTOM_LLM)].map((p) => {
+    const key = p.keyEnv ? env[p.keyEnv] : '';
+    return {
+      name: p.name, kind: p.kind, baseUrl: p.baseUrl, model: (p.modelEnv && env[p.modelEnv]) || p.model,
+      custom: !!p.custom, keyEnv: p.keyEnv ?? null, needsKey: !!p.keyEnv, configured: !p.keyEnv || !!key, keyHint: maskKey(key),
+    };
+  });
+}
+
+/** Comprueba conectividad y validez de la clave con una consulta barata (lista de modelos). Nunca devuelve la clave. */
+export async function testProvider(provider, { fetchFn = fetch, timeoutMs = 8000 } = {}) {
+  const anthropic = provider.kind === 'anthropic';
+  const url = anthropic ? `${provider.baseUrl}/v1/models` : `${provider.baseUrl}/models`;
+  const headers = anthropic ? { 'x-api-key': provider.key, 'anthropic-version': '2023-06-01' } : provider.key ? { Authorization: `Bearer ${provider.key}` } : {};
+  const t0 = Date.now();
+  try {
+    const res = await fetchFn(url, { headers, signal: AbortSignal.timeout(timeoutMs) });
+    const ms = Date.now() - t0;
+    if (res.ok) return { ok: true, status: res.status, ms };
+    return { ok: false, status: res.status, ms, error: res.status === 401 || res.status === 403 ? 'Clave rechazada por el proveedor' : `El proveedor respondió ${res.status}` };
+  } catch (e) {
+    return { ok: false, ms: Date.now() - t0, error: e.name === 'TimeoutError' ? 'Tiempo agotado' : `No se pudo conectar (${e.cause?.code ?? e.name})` };
+  }
+}

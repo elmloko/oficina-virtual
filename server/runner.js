@@ -4,6 +4,7 @@ import { resolveProject, listAgents, listProjects } from './registry.js';
 import { route } from './router.js';
 import { buildPlanPrompt, parsePlan } from './coordinator.js';
 import { chat, secretEnvNames } from './providers.js';
+import { noopLogger } from './logger.js';
 
 const DONE_STATES = new Set(['review', 'done']);
 const RESULT_CONTEXT_LIMIT = 6000;
@@ -12,10 +13,12 @@ const RESULT_CONTEXT_LIMIT = 6000;
  * Cola con límite de concurrencia por motor, dependencias entre tareas, presupuesto y timeout.
  * emit(taskId, extra) avisa a la UI. spawnFn, fetchFn y registry son inyectables para pruebas.
  */
-export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, registry = { listAgents, listProjects }, providers = {} } = {}) {
-  const limits = { claude: config.maxClaude, ollama: config.maxOllama };
+export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, registry = { listAgents, listProjects }, providers = {}, logger = noopLogger } = {}) {
   const active = { claude: 0, ollama: 0 };
-  const limitOf = (engine) => limits[engine] ?? config.maxApi; // los proveedores en internet comparten un límite
+  let paused = false;
+  // Límites editables desde la web (se leen en cada ciclo); los proveedores en internet comparten `max_api`.
+  const limits = () => { const s = db.settings(); return { claude: s.max_claude, ollama: s.max_ollama, api: s.max_api }; };
+  const limitOf = (engine) => limits()[engine] ?? limits().api;
   const hasRoom = (engine) => (active[engine] ?? 0) < limitOf(engine);
   // El proceso `claude` no debe heredar claves de otros proveedores (ni activar facturación por API sin querer).
   const childEnv = () => { const env = { ...process.env }; for (const k of secretEnvNames()) delete env[k]; return env; };
@@ -56,6 +59,7 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
   }
 
   function pump() {
+    if (paused) return;
     for (let i = 0; i < waiting.length; i++) {
       const w = waiting[i];
       const task = db.getTask(w.id);
@@ -65,6 +69,7 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
         waiting.splice(i--, 1);
         log(w.id, 'error', dep);
         patch(w.id, { status: 'failed', error: dep, finished_at: new Date().toISOString() });
+        logger.warn(`#${w.id} falló sin ejecutarse: ${dep}`);
         i = -1; // los dependientes de este también deben fallar
         continue;
       }
@@ -79,17 +84,20 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     const task = db.getTask(id);
     if (!task || task.status !== 'queued') return; // cancelada mientras esperaba
     patch(id, { status: 'running', started_at: new Date().toISOString() });
+    logger.info(`#${id} «${task.title.slice(0, 60)}» empezó (${task.agent} · ${engine})`);
     const timer = setTimeout(() => { timedOut.add(id); procs.get(id)?.kill(); }, db.settings().task_timeout_min * 60_000);
     try {
       const out = engine === 'claude' ? await runClaude(task) : engine === 'ollama' ? await runOllama(task, model) : await runProvider(task, engine);
       if (db.getTask(id).status !== 'running') return; // cancelada
       if (task.kind === 'objective') createPlan(task, out.result);
       patch(id, { status: 'review', result: out.result, cost_usd: out.cost ?? 0, finished_at: new Date().toISOString() });
+      logger.info(`#${id} terminó (${engine}${out.cost ? ` · $${out.cost.toFixed(3)}` : ''})`);
     } catch (err) {
       if (db.getTask(id).status !== 'running') return;
       const msg = timedOut.has(id) ? `Tiempo agotado (${db.settings().task_timeout_min} min)` : err.message;
       log(id, 'error', msg);
       patch(id, { status: 'failed', error: msg, finished_at: new Date().toISOString() });
+      logger.error(`#${id} falló: ${msg.slice(0, 200)}`);
     } finally { clearTimeout(timer); }
   }
 
@@ -207,11 +215,47 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
       patch(id, { status: 'backlog', finished_at: null }); // antes de matar, para que start() vea que fue cancelada
       log(id, 'info', 'Cancelada por el usuario');
       db.audit('task.cancel', id);
+      logger.warn(`#${id} cancelada`);
     }
     procs.get(id)?.kill();
     pump(); // los dependientes de una tarea cancelada deben fallar
     return true;
   }
 
-  return { enqueue, cancel, kick: pump, stats: () => ({ active: { ...active }, limit: { ...limits }, waiting: waiting.length }) };
+  function cancelAll() {
+    const ids = new Set(waiting.map((w) => w.id));
+    for (const t of db.listTasks()) if (t.status === 'running' || t.status === 'queued') ids.add(t.id);
+    for (const id of ids) cancel(id);
+    logger.warn(`Cancelación total: ${ids.size} tarea(s)`);
+    return ids.size;
+  }
+
+  function setPaused(value) {
+    paused = !!value;
+    logger.warn(paused ? 'Cola en pausa: no se iniciarán tareas nuevas' : 'Cola reanudada');
+    if (!paused) pump();
+    return paused;
+  }
+
+  /** Foto del estado de la cola para el panel de sistema. */
+  function snapshot() {
+    const lim = limits();
+    const tasks = db.listTasks();
+    const waitReason = (w) => {
+      const t = db.getTask(w.id);
+      if (!t) return 'ya no existe';
+      if (paused) return 'cola en pausa';
+      if (depState(t) === 'wait') return 'espera sus dependencias';
+      return hasRoom(w.engine) ? 'por iniciar' : `límite de concurrencia (${w.engine} ${active[w.engine] ?? 0}/${limitOf(w.engine)})`;
+    };
+    return {
+      paused,
+      active: { ...active },
+      limit: lim,
+      running: tasks.filter((t) => t.status === 'running').map((t) => ({ id: t.id, title: t.title, agent: t.agent, engine: t.engine, started_at: t.started_at })),
+      waiting: waiting.map((w) => ({ id: w.id, engine: w.engine, title: db.getTask(w.id)?.title ?? '', reason: waitReason(w) })),
+    };
+  }
+
+  return { enqueue, cancel, cancelAll, setPaused, snapshot, kick: pump, stats: () => ({ active: { ...active }, limit: limits(), waiting: waiting.length, paused }) };
 }

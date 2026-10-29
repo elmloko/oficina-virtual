@@ -26,14 +26,32 @@ export function isDue(schedule, now = new Date()) {
   return now >= slot && last < slot;
 }
 
-export function createScheduler({ db, runner, emit, now = () => new Date() }) {
+/** Próxima ejecución prevista (Date). Si ya le toca, devuelve `now`. null si está pausada. */
+export function nextRun(schedule, now = new Date()) {
+  if (!schedule.enabled) return null;
+  const last = new Date(schedule.last_run);
+  const { spec } = schedule;
+  if (spec.type === 'interval') return new Date(Math.max(now.getTime(), last.getTime() + spec.minutes * 60_000));
+  if (isDue(schedule, now)) return new Date(now);
+  const [h, m] = spec.time.split(':').map(Number);
+  for (let i = 0; i < 8; i++) {
+    const slot = new Date(now);
+    slot.setDate(slot.getDate() + i);
+    slot.setHours(h, m, 0, 0);
+    if (slot > now && (!spec.days?.length || spec.days.includes(slot.getDay()))) return slot;
+  }
+  return null;
+}
+
+export function createScheduler({ db, runner, emit, now = () => new Date(), logger: log = { info() {}, warn() {}, error() {} } }) {
   let timer = null;
 
   function runSchedule(s) {
+    log.info(`Rutina «${s.name}» lanzada`);
     const task = db.createTask({ title: s.title, description: s.description, project: s.project, agent: s.agent, engine: s.engine, mode: 'read', schedule_id: s.id });
     db.audit('schedule.run', task.id, `${s.name}`);
     emit(task.id);
-    try { runner.enqueue(task.id); } catch (e) { db.addEvent(task.id, 'error', e.message); }
+    try { runner.enqueue(task.id); } catch (e) { db.addEvent(task.id, 'error', e.message); log.warn(`Rutina «${s.name}»: no se pudo encolar (${e.message})`); }
     return task;
   }
 

@@ -161,3 +161,51 @@ label.chk input { width: auto; accent-color: var(--gold); margin: 0; }
 
 label { display: grid; gap: 4px; color: var(--muted); font-size: 12px; }
 #tpl-desc { font-size: 11px; max-height: 7.5em; overflow-y: auto; }
+
+/* ---- pestaña Sistema ---- */
+.sys-bar { max-width: 1200px; margin: 0 auto 12px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.sys-actions { margin-left: auto; display: flex; gap: 8px; }
+.chip { padding: 3px 10px; border: 2px solid var(--line); font-size: 12px; color: var(--muted); background: var(--panel); }
+.chip.ok { border-color: #4ade8099; color: var(--green); } .chip.bad { border-color: #ff5a5a99; color: var(--red); } .chip.warn { border-color: #ffd84a99; color: var(--gold); }
+.sys-grid { max-width: 1200px; margin: 0 auto; display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 12px; }
+.card-sys { background: var(--panel); border: 2px solid var(--line); padding: 12px 14px; min-width: 0; }
+.card-sys.wide { grid-column: 1 / -1; }
+.card-sys h2 { margin: 0 0 8px; font-size: 12px; letter-spacing: 2px; text-transform: uppercase; color: var(--gold); display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.card-sys h2 select { width: auto; font-size: 11px; padding: 2px 6px; text-transform: none; letter-spacing: 0; }
+.kv { display: grid; grid-template-columns: 130px 1fr; gap: 4px 10px; font-size: 12px; margin: 0; }
+.kv dt { color: var(--muted); } .kv dd { margin: 0; overflow-wrap: anywhere; }
+.dot-ok, .dot-bad, .dot-off { display: inline-block; width: 8px; height: 8px; margin-right: 6px; }
+.dot-ok { background: var(--green); } .dot-bad { background: var(--red); } .dot-off { background: var(--muted); }
+.gauge { margin: 6px 0 10px; font-size: 12px; }
+.gauge .bar { height: 8px; background: #000; border: 1px solid var(--line); margin-top: 3px; }
+.gauge .bar i { display: block; height: 100%; background: var(--blue); }
+.gauge .bar i.full { background: var(--gold); }
+.mini-list { display: grid; gap: 4px; margin-top: 6px; }
+.mini { display: flex; justify-content: space-between; gap: 8px; padding: 4px 8px; border: 1px solid var(--line); background: var(--panel-2); font-size: 12px; text-align: left; width: 100%; }
+.mini span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mini .muted { color: var(--muted); flex: none; }
+.mini.err { border-color: #ff5a5a66; }
+.stat-row { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 8px; }
+.stat b { display: block; font-size: 18px; color: var(--text); } .stat span { font-size: 11px; color: var(--muted); }
+.prov-row { display: grid; grid-template-columns: 110px 1fr auto; gap: 8px 12px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
+.prov-row:last-child { border-bottom: 0; }
+.prov-row .btns { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.prov-row .btns button, .prov-row .keyform button { padding: 3px 8px; font-size: 12px; }
+.prov-row .keyform { grid-column: 1 / -1; display: flex; gap: 6px; }
+.prov-row .keyform input { flex: 1; }
+.prov-row .res { grid-column: 1 / -1; font-size: 11px; }
+.res.ok { color: var(--green); } .res.bad { color: var(--red); }
+.settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-items: end; }
+.settings-grid label small { color: #55618a; font-size: 10px; }
+.settings-grid .primary { grid-column: 1 / -1; }
+#sys-log { background: #000; border: 2px solid var(--line); height: 260px; overflow: auto; padding: 6px 8px; font-size: 12px; }
+#sys-log div { white-space: pre-wrap; overflow-wrap: anywhere; }
+#sys-log .t { color: #55618a; } #sys-log .warn { color: var(--gold); } #sys-log .error { color: var(--red); }
+code { background: #000; padding: 0 4px; border: 1px solid var(--line); }
+@media (max-width: 700px) { .settings-grid { grid-template-columns: 1fr; } .prov-row { grid-template-columns: 1fr; } .kv { grid-template-columns: 100px 1fr; } }
+
+.prov-row .keyform[hidden] { display: none; }
+header { flex-wrap: nowrap; gap: 12px; }
+#stats { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
+nav#tabs button { padding: 6px 9px; }
+@media (max-width: 1000px) { header { flex-wrap: wrap; } #stats { flex-basis: 100%; text-align: left; order: 9; } }

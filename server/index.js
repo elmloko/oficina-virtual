@@ -9,19 +9,27 @@ import { createScheduler, validateSpec } from './scheduler.js';
 import { TEMPLATES } from './templates.js';
 import { route } from './router.js';
 import { listAgents, listProjects, resolveProject, isExtraRoot } from './registry.js';
-import { loadProviders, publicProviders, MODEL_RE } from './providers.js';
+import { loadProviders, publicProviders, knownProviders, testProvider, MODEL_RE } from './providers.js';
+import { createLogger } from './logger.js';
+import { setEnvVar, KEY_RE } from './envfile.js';
+import { createProbe, collectSystem } from './system.js';
+import { join } from 'node:path';
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png' };
 const MANUAL_STATUSES = new Set(['backlog', 'review', 'done']); // el resto lo mueve el runner
 const MODES = new Set(['read', 'edit']);
 
-export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loadProviders() } = {}) {
-  const engines = new Set(['auto', 'claude', 'ollama', ...Object.keys(providers)]);
+export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loadProviders(), logger = createLogger(), envFile = config.envFile, probe = createProbe({ config }) } = {}) {
+  const startedAt = new Date();
+  const engineSet = () => new Set(['auto', 'claude', 'ollama', ...Object.keys(providers)]);
+  /** Recarga los proveedores en el mismo objeto (el runner conserva la referencia). */
+  const reloadProviders = () => { for (const k of Object.keys(providers)) delete providers[k]; Object.assign(providers, loadProviders()); };
   const sockets = new Set();
   const broadcast = (msg) => { const s = JSON.stringify(msg); for (const ws of sockets) if (ws.readyState === 1) ws.send(s); };
   const emit = (id, extra = {}) => { const task = db.getTask(id); if (task) broadcast({ type: 'task', task, ...extra }); };
-  const runner = createRunner(db, emit, { ...runnerOpts, providers });
-  const scheduler = createScheduler({ db, runner, emit, now });
+  const runner = createRunner(db, emit, { ...runnerOpts, providers, logger });
+  const scheduler = createScheduler({ db, runner, emit, now, logger });
+  logger.subscribe((entry) => broadcast({ type: 'log', entry }));
   const publicDir = resolve(config.root, 'public');
 
   const send = (res, code, body) => {
@@ -46,7 +54,7 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
     if (out.model != null && !MODEL_RE.test(out.model)) return { error: 'Modelo inválido' };
     if (!partial || 'title' in out) if (typeof out.title !== 'string' || !out.title.trim()) return { error: 'Falta el título' };
     if (!partial || 'agent' in out) if (!agents.has(out.agent)) return { error: 'Agente desconocido' };
-    if ('engine' in out && !engines.has(out.engine)) return { error: 'Motor inválido (¿falta la clave del proveedor?)' };
+    if ('engine' in out && !engineSet().has(out.engine)) return { error: 'Motor inválido (¿falta la clave del proveedor?)' };
     if ('mode' in out && !MODES.has(out.mode)) return { error: 'Modo inválido' };
     if (out.project) {
       if (!resolveProject(out.project)) return { error: 'Proyecto fuera de htdocs o inexistente' };
@@ -78,7 +86,7 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
     if (typeof s.name !== 'string' || !s.name.trim()) return { error: 'Falta el nombre' };
     if (typeof s.title !== 'string' || !s.title.trim()) return { error: 'Falta el título' };
     if (!listAgents().some((a) => a.name === s.agent)) return { error: 'Agente desconocido' };
-    if (!engines.has(s.engine)) return { error: 'Motor inválido' };
+    if (!engineSet().has(s.engine)) return { error: 'Motor inválido' };
     const specErr = validateSpec(s.spec);
     if (specErr) return { error: specErr };
     if (s.project && !resolveProject(s.project)) return { error: 'Proyecto fuera de htdocs o inexistente' };
@@ -102,7 +110,51 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
     if (url.pathname === '/api/settings') {
       if (method === 'GET') return send(res, 200, db.settings());
       if (method === 'PUT') {
-        try { const s = db.setSettings(await readJson(req)); db.audit('settings.update', null, JSON.stringify(s)); return send(res, 200, s); } catch (e) { return send(res, 400, { error: e.message }); }
+        try { const s = db.setSettings(await readJson(req)); db.audit('settings.update', null, JSON.stringify(s)); logger.info('Ajustes actualizados'); runner.kick(); return send(res, 200, s); } catch (e) { return send(res, 400, { error: e.message }); }
+      }
+    }
+
+    // --- sistema ---
+    if (method === 'GET' && url.pathname === '/api/system') {
+      return send(res, 200, await collectSystem({ db, runner, probe, config, startedAt, now: now?.() ?? new Date() }));
+    }
+    if (method === 'GET' && url.pathname === '/api/logs') {
+      const level = ['info', 'warn', 'error'].includes(url.searchParams.get('level')) ? url.searchParams.get('level') : null;
+      return send(res, 200, logger.list({ after: Number(url.searchParams.get('after')) || 0, level }));
+    }
+    if (method === 'POST' && /^\/api\/queue\/(pause|resume|cancel-all)$/.test(url.pathname)) {
+      const action = url.pathname.split('/').pop();
+      if (action === 'cancel-all') { const n = runner.cancelAll(); db.audit('queue.cancel_all', null, `${n} tareas`); return send(res, 200, { cancelled: n }); }
+      const paused = runner.setPaused(action === 'pause');
+      db.audit(`queue.${action}`);
+      broadcast({ type: 'queue', paused });
+      return send(res, 200, { paused });
+    }
+    if ((r = m(/^\/api\/system\/providers\/([\w-]+)\/(test|key)$/))) {
+      const def = knownProviders().find((p) => p.name === r[1]);
+      if (!def) return send(res, 404, { error: 'Proveedor desconocido' });
+      if (r[2] === 'test' && method === 'POST') {
+        const p = providers[def.name];
+        if (!p) return send(res, 400, { error: 'El proveedor no tiene clave configurada' });
+        const out = await testProvider(p, { fetchFn: runnerOpts.fetchFn });
+        logger[out.ok ? 'info' : 'warn'](`Prueba de ${def.name}: ${out.ok ? `OK (${out.ms} ms)` : out.error}`);
+        return send(res, 200, out);
+      }
+      if (r[2] === 'key') {
+        if (!def.needsKey) return send(res, 400, { error: 'Este proveedor no usa clave' });
+        if (method === 'PUT') {
+          const { key } = await readJson(req);
+          if (typeof key !== 'string' || !KEY_RE.test(key)) return send(res, 400, { error: 'Clave inválida (8-300 caracteres imprimibles, sin espacios)' });
+          setEnvVar(envFile, def.keyEnv, key);
+          process.env[def.keyEnv] = key;
+        } else if (method === 'DELETE') {
+          setEnvVar(envFile, def.keyEnv, null);
+          delete process.env[def.keyEnv];
+        } else return send(res, 405, { error: 'Método no permitido' });
+        reloadProviders();
+        db.audit(method === 'PUT' ? 'provider.key_set' : 'provider.key_removed', null, def.name); // jamás se registra la clave
+        logger.info(`Clave de ${def.name} ${method === 'PUT' ? 'guardada' : 'eliminada'}`);
+        return send(res, 200, knownProviders().find((p) => p.name === def.name));
       }
     }
 
@@ -226,13 +278,14 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
   const wss = new WebSocketServer({ server, path: '/ws', verifyClient: ({ req }) => trusted(req) });
   wss.on('connection', (ws) => { sockets.add(ws); ws.on('close', () => sockets.delete(ws)); });
 
-  return { server, db, runner, scheduler };
+  return { server, db, runner, scheduler, logger };
 }
 
 if (import.meta.url === `file:///${process.argv[1].replace(/\\/g, '/')}`) {
-  const { server, scheduler } = createApp();
+  const { server, scheduler, logger } = createApp({ logger: createLogger({ echo: true }) });
   server.listen(config.port, config.host, () => {
     scheduler.start();
+    logger.info(`Servidor iniciado en http://${config.host}:${config.port}`);
     console.log(`Oficina virtual en http://${config.host}:${config.port}`);
   });
 }

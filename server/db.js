@@ -9,7 +9,11 @@ export const DEFAULT_SETTINGS = {
   daily_budget_usd: 10, // 0 = sin límite. Con suscripción el costo es referencial, pero sirve de freno.
   task_budget_usd: 2, // tope por tarea (--max-budget-usd)
   task_timeout_min: 20,
+  max_claude: config.maxClaude, // concurrencia por motor (editable desde la web)
+  max_ollama: config.maxOllama,
+  max_api: config.maxApi,
 };
+const LIMIT_KEYS = new Set(['max_claude', 'max_ollama', 'max_api']);
 
 const TASK_COLUMNS = ['title', 'description', 'project', 'agent', 'engine', 'mode', 'status', 'result', 'error',
   'cost_usd', 'started_at', 'finished_at', 'parent_id', 'depends_on', 'kind', 'schedule_id', 'model'];
@@ -94,6 +98,12 @@ export function openDb(file = config.dbFile) {
     costByDay: db.prepare(`SELECT date(finished_at, 'localtime') AS day, ROUND(SUM(cost_usd), 4) AS cost_usd, COUNT(*) AS tasks
                            FROM tasks WHERE finished_at IS NOT NULL GROUP BY day ORDER BY day DESC LIMIT 14`),
     getSetting: db.prepare('SELECT value FROM settings WHERE key = ?'),
+    finishedToday: db.prepare(`SELECT engine, status, COUNT(*) AS n, ROUND(SUM(cost_usd), 4) AS cost,
+                               AVG((julianday(finished_at) - julianday(started_at)) * 86400) AS avg_s
+                               FROM tasks WHERE finished_at IS NOT NULL AND date(finished_at, 'localtime') = date('now', 'localtime')
+                               GROUP BY engine, status`),
+    recentFailures: db.prepare(`SELECT id, title, agent, engine, error, finished_at FROM tasks WHERE status = 'failed' ORDER BY id DESC LIMIT ?`),
+    byStatus: db.prepare('SELECT status, COUNT(*) AS n FROM tasks GROUP BY status'),
     setSetting: db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'),
     addAudit: db.prepare('INSERT INTO audit (action, task_id, detail) VALUES (?, ?, ?)'),
     audit: db.prepare('SELECT * FROM audit ORDER BY id DESC LIMIT ?'),
@@ -129,6 +139,25 @@ export function openDb(file = config.dbFile) {
     },
 
     costToday: () => q.costToday.get().c,
+    /** Resumen de hoy: totales, tasa de éxito, duración media y desglose por motor. */
+    activityToday() {
+      const rows = q.finishedToday.all();
+      const ok = rows.filter((r) => r.status !== 'failed');
+      const total = rows.reduce((a, r) => a + r.n, 0);
+      const done = ok.reduce((a, r) => a + r.n, 0);
+      const timed = rows.filter((r) => r.avg_s != null && r.avg_s >= 0);
+      const timedN = timed.reduce((a, r) => a + r.n, 0);
+      const avg = timedN ? timed.reduce((a, r) => a + r.avg_s * r.n, 0) / timedN : null;
+      const byEngine = {};
+      for (const r of rows) {
+        const e = (byEngine[r.engine] ??= { engine: r.engine, ok: 0, failed: 0, cost_usd: 0 });
+        if (r.status === 'failed') e.failed += r.n; else e.ok += r.n;
+        e.cost_usd += r.cost ?? 0;
+      }
+      return { total, ok: done, failed: total - done, successRate: total ? done / total : null, avgSeconds: avg, byEngine: Object.values(byEngine) };
+    },
+    recentFailures: (limit = 10) => q.recentFailures.all(limit),
+    countsByStatus: () => Object.fromEntries(q.byStatus.all().map((r) => [r.status, r.n])),
     costByAgent: () => q.costByAgent.all(),
     costByDay: () => q.costByDay.all(),
 
@@ -145,6 +174,7 @@ export function openDb(file = config.dbFile) {
         if (!(k in DEFAULT_SETTINGS)) continue;
         const n = Number(v);
         if (!Number.isFinite(n) || n < 0) throw new Error(`Valor inválido para ${k}`);
+        if (LIMIT_KEYS.has(k) && !(Number.isInteger(n) && n >= 1 && n <= 16)) throw new Error(`${k} debe ser un entero entre 1 y 16`);
         q.setSetting.run(k, String(n));
       }
       return this.settings();

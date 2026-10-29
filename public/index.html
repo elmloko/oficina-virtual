@@ -15,6 +15,7 @@
       <button role="tab" data-view="board" aria-selected="false">Tablero</button>
       <button role="tab" data-view="routines" aria-selected="false">Rutinas</button>
       <button role="tab" data-view="costs" aria-selected="false">Costos</button>
+      <button role="tab" data-view="system" aria-selected="false">Sistema</button>
     </nav>
     <div id="stats" aria-live="polite"></div>
     <button id="obj-btn">★ Nuevo objetivo</button>
@@ -41,17 +42,47 @@
   <section id="view-costs" class="view" hidden>
     <div class="panel">
       <h2>Costos y límites</h2>
-      <p class="hint">Con suscripción el costo es referencial (equivalente en API), pero sirve para detectar tareas caras y como freno.</p>
-      <form id="settings-form" class="inline-form">
-        <label>Presupuesto diario USD (0 = sin límite) <input name="daily_budget_usd" type="number" min="0" step="0.5"></label>
-        <label>Tope por tarea USD (0 = sin tope) <input name="task_budget_usd" type="number" min="0" step="0.5"></label>
-        <label>Timeout por tarea (min) <input name="task_timeout_min" type="number" min="1" step="1"></label>
-        <button class="primary" type="submit">Guardar</button>
-      </form>
+      <p class="hint">Con suscripción el costo es referencial (equivalente en API), pero sirve para detectar tareas caras. Los límites se editan en la pestaña Sistema.</p>
       <div id="costs-summary"></div>
       <h3>Por agente</h3><div id="costs-agents"></div>
       <h3>Últimos días</h3><div id="costs-days"></div>
       <h3>Auditoría reciente</h3><div id="audit"></div>
+    </div>
+  </section>
+
+  <section id="view-system" class="view" hidden>
+    <div class="sys-bar">
+      <span class="chip" id="chip-queue">cola</span>
+      <span class="chip" id="chip-claude">claude</span>
+      <span class="chip" id="chip-ollama">ollama</span>
+      <span class="chip" id="chip-apis">proveedores</span>
+      <span class="sys-actions">
+        <button id="queue-toggle">Pausar cola</button>
+        <button id="cancel-all" class="danger">Cancelar todo</button>
+      </span>
+    </div>
+    <div class="sys-grid">
+      <article class="card-sys" id="card-health"><h2>Estado</h2><div id="sys-health"></div></article>
+      <article class="card-sys" id="card-queue"><h2>Cola en vivo</h2><div id="sys-queue"></div></article>
+      <article class="card-sys" id="card-activity"><h2>Actividad de hoy</h2><div id="sys-activity"></div></article>
+      <article class="card-sys wide" id="card-providers"><h2>Modelos en internet</h2>
+        <p class="hint">Las claves se guardan en el archivo <code>.env</code> de este equipo y nunca se muestran de nuevo. Solo se ve el final para reconocerlas.</p>
+        <div id="sys-providers"></div></article>
+      <article class="card-sys" id="card-schedules"><h2>Próximas rutinas</h2><div id="sys-schedules"></div></article>
+      <article class="card-sys" id="card-settings"><h2>Ajustes</h2>
+        <form id="settings-form" class="settings-grid">
+          <label>Presupuesto diario USD <small>0 = sin límite</small><input name="daily_budget_usd" type="number" min="0" step="0.5"></label>
+          <label>Tope por tarea USD <small>0 = sin tope</small><input name="task_budget_usd" type="number" min="0" step="0.5"></label>
+          <label>Timeout por tarea (min)<input name="task_timeout_min" type="number" min="1" step="1"></label>
+          <label>Claude a la vez<input name="max_claude" type="number" min="1" max="16" step="1"></label>
+          <label>Ollama a la vez<input name="max_ollama" type="number" min="1" max="16" step="1"></label>
+          <label>Internet a la vez<input name="max_api" type="number" min="1" max="16" step="1"></label>
+          <button class="primary" type="submit">Guardar ajustes</button>
+        </form>
+      </article>
+      <article class="card-sys wide" id="card-logs"><h2>Registro en vivo
+          <select id="log-level" aria-label="Filtrar registro"><option value="">todo</option><option value="warn">avisos y errores</option><option value="error">solo errores</option></select></h2>
+        <div id="sys-log" role="log" aria-live="off"></div></article>
     </div>
   </section>
 
