@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Base Rebelde · Oficina Virtual</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 16 16%27%3E%3Cpath fill=%27%23ffd84a%27 d=%27M8 0l2 6 6 2-6 2-2 6-2-6-6-2 6-2z%27/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <h1>⟡ BASE REBELDE <small>oficina virtual</small></h1>
+    <nav id="tabs" role="tablist" aria-label="Vistas">
+      <button role="tab" data-view="office" aria-selected="true">Oficina</button>
+      <button role="tab" data-view="board" aria-selected="false">Tablero</button>
+      <button role="tab" data-view="routines" aria-selected="false">Rutinas</button>
+      <button role="tab" data-view="costs" aria-selected="false">Costos</button>
+    </nav>
+    <div id="stats" aria-live="polite"></div>
+    <button id="obj-btn">★ Nuevo objetivo</button>
+    <button id="new-btn" class="primary">+ Nueva misión</button>
+  </header>
+
+  <section id="view-office" class="view">
+    <canvas id="office" aria-label="Oficina virtual: agentes en sus puestos" role="img"></canvas>
+    <p class="legend"><span class="dot work"></span>trabajando <span class="dot queued"></span>en cola <span class="dot review"></span>por revisar <span class="dot fail"></span>falló · clic en un agente para ver su misión o asignarle una</p>
+  </section>
+
+  <section id="view-board" class="view" hidden>
+    <main id="board" aria-label="Tablero de misiones"></main>
+  </section>
+
+  <section id="view-routines" class="view" hidden>
+    <div class="panel">
+      <div class="panel-head"><h2>Rutinas programadas</h2><button id="new-routine" class="primary">+ Nueva rutina</button></div>
+      <p class="hint">Las rutinas corren siempre en modo solo lectura y solo mientras el servidor está encendido.</p>
+      <div id="routines"></div>
+    </div>
+  </section>
+
+  <section id="view-costs" class="view" hidden>
+    <div class="panel">
+      <h2>Costos y límites</h2>
+      <p class="hint">Con suscripción el costo es referencial (equivalente en API), pero sirve para detectar tareas caras y como freno.</p>
+      <form id="settings-form" class="inline-form">
+        <label>Presupuesto diario USD (0 = sin límite) <input name="daily_budget_usd" type="number" min="0" step="0.5"></label>
+        <label>Tope por tarea USD (0 = sin tope) <input name="task_budget_usd" type="number" min="0" step="0.5"></label>
+        <label>Timeout por tarea (min) <input name="task_timeout_min" type="number" min="1" step="1"></label>
+        <button class="primary" type="submit">Guardar</button>
+      </form>
+      <div id="costs-summary"></div>
+      <h3>Por agente</h3><div id="costs-agents"></div>
+      <h3>Últimos días</h3><div id="costs-days"></div>
+      <h3>Auditoría reciente</h3><div id="audit"></div>
+    </div>
+  </section>
+
+  <dialog id="new-dialog">
+    <form id="new-form" method="dialog">
+      <h2>Nueva misión</h2>
+      <label>Título <input name="title" required maxlength="200"></label>
+      <label>Descripción <textarea name="description" rows="4"></textarea></label>
+      <label>Agente <select name="agent" required></select></label>
+      <label>Proyecto <select name="project"><option value="">(sin proyecto)</option></select></label>
+      <label>Motor
+        <select name="engine">
+          <option value="auto">Auto (el router decide)</option>
+          <option value="claude">Claude</option>
+          <option value="ollama">Ollama (local)</option>
+        </select>
+      </label>
+      <label>Modo
+        <select name="mode">
+          <option value="read">Solo lectura / plan</option>
+          <option value="edit">Puede editar archivos</option>
+        </select>
+      </label>
+      <p class="form-error error" role="alert"></p>
+      <div class="actions">
+        <button type="button" data-close>Cancelar</button>
+        <button type="submit" class="primary">Crear</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="obj-dialog">
+    <form id="obj-form" method="dialog">
+      <h2>Nuevo objetivo</h2>
+      <p class="hint">El coordinador lo dividirá en pasos y los asignará a los agentes. Tú revisas el plan antes de lanzarlo.</p>
+      <label>Objetivo <input name="title" required maxlength="200" placeholder="Ej.: Auditar y mejorar el módulo de guías de syspaqueteria"></label>
+      <label>Detalles <textarea name="description" rows="4"></textarea></label>
+      <p class="form-error error" role="alert"></p>
+      <div class="actions">
+        <button type="button" data-close>Cancelar</button>
+        <button type="submit" class="primary">Crear y planificar</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="routine-dialog">
+    <form id="routine-form" method="dialog">
+      <h2>Nueva rutina</h2>
+      <label>Plantilla <select name="template"></select></label>
+      <label>Proyecto <select name="project"><option value="">(sin proyecto)</option></select></label>
+      <label>Hora (HH:MM) <input name="time" pattern="([01]\d|2[0-3]):[0-5]\d" placeholder="usar la de la plantilla"></label>
+      <fieldset>
+        <legend>Días (vacío = los de la plantilla)</legend>
+        <div id="days"></div>
+      </fieldset>
+      <p class="form-error error" role="alert"></p>
+      <div class="actions">
+        <button type="button" data-close>Cancelar</button>
+        <button type="submit" class="primary">Crear</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="confirm-dialog">
+    <form method="dialog">
+      <h2 id="confirm-title">Confirmar</h2>
+      <p id="confirm-text"></p>
+      <div class="actions">
+        <button value="no">Cancelar</button>
+        <button value="yes" class="primary">Confirmar</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <aside id="drawer" hidden aria-label="Detalle de misión">
+    <div class="drawer-head">
+      <h2 id="d-title"></h2>
+      <button id="d-close" aria-label="Cerrar">✕</button>
+    </div>
+    <div id="d-meta"></div>
+    <div id="d-actions"></div>
+    <div id="d-steps"></div>
+    <h3>Registro</h3>
+    <div id="d-log"></div>
+    <h3>Resultado</h3>
+    <pre id="d-result"></pre>
+  </aside>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
