@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { DEPARTMENTS, CANVAS, ROOM_ORDER, deptOf, layoutOffice, agentStates, roomRect } from './office-layout.js';
+import { DEPARTMENTS, CANVAS, CHAR, ROOM_ORDER, deptOf, layoutOffice, agentStates, roomRect, stepToward, wanderTarget } from './office-layout.js';
 
 const names = (list) => list.map((name) => ({ name }));
 
@@ -36,8 +36,8 @@ test('layout: una posición por agente, dentro de su sala y sin solaparse', () =
   const seen = new Set();
   for (const c of chars) {
     const room = rooms.find((r) => r.id === c.dept).rect;
-    assert.ok(c.x - 10 >= room.x && c.x + 10 <= room.x + room.w, `${c.agent} fuera de la sala (x)`);
-    assert.ok(c.y - 28 >= room.y && c.y <= room.y + room.h, `${c.agent} fuera de la sala (y)`);
+    assert.ok(c.x - CHAR.w / 2 >= room.x && c.x + CHAR.w / 2 <= room.x + room.w, `${c.agent} fuera de la sala (x)`);
+    assert.ok(c.y - CHAR.h >= room.y && c.y <= room.y + room.h, `${c.agent} fuera de la sala (y)`);
     const k = `${c.x},${c.y}`;
     assert.ok(!seen.has(k), `${c.agent} solapado`);
     seen.add(k);
@@ -98,4 +98,43 @@ test('más de 4 agentes activos en una sala: los extra pasan a la zona de descan
   const extra = chars.find((c) => c.seat === 'lounge');
   assert.equal(extra.state, 'working');
   assert.ok(extra.taskId);
+});
+
+test('los sprites de la zona de descanso no se tapan entre sí', () => {
+  const agents = names(DEPARTMENTS.find((d) => d.id === 'hangar').agents);
+  const { chars } = layoutOffice(agents, []);
+  for (let i = 0; i < chars.length; i++) for (let j = i + 1; j < chars.length; j++) {
+    const a = chars[i], b = chars[j];
+    const overlap = Math.abs(a.x - b.x) < CHAR.w && Math.abs(a.y - b.y) < CHAR.h;
+    assert.ok(!overlap, `${a.agent} y ${b.agent} se tapan`);
+  }
+});
+
+test('los escritorios no se solapan entre sí y el personaje queda a la izquierda del monitor', () => {
+  const { rooms } = layoutOffice([], []);
+  const d = rooms[0].desks;
+  for (let i = 0; i < d.length; i++) for (let j = i + 1; j < d.length; j++) {
+    assert.ok(d[i].x + d[i].w <= d[j].x || d[j].x + d[j].w <= d[i].x || d[i].y + d[i].h <= d[j].y || d[j].y + d[j].h <= d[i].y);
+  }
+  const { chars } = layoutOffice(names(['backend']), [{ id: 1, agent: 'backend', status: 'running' }]);
+  const desk = layoutOffice(names(['backend']), [{ id: 1, agent: 'backend', status: 'running' }]).rooms.find((r) => r.id === 'hangar').desks[0];
+  assert.ok(chars[0].x < desk.x + desk.w / 2);
+});
+
+test('stepToward: avanza, no se pasa del destino y reporta llegada', () => {
+  const a = stepToward({ x: 0, y: 0 }, { x: 30, y: 40 }, 10);
+  assert.equal(a.arrived, false);
+  assert.ok(Math.abs(Math.hypot(a.x, a.y) - 10) < 1e-9);
+  const b = stepToward({ x: 28, y: 39 }, { x: 30, y: 40 }, 10);
+  assert.deepEqual([b.x, b.y, b.arrived], [30, 40, true]);
+  assert.equal(stepToward({ x: 5, y: 5 }, { x: 5, y: 5 }, 3).arrived, true);
+});
+
+test('wanderTarget: siempre cerca del punto de origen', () => {
+  const home = { x: 100, y: 200 };
+  for (let i = 0; i < 200; i++) {
+    const t = wanderTarget(home);
+    assert.ok(Math.abs(t.x - home.x) <= 14 && Math.abs(t.y - home.y) <= 4);
+  }
+  assert.deepEqual(wanderTarget(home, () => 0.5), home);
 });

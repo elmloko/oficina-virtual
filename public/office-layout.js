@@ -1,5 +1,6 @@
 // Distribución de la oficina: lógica pura (sin canvas) para poder probarla en Node.
-export const CANVAS = { w: 1200, h: 620 };
+export const CANVAS = { w: 1200, h: 700 };
+export const CHAR = { w: 32, h: 44 }; // sprite 16x22 a escala 2
 const MARGIN = 8;
 const COLS = 4;
 const ROOM_W = (CANVAS.w - MARGIN * (COLS + 1)) / COLS; // 290
@@ -8,12 +9,12 @@ export const ROOM = { w: ROOM_W, h: ROOM_H };
 
 export const DEPARTMENTS = [
   { id: 'mando', label: 'Puente de Mando', color: '#ffd84a', agents: ['architect', 'spec-writer', 'api-designer', 'reviewer', 'claude'] },
-  { id: 'hangar', label: 'Hangar de Ingeniería', color: '#ff9a3c', agents: ['backend', 'frontend', 'fullstack', 'dba', 'integrator', 'mobile', 'refactor', 'migrator', 'debugger', 'performance', 'figma-to-code'] },
-  { id: 'inteligencia', label: 'Inteligencia Rebelde', color: '#ff5a5a', agents: ['tester', 'e2e', 'security', 'a11y', 'responsive', 'deps-auditor', 'netsec'] },
-  { id: 'flota', label: 'Flota y Operaciones', color: '#4aa3ff', agents: ['devops', 'cicd', 'sre', 'cloud', 'iac', 'k8s', 'backup-dr', 'cost-optimizer', 'windows-admin'] },
-  { id: 'diplomacia', label: 'Diplomacia y Negocio', color: '#d9c7a0', agents: ['proposal', 'reporter', 'copywriter', 'analyst', 'brand', 'legal-docs', 'presentation', 'landing', 'docs', 'pr-writer', 'translator'] },
-  { id: 'taller', label: 'Taller de Droides', color: '#b18cff', agents: ['designer', 'ui-designer', 'design-system', 'illustrator', 'motion', 'dataviz', 'ux-researcher'] },
-  { id: 'reconocimiento', label: 'Reconocimiento', color: '#4ade80', agents: ['researcher', 'scraper', 'summarizer'] },
+  { id: 'hangar', label: 'Hangar de Pilotos', color: '#ff9a3c', agents: ['backend', 'frontend', 'fullstack', 'dba', 'integrator', 'mobile', 'refactor', 'migrator', 'debugger', 'performance', 'figma-to-code'] },
+  { id: 'inteligencia', label: 'Guarnición de Seguridad', color: '#ff5a5a', agents: ['tester', 'e2e', 'security', 'a11y', 'responsive', 'deps-auditor', 'netsec'] },
+  { id: 'flota', label: 'Bahía de Droides', color: '#4aa3ff', agents: ['devops', 'cicd', 'sre', 'cloud', 'iac', 'k8s', 'backup-dr', 'cost-optimizer', 'windows-admin'] },
+  { id: 'diplomacia', label: 'Embajada y Negocio', color: '#d9c7a0', agents: ['proposal', 'reporter', 'copywriter', 'analyst', 'brand', 'legal-docs', 'presentation', 'landing', 'docs', 'pr-writer', 'translator'] },
+  { id: 'taller', label: 'Templo de Diseño', color: '#b18cff', agents: ['designer', 'ui-designer', 'design-system', 'illustrator', 'motion', 'dataviz', 'ux-researcher'] },
+  { id: 'reconocimiento', label: 'Exploradores', color: '#4ade80', agents: ['researcher', 'scraper', 'summarizer'] },
 ];
 export const OPS_ROOM = { id: 'ops', label: 'Sala de Operaciones', color: '#7dd3fc' };
 
@@ -42,9 +43,11 @@ export function roomRect(i) {
 export const ROOM_ORDER = [...DEPARTMENTS.map((d) => d.id), OPS_ROOM.id];
 
 // Posiciones relativas a la sala.
-const DESK_SLOTS = [[18, 44], [160, 44], [18, 128], [160, 128]];
+const DESK_SLOTS = [[18, 66], [160, 66], [18, 150], [160, 150]];
 export const DESK = { w: 112, h: 52 };
-const LOUNGE = { x: 16, y: 226, dx: 30, dy: 26, cols: 9 };
+export const SEAT = { dx: 34, dy: 44 }; // el personaje se sienta a la izquierda; el monitor queda a la derecha
+const LOUNGE = { x: 10, y: 226, dx: 34, dy: 48, cols: 8 };
+export const GAP = { x: 130, w: 30 }; // columna central entre escritorios (decoración)
 
 const PRIORITY = { running: 4, queued: 3, review: 2, failed: 1 };
 const STATE_OF = { running: 'working', queued: 'queued', review: 'review', failed: 'failed' };
@@ -84,14 +87,28 @@ export function layoutOffice(agents, tasks) {
       if (st && deskIdx < room.desks.length) {
         const d = room.desks[deskIdx++];
         d.occupied = true;
-        x = d.x + d.w / 2; y = d.y + d.h + 22; seat = 'desk';
+        x = d.x + SEAT.dx; y = d.y + SEAT.dy; seat = 'desk';
       } else {
         const col = lounge % LOUNGE.cols;
         const row = Math.floor(lounge++ / LOUNGE.cols);
-        x = room.rect.x + LOUNGE.x + col * LOUNGE.dx + 10; y = room.rect.y + LOUNGE.y + row * LOUNGE.dy + 28; seat = 'lounge';
+        x = room.rect.x + LOUNGE.x + col * LOUNGE.dx + CHAR.w / 2; y = room.rect.y + LOUNGE.y + row * LOUNGE.dy + CHAR.h; seat = 'lounge';
       }
       chars.push({ agent: a.name, dept: dept.id, x, y, seat, state: st ? STATE_OF[st.task.status] : 'idle', taskId: st?.task.id ?? null });
     }
   }
   return { rooms, chars };
+}
+
+/** Avanza `dist` px hacia el destino. Devuelve la nueva posición, si llegó y cuánto se movió. */
+export function stepToward(pos, target, dist) {
+  const dx = target.x - pos.x;
+  const dy = target.y - pos.y;
+  const d = Math.hypot(dx, dy);
+  if (d <= dist) return { x: target.x, y: target.y, arrived: true, moved: d, dx };
+  return { x: pos.x + (dx / d) * dist, y: pos.y + (dy / d) * dist, arrived: false, moved: dist, dx };
+}
+
+/** Destino aleatorio cercano a `home` para que los agentes libres deambulen sin salirse de su zona. */
+export function wanderTarget(home, rnd = Math.random) {
+  return { x: home.x + Math.round((rnd() * 2 - 1) * 14), y: home.y + Math.round((rnd() * 2 - 1) * 4) };
 }
