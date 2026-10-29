@@ -12,7 +12,7 @@ export const DEFAULT_SETTINGS = {
 };
 
 const TASK_COLUMNS = ['title', 'description', 'project', 'agent', 'engine', 'mode', 'status', 'result', 'error',
-  'cost_usd', 'started_at', 'finished_at', 'parent_id', 'depends_on', 'kind', 'schedule_id'];
+  'cost_usd', 'started_at', 'finished_at', 'parent_id', 'depends_on', 'kind', 'schedule_id', 'model'];
 
 function addColumnIfMissing(db, table, column, ddl) {
   const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
@@ -75,6 +75,7 @@ export function openDb(file = config.dbFile) {
   addColumnIfMissing(db, 'tasks', 'depends_on', "TEXT NOT NULL DEFAULT '[]'");
   addColumnIfMissing(db, 'tasks', 'kind', "TEXT NOT NULL DEFAULT 'task'");
   addColumnIfMissing(db, 'tasks', 'schedule_id', 'INTEGER');
+  addColumnIfMissing(db, 'tasks', 'model', 'TEXT');
 
   // Una tarea que quedó "running"/"queued" en un reinicio ya no tiene proceso: se marca fallida.
   db.exec(`UPDATE tasks SET status='failed', error='Interrumpida por reinicio del servidor',
@@ -106,10 +107,10 @@ export function openDb(file = config.dbFile) {
   return {
     raw: db,
     createTask(t) {
-      const row = db.prepare(`INSERT INTO tasks (title, description, project, agent, engine, mode, parent_id, depends_on, kind, schedule_id)
-                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`)
+      const row = db.prepare(`INSERT INTO tasks (title, description, project, agent, engine, mode, parent_id, depends_on, kind, schedule_id, model)
+                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`)
         .get(t.title, t.description ?? '', t.project ?? null, t.agent, t.engine ?? 'auto', t.mode ?? 'read',
-          t.parent_id ?? null, JSON.stringify(t.depends_on ?? []), t.kind ?? 'task', t.schedule_id ?? null);
+          t.parent_id ?? null, JSON.stringify(t.depends_on ?? []), t.kind ?? 'task', t.schedule_id ?? null, t.model ?? null);
       return parseTask(row);
     },
     getTask: (id) => parseTask(q.get.get(id)),

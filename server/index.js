@@ -9,17 +9,18 @@ import { createScheduler, validateSpec } from './scheduler.js';
 import { TEMPLATES } from './templates.js';
 import { route } from './router.js';
 import { listAgents, listProjects, resolveProject, isExtraRoot } from './registry.js';
+import { loadProviders, publicProviders, MODEL_RE } from './providers.js';
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png' };
 const MANUAL_STATUSES = new Set(['backlog', 'review', 'done']); // el resto lo mueve el runner
-const ENGINES = new Set(['auto', 'claude', 'ollama']);
 const MODES = new Set(['read', 'edit']);
 
-export function createApp({ db = openDb(), runnerOpts, now } = {}) {
+export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loadProviders() } = {}) {
+  const engines = new Set(['auto', 'claude', 'ollama', ...Object.keys(providers)]);
   const sockets = new Set();
   const broadcast = (msg) => { const s = JSON.stringify(msg); for (const ws of sockets) if (ws.readyState === 1) ws.send(s); };
   const emit = (id, extra = {}) => { const task = db.getTask(id); if (task) broadcast({ type: 'task', task, ...extra }); };
-  const runner = createRunner(db, emit, runnerOpts);
+  const runner = createRunner(db, emit, { ...runnerOpts, providers });
   const scheduler = createScheduler({ db, runner, emit, now });
   const publicDir = resolve(config.root, 'public');
 
@@ -40,10 +41,12 @@ export function createApp({ db = openDb(), runnerOpts, now } = {}) {
   function validate(body, { partial = false } = {}) {
     const agents = new Set(listAgents().map((a) => a.name));
     const out = {};
-    for (const k of ['title', 'description', 'project', 'agent', 'engine', 'mode']) if (body[k] !== undefined) out[k] = body[k];
+    for (const k of ['title', 'description', 'project', 'agent', 'engine', 'mode', 'model']) if (body[k] !== undefined) out[k] = body[k];
+    if (out.model === '') out.model = null;
+    if (out.model != null && !MODEL_RE.test(out.model)) return { error: 'Modelo inválido' };
     if (!partial || 'title' in out) if (typeof out.title !== 'string' || !out.title.trim()) return { error: 'Falta el título' };
     if (!partial || 'agent' in out) if (!agents.has(out.agent)) return { error: 'Agente desconocido' };
-    if ('engine' in out && !ENGINES.has(out.engine)) return { error: 'Motor inválido' };
+    if ('engine' in out && !engines.has(out.engine)) return { error: 'Motor inválido (¿falta la clave del proveedor?)' };
     if ('mode' in out && !MODES.has(out.mode)) return { error: 'Modo inválido' };
     if (out.project) {
       if (!resolveProject(out.project)) return { error: 'Proyecto fuera de htdocs o inexistente' };
@@ -75,7 +78,7 @@ export function createApp({ db = openDb(), runnerOpts, now } = {}) {
     if (typeof s.name !== 'string' || !s.name.trim()) return { error: 'Falta el nombre' };
     if (typeof s.title !== 'string' || !s.title.trim()) return { error: 'Falta el título' };
     if (!listAgents().some((a) => a.name === s.agent)) return { error: 'Agente desconocido' };
-    if (!ENGINES.has(s.engine)) return { error: 'Motor inválido' };
+    if (!engines.has(s.engine)) return { error: 'Motor inválido' };
     const specErr = validateSpec(s.spec);
     if (specErr) return { error: specErr };
     if (s.project && !resolveProject(s.project)) return { error: 'Proyecto fuera de htdocs o inexistente' };
@@ -91,7 +94,7 @@ export function createApp({ db = openDb(), runnerOpts, now } = {}) {
     if (method === 'GET' && url.pathname === '/api/state') {
       return send(res, 200, {
         tasks: db.listTasks(), agents: listAgents(), projects: listProjects(), stats: runner.stats(),
-        settings: db.settings(), templates: TEMPLATES, schedules: db.schedules(), costs: costs(),
+        settings: db.settings(), providers: publicProviders(providers), templates: TEMPLATES, schedules: db.schedules(), costs: costs(),
       });
     }
     if (method === 'GET' && url.pathname === '/api/costs') return send(res, 200, costs());
@@ -137,7 +140,7 @@ export function createApp({ db = openDb(), runnerOpts, now } = {}) {
         const { error, value } = validate({ ...body, project: 'project' in body ? body.project : task.project, mode: body.mode ?? task.mode }, { partial: true });
         if (error) return send(res, 400, { error });
         const patch = {};
-        for (const k of ['title', 'description', 'project', 'agent', 'engine', 'mode']) if (k in body) patch[k] = value[k];
+        for (const k of ['title', 'description', 'project', 'agent', 'engine', 'mode', 'model']) if (k in body) patch[k] = value[k];
         if (body.status !== undefined) {
           if (!MANUAL_STATUSES.has(body.status) || ['queued', 'running'].includes(task.status)) return send(res, 400, { error: 'Cambio de estado no permitido' });
           patch.status = body.status;

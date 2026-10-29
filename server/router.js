@@ -14,8 +14,8 @@ export function route({ agent, engine = 'auto', mode = 'read', project = null })
   const finalMode = forcedRead ? 'read' : mode === 'edit' ? 'edit' : 'read';
   let finalEngine = engine;
   if (engine === 'auto') finalEngine = LIGHT.has(agent) && finalMode === 'read' ? 'ollama' : 'claude';
-  // Ollama no edita archivos: si piden edición, va a Claude.
-  if (finalEngine === 'ollama' && finalMode === 'edit') finalEngine = 'claude';
+  // Ollama y los proveedores en internet son solo chat (sin archivos): si piden edición, va a Claude.
+  if (finalEngine !== 'claude' && finalMode === 'edit') finalEngine = 'claude';
   return {
     engine: finalEngine,
     mode: finalMode,

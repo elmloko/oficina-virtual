@@ -13,6 +13,8 @@ Oficina 2D pixel-art (tema Star Wars, arte original) para asignar tareas a los a
 - **Carpetas extra** (`EXTRA_ROOTS`): fuera de htdocs, siempre solo lectura, visibles como `@Nombre`.
 - **Costos**: presupuesto diario, tope por tarea, timeout, auditoría.
 
-Motor híbrido: Claude (`claude -p`, usa tu suscripción) y Ollama local (tareas ligeras).
+Motores: Claude (`claude -p`, usa tu suscripción, con acceso a archivos), Ollama local y **modelos en internet**
+(Anthropic API, OpenAI, Gemini, OpenRouter, Groq, DeepSeek o cualquier API compatible con OpenAI vía `CUSTOM_LLM`).
+Los de internet son solo chat: no ven ni editan archivos; reciben únicamente el texto de la misión. Claves solo en `.env`.
 Seguridad: solo 127.0.0.1; proyectos solo dentro de `HTDOCS_ROOT`; editar archivos exige confirmación;
 agentes de infraestructura (devops, iac, cloud…) fuerzan solo lectura. Variables en `.env.example`.

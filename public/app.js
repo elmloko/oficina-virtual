@@ -20,7 +20,7 @@ const el = (tag, props = {}, ...kids) => {
 };
 
 const state = {
-  tasks: new Map(), agents: [], projects: [], stats: null, settings: {}, templates: [], schedules: [], costs: null,
+  tasks: new Map(), agents: [], projects: [], providers: [], stats: null, settings: {}, templates: [], schedules: [], costs: null,
   open: null, view: 'office',
 };
 
@@ -151,7 +151,7 @@ function drawer(t) {
   $('#drawer').hidden = false;
   $('#d-title').textContent = `#${t.id} ${t.title}`;
   const deps = t.depends_on?.length ? ` · depende de ${t.depends_on.map((d) => '#' + d).join(', ')}` : '';
-  $('#d-meta').textContent = `${t.kind === 'objective' ? 'coordinador' : t.agent} · ${t.project || 'sin proyecto'} · ${t.engine}/${t.mode} · ${t.status}${deps}${t.error ? ' · ' + t.error : ''}`;
+  $('#d-meta').textContent = `${t.kind === 'objective' ? 'coordinador' : t.agent} · ${t.project || 'sin proyecto'} · ${t.engine}${t.model ? ':' + t.model : ''}/${t.mode} · ${t.status}${deps}${t.error ? ' · ' + t.error : ''}`;
   $('#d-result').textContent = t.result || '';
   const act = $('#d-actions');
   act.replaceChildren();
@@ -205,6 +205,10 @@ function fillSelects() {
   f.agent.replaceChildren(...state.agents.map((a) => el('option', { value: a.name, textContent: `${a.name} — ${a.description}`.slice(0, 80) })));
   const projectOptions = () => [el('option', { value: '', textContent: '(sin proyecto)' }), ...state.projects.map((p) => el('option', { value: p.name, textContent: p.name }))];
   f.project.replaceChildren(...projectOptions());
+  const engines = [['auto', 'Auto (el router decide)'], ['claude', 'Claude (suscripción)'], ['ollama', 'Ollama (local)'], ...state.providers.map((p) => [p.name, `${p.name} · en internet (${p.model})`])];
+  const keep = f.engine.value;
+  f.engine.replaceChildren(...engines.map(([v, t]) => el('option', { value: v, textContent: t })));
+  if (engines.some(([v]) => v === keep)) f.engine.value = keep;
   $('#routine-form').project.replaceChildren(...projectOptions());
   $('#routine-form').template.replaceChildren(...state.templates.map((t) => el('option', { value: t.id, textContent: `${t.name}${t.needsProject ? ' (requiere proyecto)' : ''}` })));
   $('#days').replaceChildren(...DAYS.map((d, i) => el('label', { className: 'chk' }, el('input', { type: 'checkbox', name: 'day', value: String(i) }), el('span', { textContent: d }))));
@@ -244,8 +248,17 @@ function setupForms() {
     await refreshState();
   });
   const taskForm = $('#new-form');
-  const syncHint = () => { $('#mode-hint').hidden = taskForm.mode.value !== 'edit'; };
+  const syncHint = () => {
+    $('#mode-hint').hidden = taskForm.mode.value !== 'edit';
+    const prov = state.providers.find((p) => p.name === taskForm.engine.value);
+    $('#model-row').hidden = !prov;
+    taskForm.model.placeholder = prov ? `por defecto: ${prov.model}` : '';
+    const hint = $('#engine-hint');
+    hint.hidden = !prov;
+    if (prov) hint.textContent = `☁ El texto de la misión (título, descripción y resultados de pasos previos) se enviará a ${prov.name}. No ve archivos del proyecto y no puede editarlos.`;
+  };
   taskForm.mode.onchange = syncHint;
+  taskForm.engine.onchange = syncHint;
   taskForm.addEventListener('reset', () => setTimeout(syncHint));
   const rf = $('#routine-form');
   const syncTpl = () => {
@@ -321,7 +334,7 @@ async function refreshCosts() {
 let office;
 async function refreshState() {
   const s = await api('/api/state');
-  Object.assign(state, { agents: s.agents, projects: s.projects, stats: s.stats, settings: s.settings, templates: s.templates, schedules: s.schedules, costs: s.costs });
+  Object.assign(state, { agents: s.agents, projects: s.projects, providers: s.providers ?? [], stats: s.stats, settings: s.settings, templates: s.templates, schedules: s.schedules, costs: s.costs });
   state.tasks = new Map(s.tasks.map((t) => [t.id, t]));
   render();
 }

@@ -36,5 +36,6 @@ export const config = {
   ollamaUrl: process.env.OLLAMA_URL || 'http://127.0.0.1:11434',
   maxClaude: Number(process.env.MAX_CLAUDE_CONCURRENCY || 2),
   maxOllama: Number(process.env.MAX_OLLAMA_CONCURRENCY || 1),
+  maxApi: Number(process.env.MAX_API_CONCURRENCY || 3),
   dbFile: process.env.DB_FILE || join(root, 'data', 'oficina.db'),
 };

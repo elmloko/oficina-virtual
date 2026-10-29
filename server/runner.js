@@ -3,6 +3,7 @@ import { config } from './config.js';
 import { resolveProject, listAgents, listProjects } from './registry.js';
 import { route } from './router.js';
 import { buildPlanPrompt, parsePlan } from './coordinator.js';
+import { chat, secretEnvNames } from './providers.js';
 
 const DONE_STATES = new Set(['review', 'done']);
 const RESULT_CONTEXT_LIMIT = 6000;
@@ -11,9 +12,13 @@ const RESULT_CONTEXT_LIMIT = 6000;
  * Cola con límite de concurrencia por motor, dependencias entre tareas, presupuesto y timeout.
  * emit(taskId, extra) avisa a la UI. spawnFn, fetchFn y registry son inyectables para pruebas.
  */
-export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, registry = { listAgents, listProjects } } = {}) {
+export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, registry = { listAgents, listProjects }, providers = {} } = {}) {
   const limits = { claude: config.maxClaude, ollama: config.maxOllama };
   const active = { claude: 0, ollama: 0 };
+  const limitOf = (engine) => limits[engine] ?? config.maxApi; // los proveedores en internet comparten un límite
+  const hasRoom = (engine) => (active[engine] ?? 0) < limitOf(engine);
+  // El proceso `claude` no debe heredar claves de otros proveedores (ni activar facturación por API sin querer).
+  const childEnv = () => { const env = { ...process.env }; for (const k of secretEnvNames()) delete env[k]; return env; };
   const waiting = []; // { id, engine, model }
   const procs = new Map(); // id -> { kill }
   const timedOut = new Set();
@@ -32,6 +37,7 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     }
     patch(id, { status: 'queued', engine: plan.engine, mode: plan.mode, error: null, result: null, finished_at: null });
     if (plan.note) log(id, 'info', plan.note);
+    if (plan.engine !== 'claude' && task.project) log(id, 'info', 'Este motor no ve archivos del proyecto: solo recibe el texto de la misión.');
     waiting.push({ id, engine: plan.engine, model: plan.model });
     db.audit('task.run', id, `${task.agent} ${plan.engine}/${plan.mode} ${task.project ?? ''}`);
     pump();
@@ -62,9 +68,9 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
         i = -1; // los dependientes de este también deben fallar
         continue;
       }
-      if (dep === 'wait' || active[w.engine] >= limits[w.engine]) continue;
+      if (dep === 'wait' || !hasRoom(w.engine)) continue;
       waiting.splice(i--, 1);
-      active[w.engine]++;
+      active[w.engine] = (active[w.engine] ?? 0) + 1;
       start(w).finally(() => { active[w.engine]--; procs.delete(w.id); timedOut.delete(w.id); pump(); });
     }
   }
@@ -75,7 +81,7 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     patch(id, { status: 'running', started_at: new Date().toISOString() });
     const timer = setTimeout(() => { timedOut.add(id); procs.get(id)?.kill(); }, db.settings().task_timeout_min * 60_000);
     try {
-      const out = engine === 'ollama' ? await runOllama(task, model) : await runClaude(task);
+      const out = engine === 'claude' ? await runClaude(task) : engine === 'ollama' ? await runOllama(task, model) : await runProvider(task, engine);
       if (db.getTask(id).status !== 'running') return; // cancelada
       if (task.kind === 'objective') createPlan(task, out.result);
       patch(id, { status: 'review', result: out.result, cost_usd: out.cost ?? 0, finished_at: new Date().toISOString() });
@@ -121,7 +127,7 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     const { task_budget_usd: cap } = db.settings();
     if (cap > 0) args.push('--max-budget-usd', String(cap));
     return new Promise((resolve, reject) => {
-      const child = spawnFn('claude', args, { cwd, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+      const child = spawnFn('claude', args, { cwd, env: childEnv(), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
       procs.set(task.id, { kill: () => child.kill() });
       let buf = '';
       let final = null;
@@ -178,6 +184,18 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     }
     log(task.id, 'text', text);
     return { result: text, cost: 0 };
+  }
+
+  async function runProvider(task, engine) {
+    const provider = providers[engine];
+    if (!provider) throw new Error(`Proveedor "${engine}" no configurado (falta su clave en .env)`);
+    const ctrl = new AbortController();
+    procs.set(task.id, { kill: () => ctrl.abort() });
+    const sys = `Eres el agente "${task.agent}". Responde en español, conciso y directo.`;
+    const out = await chat(provider, { model: task.model, system: sys, prompt: buildPrompt(task), signal: ctrl.signal, fetchFn });
+    log(task.id, 'text', out.text);
+    log(task.id, 'info', `${provider.name}/${out.model}: ${out.usage.input} tokens de entrada, ${out.usage.output} de salida (costo no calculado)`);
+    return { result: out.text, cost: 0 };
   }
 
   function cancel(id) {
