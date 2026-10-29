@@ -213,6 +213,7 @@ function fillSelects() {
 function wireDialog(dialogSel, formSel, submit) {
   const d = $(dialogSel); const f = $(formSel);
   for (const b of d.querySelectorAll('[data-close]')) b.onclick = () => d.close();
+  d.addEventListener('close', () => f.reset()); // al cerrar no quedan valores viejos
   f.onsubmit = async (e) => {
     e.preventDefault();
     const err = f.querySelector('.form-error');
@@ -242,9 +243,25 @@ function setupForms() {
     await post('/api/schedules', body);
     await refreshState();
   });
-  $('#new-btn').onclick = () => openTaskDialog();
+  const taskForm = $('#new-form');
+  const syncHint = () => { $('#mode-hint').hidden = taskForm.mode.value !== 'edit'; };
+  taskForm.mode.onchange = syncHint;
+  taskForm.addEventListener('reset', () => setTimeout(syncHint));
+  const rf = $('#routine-form');
+  const syncTpl = () => {
+    const t = state.templates.find((x) => x.id === rf.template.value);
+    $('#tpl-desc').textContent = t ? `${t.agent} · ${describeSpec(t.spec)} — ${t.description}` : '';
+    if (t?.defaultProject && !rf.project.value) rf.project.value = t.defaultProject;
+  };
+  rf.template.onchange = syncTpl;
+  rf.addEventListener('reset', () => setTimeout(syncTpl));
+  // clic en el fondo cierra el modal (no el de confirmación, que exige elegir)
+  for (const d of document.querySelectorAll('dialog:not(#confirm-dialog)')) {
+    d.addEventListener('mousedown', (e) => { if (e.target === d) d.close(); });
+  }
+  $('#new-btn').onclick = () => openTaskDialog(syncHint);
   $('#obj-btn').onclick = () => openObjDialog();
-  $('#new-routine').onclick = () => openRoutineDialog();
+  $('#new-routine').onclick = () => openRoutineDialog(syncTpl);
   $('#d-close').onclick = () => { state.open = null; $('#drawer').hidden = true; };
   for (const b of document.querySelectorAll('#tabs button')) b.onclick = () => showView(b.dataset.view);
   $('#settings-form').onsubmit = guard(async (e) => {

@@ -55,71 +55,83 @@
     </div>
   </section>
 
-  <dialog id="new-dialog">
+  <dialog id="new-dialog" aria-labelledby="new-title">
     <form id="new-form" method="dialog">
-      <h2>Nueva misión</h2>
-      <label>Título <input name="title" required maxlength="200"></label>
-      <label>Descripción <textarea name="description" rows="4"></textarea></label>
-      <label>Agente <select name="agent" required></select></label>
-      <label>Proyecto <select name="project"><option value="">(sin proyecto)</option></select></label>
-      <label>Motor
-        <select name="engine">
-          <option value="auto">Auto (el router decide)</option>
-          <option value="claude">Claude</option>
-          <option value="ollama">Ollama (local)</option>
-        </select>
-      </label>
-      <label>Modo
-        <select name="mode">
-          <option value="read">Solo lectura / plan</option>
-          <option value="edit">Puede editar archivos</option>
-        </select>
-      </label>
-      <p class="form-error error" role="alert"></p>
-      <div class="actions">
+      <div class="modal-head"><h2 id="new-title">Nueva misión</h2><button type="button" class="icon-btn" data-close aria-label="Cerrar">✕</button></div>
+      <div class="modal-body">
+        <label>Título <input name="title" required maxlength="200" placeholder="¿Qué debe hacer el agente?" autocomplete="off"></label>
+        <label>Descripción <textarea name="description" rows="4" placeholder="Contexto, criterios de aceptación, archivos relevantes…"></textarea></label>
+        <div class="grid2">
+          <label>Agente <select name="agent" required></select></label>
+          <label>Proyecto <select name="project"><option value="">(sin proyecto)</option></select></label>
+        </div>
+        <div class="grid2">
+          <label>Motor
+            <select name="engine">
+              <option value="auto">Auto (el router decide)</option>
+              <option value="claude">Claude</option>
+              <option value="ollama">Ollama (local)</option>
+            </select>
+          </label>
+          <label>Modo
+            <select name="mode">
+              <option value="read">Solo lectura / plan</option>
+              <option value="edit">Puede editar archivos</option>
+            </select>
+          </label>
+        </div>
+        <p class="mode-hint" id="mode-hint" hidden>⚠ Este modo puede modificar archivos del proyecto. Te pediremos confirmación antes de ejecutar.</p>
+        <p class="form-error error" role="alert"></p>
+      </div>
+      <div class="modal-foot">
         <button type="button" data-close>Cancelar</button>
-        <button type="submit" class="primary">Crear</button>
+        <button type="submit" class="primary">Crear misión</button>
       </div>
     </form>
   </dialog>
 
-  <dialog id="obj-dialog">
+  <dialog id="obj-dialog" aria-labelledby="obj-title">
     <form id="obj-form" method="dialog">
-      <h2>Nuevo objetivo</h2>
-      <p class="hint">El coordinador lo dividirá en pasos y los asignará a los agentes. Tú revisas el plan antes de lanzarlo.</p>
-      <label>Objetivo <input name="title" required maxlength="200" placeholder="Ej.: Auditar y mejorar el módulo de guías de syspaqueteria"></label>
-      <label>Detalles <textarea name="description" rows="4"></textarea></label>
-      <p class="form-error error" role="alert"></p>
-      <div class="actions">
+      <div class="modal-head"><h2 id="obj-title">Nuevo objetivo</h2><button type="button" class="icon-btn" data-close aria-label="Cerrar">✕</button></div>
+      <div class="modal-body">
+        <p class="hint">El coordinador lo dividirá en pasos y los asignará a los agentes. Tú revisas el plan antes de lanzarlo.</p>
+        <label>Objetivo <input name="title" required maxlength="200" placeholder="Ej.: Auditar y mejorar el módulo de guías de syspaqueteria" autocomplete="off"></label>
+        <label>Detalles <textarea name="description" rows="5" placeholder="Alcance, restricciones, qué proyecto(s) involucra…"></textarea></label>
+        <p class="form-error error" role="alert"></p>
+      </div>
+      <div class="modal-foot">
         <button type="button" data-close>Cancelar</button>
         <button type="submit" class="primary">Crear y planificar</button>
       </div>
     </form>
   </dialog>
 
-  <dialog id="routine-dialog">
+  <dialog id="routine-dialog" aria-labelledby="routine-title">
     <form id="routine-form" method="dialog">
-      <h2>Nueva rutina</h2>
-      <label>Plantilla <select name="template"></select></label>
-      <label>Proyecto <select name="project"><option value="">(sin proyecto)</option></select></label>
-      <label>Hora (HH:MM) <input name="time" pattern="([01]\d|2[0-3]):[0-5]\d" placeholder="usar la de la plantilla"></label>
-      <fieldset>
-        <legend>Días (vacío = los de la plantilla)</legend>
-        <div id="days"></div>
-      </fieldset>
-      <p class="form-error error" role="alert"></p>
-      <div class="actions">
+      <div class="modal-head"><h2 id="routine-title">Nueva rutina</h2><button type="button" class="icon-btn" data-close aria-label="Cerrar">✕</button></div>
+      <div class="modal-body">
+        <label>Plantilla <select name="template"></select></label>
+        <p class="hint" id="tpl-desc"></p>
+        <label>Proyecto <select name="project"><option value="">(sin proyecto)</option></select></label>
+        <label>Hora (HH:MM) <input name="time" pattern="([01]\d|2[0-3]):[0-5]\d" placeholder="vacío = la de la plantilla" autocomplete="off"></label>
+        <fieldset>
+          <legend>Días (vacío = los de la plantilla)</legend>
+          <div id="days"></div>
+        </fieldset>
+        <p class="form-error error" role="alert"></p>
+      </div>
+      <div class="modal-foot">
         <button type="button" data-close>Cancelar</button>
-        <button type="submit" class="primary">Crear</button>
+        <button type="submit" class="primary">Crear rutina</button>
       </div>
     </form>
   </dialog>
 
-  <dialog id="confirm-dialog">
+  <dialog id="confirm-dialog" class="small" aria-labelledby="confirm-title">
     <form method="dialog">
-      <h2 id="confirm-title">Confirmar</h2>
-      <p id="confirm-text"></p>
-      <div class="actions">
+      <div class="modal-head"><h2 id="confirm-title">Confirmar</h2></div>
+      <div class="modal-body"><p id="confirm-text"></p></div>
+      <div class="modal-foot">
         <button value="no">Cancelar</button>
         <button value="yes" class="primary">Confirmar</button>
       </div>
