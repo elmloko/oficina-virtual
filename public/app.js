@@ -4,6 +4,9 @@ import { SKIN_LIST, AUTO, skinById, resolveSkin, deptView } from './skins.js';
 import { DEPARTMENTS } from './office-layout.js';
 import { attentionItems, transition, KIND_LABEL } from './attention.js';
 import { createAlerts } from './alerts.js';
+import { filterTasks, isFiltering, NO_PROJECT } from './filters.js';
+import { agentMetrics, summarize, parseTs } from './metrics.js';
+import { taskToMarkdown, tasksToMarkdown, printableHtml } from './exporter.js';
 
 const COLUMNS = [
   ['backlog', 'Hangar (pendientes)'],
@@ -92,19 +95,70 @@ function render() {
   if (state.view === 'attention') renderAttention(attn);
   if (state.view === 'board') renderBoard();
   if (state.view === 'routines') renderRoutines();
+  if (state.view === 'costs') renderMetrics();
   if (state.view === 'system' && state.system) renderSystem();
   if (state.open) drawer(state.tasks.get(state.open));
   if (state.agentOpen) renderAgent();
 }
 
 // ---------- tablero ----------
+// ---------- búsqueda y filtros del tablero ----------
+const boardFilter = { q: '', agent: '', project: '', status: '' };
+const filteredTasks = () => filterTasks([...state.tasks.values()], boardFilter);
+
+function download(name, text, type = 'text/markdown;charset=utf-8') {
+  const url = URL.createObjectURL(new Blob([text], { type }));
+  const a = el('a', { href: url, download: name });
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+const slug = (s) => String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'mision';
+
+/** Abre el informe en una ventana lista para imprimir: ahí se elige «Guardar como PDF». */
+function printPdf(md, title) {
+  const w = window.open('', '_blank');
+  if (!w) { toast('El navegador bloqueó la ventana: permite pop-ups para exportar a PDF'); return; }
+  w.document.write(printableHtml(md, title));
+  w.document.close();
+  w.focus();
+  setTimeout(() => w.print(), 300);
+}
+
+function describeFilter(f) {
+  return [f.q?.trim() && `texto «${f.q.trim()}»`, f.agent && `agente ${f.agent}`, f.project && (f.project === NO_PROJECT ? 'sin proyecto' : `proyecto ${f.project}`), f.status && `estado ${STATUS_ES[f.status] ?? f.status}`].filter(Boolean).join(', ');
+}
+
+function fillBoardTools() {
+  const keep = { agent: boardFilter.agent, project: boardFilter.project, status: boardFilter.status };
+  $('#f-agent').replaceChildren(el('option', { value: '', textContent: 'Todos los agentes' }), ...state.agents.map((a) => el('option', { value: a.name, textContent: a.name })));
+  $('#f-project').replaceChildren(el('option', { value: '', textContent: 'Todos los proyectos' }), el('option', { value: NO_PROJECT, textContent: '(sin proyecto)' }), ...state.projects.map((p) => el('option', { value: p.name, textContent: p.name })));
+  $('#f-status').replaceChildren(el('option', { value: '', textContent: 'Todos los estados' }), ...COLUMNS.map(([s, l]) => el('option', { value: s, textContent: l })));
+  for (const k of Object.keys(keep)) $('#f-' + k).value = keep[k];
+}
+
+function setupBoardTools() {
+  fillBoardTools();
+  const apply = () => { boardFilter.q = $('#f-q').value; for (const k of ['agent', 'project', 'status']) boardFilter[k] = $('#f-' + k).value; renderBoard(); };
+  $('#f-q').addEventListener('input', apply);
+  for (const k of ['agent', 'project', 'status']) $('#f-' + k).addEventListener('change', apply);
+  $('#f-clear').onclick = () => { $('#board-tools').reset(); apply(); };
+  $('#f-export').onclick = guard(async () => {
+    const list = filteredTasks().sort((a, b) => b.id - a.id);
+    if (!list.length) { toast('No hay misiones para exportar con este filtro'); return; }
+    const note = isFiltering(boardFilter) ? `Filtro: ${describeFilter(boardFilter)}` : '';
+    download(`misiones-${new Date().toISOString().slice(0, 10)}.md`, tasksToMarkdown(list, { title: 'Misiones — Oficina Virtual', note }));
+  });
+}
+
 function renderBoard() {
   const board = $('#board');
   board.replaceChildren();
+  const visible = filteredTasks();
+  $('#f-count').textContent = isFiltering(boardFilter) ? `${visible.length} de ${state.tasks.size}` : '';
   for (const [status, label] of COLUMNS) {
-    const tasks = [...state.tasks.values()].filter((t) => t.status === status && !t.parent_id).sort((a, b) => b.id - a.id);
+    const tasks = visible.filter((t) => t.status === status && !t.parent_id).sort((a, b) => b.id - a.id);
     // los pasos de un plan se muestran dentro de su objetivo y también sueltos, para seguimiento global
-    const steps = [...state.tasks.values()].filter((t) => t.status === status && t.parent_id).sort((a, b) => a.id - b.id);
+    const steps = visible.filter((t) => t.status === status && t.parent_id).sort((a, b) => a.id - b.id);
     const cards = el('div', { className: 'cards' });
     const total = tasks.length + steps.length;
     const col = el('section', { className: 'col' }, el('h2', {}, el('span', { textContent: label }), el('span', { textContent: total })), cards);
@@ -194,6 +248,12 @@ function drawer(t) {
     ok.onclick = guard(() => api(`/api/tasks/${t.id}`, { method: 'PATCH', body: JSON.stringify({ status: 'done' }) }));
     act.append(ok);
   }
+  const exportMd = async () => taskToMarkdown(t, await api(`/api/tasks/${t.id}/events`));
+  const mdBtn = el('button', { textContent: '⭳ .md', title: 'Descargar esta misión en Markdown' });
+  mdBtn.onclick = guard(async () => download(`mision-${t.id}-${slug(t.title)}.md`, await exportMd()));
+  const pdfBtn = el('button', { textContent: '⭳ PDF', title: 'Abrir versión imprimible (Guardar como PDF)' });
+  pdfBtn.onclick = guard(async () => printPdf(await exportMd(), `Misión #${t.id} ${t.title}`));
+  act.append(mdBtn, pdfBtn);
   const del = el('button', { className: 'danger', textContent: 'Eliminar' });
   del.onclick = guard(async () => { if (await confirmDialog('Eliminar misión', isObj && kids.length ? 'Se eliminarán también sus pasos.' : '¿Eliminar esta misión?')) await api(`/api/tasks/${t.id}`, { method: 'DELETE' }); });
   act.append(del);
@@ -383,6 +443,8 @@ function lastSection(t) {
   ];
 }
 
+const agentStats = (name) => summarize(agentMetrics([...state.tasks.values()]).find((r) => r.agent === name), { fmtDur, money });
+
 async function renderAgent() {
   const name = state.agentOpen;
   if (!name) return;
@@ -410,7 +472,7 @@ async function renderAgent() {
 
   // cada sección se reconstruye solo si cambió, para no perder lo que el usuario está escribiendo
   const sigs = {
-    head: JSON.stringify([name, appliedSkin?.id, current?.id, current?.status, current?.updated_at]),
+    head: JSON.stringify([name, appliedSkin?.id, current?.id, current?.status, current?.updated_at, agentStats(name)]),
     last: JSON.stringify(last ? [last.id, last.status, last.updated_at, last.change_state] : null),
     hist: JSON.stringify(mine.slice(0, HISTORY_MAX + 2).map((t) => [t.id, t.status, t.updated_at])),
   };
@@ -419,6 +481,7 @@ async function renderAgent() {
     const info = state.agents.find((a) => a.name === name);
     const dept = DEPARTMENTS.find((d) => d.agents.includes(name));
     $('#a-title').textContent = name;
+    $('#a-stats').textContent = agentStats(name);
     $('#a-meta').textContent = [dept && deptView(dept, appliedSkin).label, info?.description].filter(Boolean).join(' · ');
     const now = $('#a-now');
     if (current) {
@@ -493,6 +556,7 @@ let openTaskDialog, openObjDialog, openRoutineDialog;
 
 function setupForms() {
   fillSelects();
+  setupBoardTools();
   openTaskDialog = wireDialog('#new-dialog', '#new-form', async (f) => {
     const fd = new FormData(f);
     await post('/api/tasks', { ...Object.fromEntries(fd), review: fd.getAll('review') });
@@ -585,6 +649,18 @@ function table(container, headers, rows) {
   container.append(t);
 }
 
+function renderMetrics() {
+  const rows = agentMetrics([...state.tasks.values()]);
+  const box = $('#costs-agents');
+  table(box, ['Agente', 'Misiones', 'Éxito', 'Fallidas', 'Aprobadas', 'Tiempo medio', 'USD total', 'USD / misión'], rows.map((r) => [
+    r.agent, r.tasks, r.rate == null ? '—' : `${Math.round(r.rate * 100)} %`, r.failed, r.approved, fmtDur(r.avgSecs), money(r.cost), money(r.avgCost)]));
+  for (const tr of box.querySelectorAll('tbody tr')) { // resalta los agentes con mala tasa de éxito
+    const r = rows[[...tr.parentNode.children].indexOf(tr)];
+    if (r?.rate != null && r.tasks >= 3) tr.children[2].className = r.rate < 0.5 ? 'bad' : r.rate >= 0.9 ? 'good' : '';
+  }
+  if (rows.length) box.append(el('p', { className: 'hint', textContent: 'Éxito = misiones que llegaron a «por revisar» o «completada» frente a las fallidas. Se calcula con las misiones que siguen en el tablero.' }));
+}
+
 async function refreshCosts() {
   const [costs, audit] = await Promise.all([api('/api/costs'), api('/api/audit')]);
   state.costs = costs;
@@ -592,15 +668,13 @@ async function refreshCosts() {
   fillSettings();
   const budget = costs.daily_budget_usd;
   $('#costs-summary').textContent = `Hoy: ${money(costs.today)}${budget ? ` de ${money(budget)} (${Math.round((costs.today / budget) * 100)}%)` : ' (sin límite)'}`;
-  table($('#costs-agents'), ['Agente', 'Tareas', 'USD'], costs.byAgent.map((a) => [a.agent, a.tasks, money(a.cost_usd)]));
+  renderMetrics();
   table($('#costs-days'), ['Día', 'Tareas', 'USD'], costs.byDay.map((d) => [d.day, d.tasks, money(d.cost_usd)]));
   table($('#audit'), ['Hora', 'Acción', 'Tarea', 'Detalle'], audit.slice(0, 40).map((a) => [a.ts, a.action, a.task_id ?? '', a.detail]));
 }
 
 // ---------- sistema ----------
 const fmtBytes = (n) => (n == null ? '—' : n > 1e9 ? `${(n / 1e9).toFixed(1)} GB` : n > 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1e3))} KB`);
-/** SQLite guarda 'YYYY-MM-DD HH:MM:SS' en UTC sin zona; el runner guarda ISO. Ambos se interpretan bien. */
-const parseTs = (s) => new Date(/Z|[+-]\d\d:?\d\d$/.test(s) ? s : `${s.replace(' ', 'T')}Z`);
 const fmtDur = (s) => { if (s == null) return '—'; s = Math.round(s); const h = Math.floor(s / 3600); const m = Math.floor((s % 3600) / 60); return h ? `${h} h ${m} min` : m ? `${m} min ${s % 60} s` : `${s} s`; };
 const dot = (ok) => el('span', { className: ok ? 'dot-ok' : 'dot-bad' });
 const kv = (rows) => el('dl', { className: 'kv' }, ...rows.flatMap(([k, v]) => [el('dt', { textContent: k }), el('dd', {}, v)]));
@@ -767,7 +841,7 @@ async function refreshState() {
   state.tasks = new Map(s.tasks.map((t) => [t.id, t]));
   if (state.booted) for (const t of s.tasks) handleTransition(before.get(t.id)?.status, t); // por si el WebSocket se perdió un cambio
   state.booted = true;
-  if (provChanged && openTaskDialog) fillSelects(); // un proveedor nuevo aparece en el selector sin recargar
+  if (provChanged && openTaskDialog) { fillSelects(); fillBoardTools(); } // un proveedor nuevo aparece en el selector sin recargar
   render();
 }
 

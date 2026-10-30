@@ -38,6 +38,15 @@
   </section>
 
   <section id="view-board" class="view" hidden>
+    <form id="board-tools" class="board-tools" role="search" aria-label="Buscar y filtrar misiones" onsubmit="return false">
+      <input id="f-q" type="search" placeholder="Buscar en títulos, resultados, errores… (o #12)" aria-label="Buscar misiones">
+      <select id="f-agent" aria-label="Filtrar por agente"></select>
+      <select id="f-project" aria-label="Filtrar por proyecto"></select>
+      <select id="f-status" aria-label="Filtrar por estado"></select>
+      <button type="button" id="f-clear">Limpiar</button>
+      <span id="f-count" class="muted" aria-live="polite"></span>
+      <button type="button" id="f-export" title="Descargar las misiones filtradas en Markdown">⭳ Exportar .md</button>
+    </form>
     <main id="board" aria-label="Tablero de misiones"></main>
   </section>
 
@@ -54,7 +63,7 @@
       <h2>Costos y límites</h2>
       <p class="hint">Con suscripción el costo es referencial (equivalente en API), pero sirve para detectar tareas caras. Los límites se editan en la pestaña Sistema.</p>
       <div id="costs-summary"></div>
-      <h3>Por agente</h3><div id="costs-agents"></div>
+      <h3>Rendimiento por agente</h3><div id="costs-agents"></div>
       <h3>Últimos días</h3><div id="costs-days"></div>
       <h3>Auditoría reciente</h3><div id="audit"></div>
     </div>
@@ -207,6 +216,7 @@
       <button id="a-close" aria-label="Cerrar">✕</button>
     </div>
     <div id="a-meta"></div>
+    <div id="a-stats" class="muted"></div>
     <div id="a-actions"></div>
     <h3>Ahora</h3>
     <div id="a-now"></div>

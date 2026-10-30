@@ -83,6 +83,11 @@ header { flex-wrap: wrap; }
 .dot { display: inline-block; width: 9px; height: 9px; margin: 0 4px 0 12px; }
 .dot.work { background: var(--blue); } .dot.queued { background: var(--muted); } .dot.review { background: var(--violet); } .dot.fail { background: var(--red); }
 #board { padding: 0; }
+.board-tools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 12px 20px 0; }
+.board-tools input[type=search] { flex: 1 1 240px; min-width: 160px; }
+.board-tools .muted { font-size: 12px; }
+#a-stats { font-size: 12px; margin: 2px 0 6px; }
+td.good { color: var(--green, #5fd38d); } td.bad { color: var(--red); }
 
 .panel { max-width: 980px; margin: 0 auto; background: var(--panel); border: 2px solid var(--line); padding: 16px; }
 .panel h2 { margin: 0 0 8px; color: var(--gold); }

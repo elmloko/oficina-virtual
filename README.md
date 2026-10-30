@@ -61,3 +61,9 @@ Al crear una misión puedes marcar **revisores** (`reviewer`, `security`, `teste
 - Su veredicto llega a la bandeja de atención y se enlaza desde el panel de la misión original («Revisiones automáticas»).
 - Se lanzan **una sola vez** (responder o reintentar después no las repite) y solo si la misión original terminó bien. Un revisor que no pueda lanzarse (p. ej. presupuesto diario agotado) deja un aviso en el registro pero nunca marca fallida a la misión original.
 - Máximo 4 revisores, sin repetir y sin el propio autor. Cada revisión cuenta para el presupuesto diario.
+
+## Buscar, exportar y métricas
+
+- **Tablero**: barra de búsqueda (título, descripción, resultado, error, agente, proyecto; sin distinguir acentos; `#12` busca por número) y filtros por agente, proyecto y estado. Muestra «N de M». «⭳ Exportar .md» descarga las misiones filtradas en un solo documento.
+- **Una misión**: en su panel, «⭳ .md» (Markdown con metadatos, conversación y resultado) y «⭳ PDF» (abre una versión imprimible; elige «Guardar como PDF»). El contenido se escapa: nunca se interpreta como HTML.
+- **Métricas por agente**: pestaña Costos (misiones, tasa de éxito, fallidas, aprobadas, tiempo medio, costo total y por misión) y una línea resumen en el panel de cada agente. Se calculan con las misiones que siguen en el tablero; las eliminadas dejan de contar.
