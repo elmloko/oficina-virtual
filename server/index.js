@@ -14,6 +14,7 @@ import { createLogger } from './logger.js';
 import { setEnvVar, KEY_RE } from './envfile.js';
 import { createProbe, collectSystem } from './system.js';
 import { join } from 'node:path';
+import { telegramFromEnv } from './telegram.js';
 import { checkUpload, saveFile, readStored, removeFile, removeTaskDir, isImage, extOf, MAX_FILE_BYTES, MAX_FILES_PER_TASK, MAX_TOTAL_BYTES } from './attachments.js';
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png' };
@@ -381,6 +382,12 @@ if (import.meta.url === `file:///${process.argv[1].replace(/\\/g, '/')}`) {
   const { server, scheduler, logger } = createApp({ logger: createLogger({ echo: true }) });
   server.listen(config.port, config.host, () => {
     scheduler.start();
+    // Bot de Telegram opcional: habla con esta misma API por localhost, así reutiliza todas sus validaciones.
+    const local = async (method, path, body) => {
+      const res = await fetch(`http://127.0.0.1:${config.port}${path}`, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+      return { status: res.status, body: await res.json().catch(() => ({})) };
+    };
+    telegramFromEnv({ api: local, logger })?.start();
     logger.info(`Servidor iniciado en http://${config.host}:${config.port}`);
     console.log(`Oficina virtual en http://${config.host}:${config.port}`);
   });

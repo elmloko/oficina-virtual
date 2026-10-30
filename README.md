@@ -74,3 +74,15 @@ Al crear una misión puedes marcar **revisores** (`reviewer`, `security`, `teste
 - Permitidos: imágenes (png, jpg, gif, webp), PDF y texto/código (txt, md, csv, json, log, xml, yml, sql, php, js, ts, css, html). Se comprueba que el contenido coincida con la extensión; SVG y ejecutables se rechazan. Máx. 8 MB por archivo, 10 por misión y 25 MB en total.
 - **Claude** recibe la ruta de cada archivo (y `--add-dir` de su carpeta) y los lee con sus herramientas, imágenes y PDF incluidos. **Ollama y proveedores** solo reciben el texto de los archivos de texto (recortado); imágenes y PDF se avisan como no legibles.
 - Se guardan en `data/attachments/<misión>/` (`ATTACHMENTS_DIR` para cambiarlo) con nombre generado por el servidor; al eliminar la misión se borran. Se descargan con `nosniff` y CSP `sandbox`, y solo las imágenes se muestran en línea.
+
+## Mandar misiones desde el celular (Telegram)
+
+Un bot de Telegram que hace *long polling*: el PC solo abre conexiones de salida, **no se expone la oficina a internet** (no hay puertos abiertos, túnel ni login que mantener).
+
+1. Crea el bot con @BotFather y pon `TELEGRAM_BOT_TOKEN` en `.env`.
+2. Arranca el servidor y escríbele al bot. Te ignorará, pero el log del servidor mostrará tu id de chat; ponlo en `TELEGRAM_ALLOWED_CHATS` (varios, separados por coma) y reinicia. **Sin esa lista el bot queda apagado.**
+3. Comandos: `/estado`, `/pendientes`, `/nueva agente [@proyecto]: título`, `/ver 12`, `/responder 12 texto`, `/aprobar 12`, `/cancelar 12`.
+
+Seguridad: solo responde a chats privados de la lista (los demás se ignoran sin contestar); desde Telegram solo se crean misiones de **solo lectura** (máx. 5 cada 10 min), no se pueden editar archivos, aplicar/descartar cambios ni borrar, y responder a una misión que edita exige hacerlo en la oficina. Los mensajes que escribiste con el PC apagado se descartan al arrancar. Los avisos (terminó, falló, te pregunta) solo llevan el título; el resultado sale de tu PC únicamente cuando lo pides con `/ver` (o la pregunta del agente, para poder contestarla). Todo viaja por los servidores de Telegram, así que no lo uses con misiones cuyo contenido sea confidencial.
+
+No implementado a propósito: abrir la propia oficina desde fuera de casa. Exigiría login, HTTPS y un túnel (Cloudflare Tunnel/Tailscale), y hoy la oficina confía en que solo se accede desde `localhost`. Si lo necesitas, lo recomendable es Tailscale (acceso privado entre tus dispositivos) más un login.
