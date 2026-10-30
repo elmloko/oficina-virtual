@@ -30,7 +30,7 @@ const rd = (f) => readFileSync(f, 'utf8').split(String.fromCharCode(13, 10)).joi
 const G = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd, encoding: 'utf8' }).trim();
 const repoDir = join(htdocs, 'proj');
 const plainDir = join(htdocs, 'plano');
-const waitFor = async (fn, ms = 4000) => {
+const waitFor = async (fn, ms = 20000) => { // git en Windows es lento si corre junto a otros tests
   const end = Date.now() + ms;
   while (Date.now() < end) { const v = await fn(); if (v) return v; await new Promise((r) => setTimeout(r, 15)); }
   throw new Error('timeout esperando condición');
