@@ -462,3 +462,72 @@ test('API: una respuesta rechazada por presupuesto no deja mensajes huérfanos',
     assert.equal(app.db.getTask(t.id).status, 'review');
   } finally { app.db.setSettings({ daily_budget_usd: prev }); }
 });
+
+// `claude` falso controlable: responde tras `ms` salvo que lo maten antes (kill cancela el temporizador).
+function slowClaude(ms, answer) {
+  const calls = [];
+  const spawnFn = () => {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.stdin = new PassThrough();
+    const call = { input: '' }; calls.push(call);
+    let timer;
+    child.stdin.on('data', (d) => { call.input += d; });
+    child.kill = () => { clearTimeout(timer); child.stdout.end(); child.emit('close', 143); };
+    child.stdin.on('end', () => {
+      timer = setTimeout(() => {
+        child.stdout.write(JSON.stringify({ type: 'result', is_error: false, result: answer(call.input), total_cost_usd: 0.5 }) + '\n');
+        child.stdout.end(); child.emit('close', 0);
+      }, ms);
+    });
+    return child;
+  };
+  return { spawnFn, calls };
+}
+
+test('cancelar una respuesta la deshace: la misión vuelve a su estado anterior y el mensaje queda para editarlo', async () => {
+  const db = openDb(':memory:');
+  const { spawnFn, calls } = slowClaude(150, (i) => (i.includes('Usuario:') ? 'continuado' : '¿Cuál tarifa?'));
+  const runner = createRunner(db, () => {}, { spawnFn, registry });
+  const t = db.createTask({ title: 'Tarifas', agent: 'analyst', engine: 'claude' });
+  runner.enqueue(t.id);
+  await waitFor(() => db.getTask(t.id).status === 'review');
+  assert.equal(db.getTask(t.id).result, '¿Cuál tarifa?');
+
+  runner.reply(t.id, 'la internacioal'); // con el error de tipeo
+  await waitFor(() => db.getTask(t.id).status === 'running');
+  assert.equal(db.getTask(t.id).reply_text, 'la internacioal');
+  runner.cancel(t.id);
+
+  const back = db.getTask(t.id);
+  assert.equal(back.status, 'review'); // no queda en backlog: vuelve a como estaba antes de responder
+  assert.equal(back.result, '¿Cuál tarifa?');
+  assert.equal(back.reply_text, 'la internacioal'); // para editarlo
+  assert.ok(!db.events(t.id).some((e) => e.kind === 'user' || e.kind === 'answer'));
+  assert.ok(db.events(t.id).some((e) => e.kind === 'info' && /editarla y reenviarla/.test(e.text)));
+  await new Promise((r) => setTimeout(r, 250)); // el proceso muerto no debe pisar el estado
+  assert.equal(db.getTask(t.id).status, 'review');
+
+  runner.reply(t.id, 'la internacional'); // reenvío corregido
+  await waitFor(() => db.getTask(t.id).status === 'review' && db.getTask(t.id).result === 'continuado');
+  const prompt = calls.at(-1).input;
+  assert.match(prompt, /Usuario: la internacional/);
+  assert.doesNotMatch(prompt, /internacioal/); // el mensaje equivocado no llega al agente
+  assert.match(prompt, /Tú \(analyst\): ¿Cuál tarifa\?/);
+  assert.equal(db.getTask(t.id).reply_text, null); // al completar ya no hay mensaje pendiente
+  assert.equal(db.getTask(t.id).cost_usd, 1); // 0.5 de la primera ejecución + 0.5 de la respuesta (no se pisa)
+  db.raw.close();
+});
+
+test('cancelar una ejecución normal (no una respuesta) sigue mandando la misión al hangar', async () => {
+  const db = openDb(':memory:');
+  const { spawnFn } = slowClaude(150, () => 'x');
+  const runner = createRunner(db, () => {}, { spawnFn, registry });
+  const t = db.createTask({ title: 'Normal', agent: 'analyst', engine: 'claude' });
+  runner.enqueue(t.id);
+  await waitFor(() => db.getTask(t.id).status === 'running');
+  runner.cancel(t.id);
+  assert.equal(db.getTask(t.id).status, 'backlog');
+  assert.equal(db.getTask(t.id).reply_text, null);
+  await new Promise((r) => setTimeout(r, 250)); // deja terminar el proceso cancelado antes de cerrar la base
+  db.raw.close();
+});

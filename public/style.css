@@ -128,6 +128,8 @@ label.chk input { padding: 0; }
 .h-last { border-width: 2px; }
 .reply { display: grid; gap: 6px; }
 .reply textarea { width: 100%; resize: vertical; min-height: 64px; box-sizing: border-box; }
+.reply-note { color: var(--gold); font-size: 12px; }
+.reply-sent { font-size: 12px; margin-top: 4px; overflow-wrap: anywhere; border-left: 2px solid var(--gold); padding-left: 6px; }
 .reply-row { display: flex; gap: 8px; }
 .h-err { color: var(--red); font-size: 12px; overflow-wrap: anywhere; }
 .step { text-align: left; font-size: 12px; overflow-wrap: anywhere; }

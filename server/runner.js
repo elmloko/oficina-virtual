@@ -26,6 +26,7 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
   const waiting = []; // { id, engine, model }
   const procs = new Map(); // id -> { kill }
   const timedOut = new Set();
+  const replySnaps = new Map(); // id -> estado previo a una respuesta en vuelo, para poder deshacerla al cancelar
 
   const log = (id, kind, text) => { db.addEvent(id, kind, text); emit(id, { event: { kind, text } }); };
   const patch = (id, p) => { const t = db.updateTask(id, p); emit(id); return t; };
@@ -60,8 +61,12 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     if (task.kind !== 'task') throw new Error('Solo se puede responder a misiones de un agente');
     if (!['review', 'done', 'failed'].includes(task.status)) throw new Error(task.status === 'backlog' ? 'La misión aún no se ha ejecutado' : 'La misión sigue en curso: espera a que termine');
     enqueue(id, (t) => {
-      if (t.result) db.addEvent(id, 'answer', t.result);
-      log(id, 'user', text);
+      const eventIds = [];
+      if (t.result) eventIds.push(db.addEvent(id, 'answer', t.result).id);
+      eventIds.push(db.addEvent(id, 'user', text).id);
+      emit(id, { event: { kind: 'user', text } });
+      replySnaps.set(id, { eventIds, status: t.status, result: t.result, error: t.error, cost_usd: t.cost_usd, started_at: t.started_at, finished_at: t.finished_at });
+      db.updateTask(id, { reply_text: text }); // enqueue lo emite al encolar
       db.audit('task.reply', id, text.slice(0, 200));
     });
   }
@@ -110,13 +115,16 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
       const out = engine === 'claude' ? await runClaude(task) : engine === 'ollama' ? await runOllama(task, model) : await runProvider(task, engine);
       if (db.getTask(id).status !== 'running') return; // cancelada
       if (task.kind === 'objective') createPlan(task, out.result);
-      patch(id, { status: 'review', result: out.result, cost_usd: out.cost ?? 0, finished_at: new Date().toISOString() });
+      const base = replySnaps.get(id)?.cost_usd ?? 0; // una respuesta suma al costo de lo ya gastado en la misión
+      replySnaps.delete(id);
+      patch(id, { status: 'review', result: out.result, cost_usd: base + (out.cost ?? 0), reply_text: null, finished_at: new Date().toISOString() });
       logger.info(`#${id} terminó (${engine}${out.cost ? ` · $${out.cost.toFixed(3)}` : ''})`);
     } catch (err) {
       if (db.getTask(id).status !== 'running') return;
       const msg = timedOut.has(id) ? `Tiempo agotado (${db.settings().task_timeout_min} min)` : err.message;
       log(id, 'error', msg);
-      patch(id, { status: 'failed', error: msg, finished_at: new Date().toISOString() });
+      replySnaps.delete(id);
+      patch(id, { status: 'failed', error: msg, reply_text: null, finished_at: new Date().toISOString() });
       logger.error(`#${id} falló: ${msg.slice(0, 200)}`);
     } finally { clearTimeout(timer); }
   }
@@ -237,8 +245,16 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     const wi = waiting.findIndex((w) => w.id === id);
     if (wi >= 0) waiting.splice(wi, 1);
     if (['queued', 'running'].includes(task.status)) {
-      patch(id, { status: 'backlog', finished_at: null }); // antes de matar, para que start() vea que fue cancelada
-      log(id, 'info', 'Cancelada por el usuario');
+      const snap = replySnaps.get(id);
+      if (snap) { // cancelar una respuesta la deshace: la misión vuelve a su estado anterior y el mensaje queda para editarlo
+        replySnaps.delete(id);
+        for (const eid of snap.eventIds) db.deleteEvent(eid);
+        patch(id, { status: snap.status, result: snap.result, error: snap.error, started_at: snap.started_at, finished_at: snap.finished_at });
+        log(id, 'info', `Respuesta cancelada; puedes editarla y reenviarla: «${(task.reply_text ?? '').slice(0, 300)}»`);
+      } else {
+        patch(id, { status: 'backlog', finished_at: null }); // antes de matar, para que start() vea que fue cancelada
+        log(id, 'info', 'Cancelada por el usuario');
+      }
       db.audit('task.cancel', id);
       logger.warn(`#${id} cancelada`);
     }

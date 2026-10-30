@@ -16,7 +16,7 @@ export const DEFAULT_SETTINGS = {
 const LIMIT_KEYS = new Set(['max_claude', 'max_ollama', 'max_api']);
 
 const TASK_COLUMNS = ['title', 'description', 'project', 'agent', 'engine', 'mode', 'status', 'result', 'error',
-  'cost_usd', 'started_at', 'finished_at', 'parent_id', 'depends_on', 'kind', 'schedule_id', 'model'];
+  'cost_usd', 'started_at', 'finished_at', 'parent_id', 'depends_on', 'kind', 'schedule_id', 'model', 'reply_text'];
 
 function addColumnIfMissing(db, table, column, ddl) {
   const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
@@ -80,6 +80,7 @@ export function openDb(file = config.dbFile) {
   addColumnIfMissing(db, 'tasks', 'kind', "TEXT NOT NULL DEFAULT 'task'");
   addColumnIfMissing(db, 'tasks', 'schedule_id', 'INTEGER');
   addColumnIfMissing(db, 'tasks', 'model', 'TEXT');
+  addColumnIfMissing(db, 'tasks', 'reply_text', 'TEXT'); // respuesta del usuario en vuelo (o cancelada, lista para editar)
 
   // Una tarea que quedó "running"/"queued" en un reinicio ya no tiene proceso: se marca fallida.
   db.exec(`UPDATE tasks SET status='failed', error='Interrumpida por reinicio del servidor',
@@ -92,6 +93,7 @@ export function openDb(file = config.dbFile) {
     del: db.prepare('DELETE FROM tasks WHERE id = ?'),
     addEvent: db.prepare('INSERT INTO events (task_id, kind, text) VALUES (?, ?, ?) RETURNING *'),
     events: db.prepare('SELECT * FROM events WHERE task_id = ? ORDER BY id'),
+    delEvent: db.prepare('DELETE FROM events WHERE id = ?'),
     costToday: db.prepare(`SELECT COALESCE(SUM(cost_usd), 0) AS c FROM tasks WHERE date(finished_at, 'localtime') = date('now', 'localtime')`),
     costByAgent: db.prepare(`SELECT agent, COUNT(*) AS tasks, ROUND(SUM(cost_usd), 4) AS cost_usd FROM tasks
                              WHERE finished_at IS NOT NULL GROUP BY agent ORDER BY cost_usd DESC, tasks DESC`),
@@ -128,6 +130,7 @@ export function openDb(file = config.dbFile) {
     children: (id) => q.children.all(id).map(parseTask),
     deleteTask: (id) => q.del.run(id).changes > 0,
     events: (id) => q.events.all(id),
+    deleteEvent: (id) => q.delEvent.run(id).changes > 0,
     addEvent: (id, kind, text) => q.addEvent.get(id, kind, String(text).slice(0, 20000)),
     /** Actualiza solo columnas conocidas; evita SQL dinámico con claves externas. */
     updateTask(id, patch) {

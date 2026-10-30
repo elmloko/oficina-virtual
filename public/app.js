@@ -265,7 +265,8 @@ const FINISHED = new Set(['review', 'done', 'failed']);
 /** Campo para responder al agente: la misión continúa con la conversación como contexto. El borrador sobrevive a los refrescos. */
 function replyForm(t) {
   const form = el('form', { className: 'reply' });
-  const ta = el('textarea', { rows: 3, maxLength: 4000, placeholder: 'Responde al agente o dale otra indicación… (Ctrl+Enter para enviar)', value: agentUi.drafts.get(t.id) ?? '' });
+  const recovered = !agentUi.drafts.has(t.id) && !!t.reply_text; // mensaje cancelado: vuelve al campo para corregirlo
+  const ta = el('textarea', { rows: 3, maxLength: 4000, placeholder: 'Responde al agente o dale otra indicación… (Ctrl+Enter para enviar)', value: agentUi.drafts.get(t.id) ?? t.reply_text ?? '' });
   ta.setAttribute('aria-label', `Responder a #${t.id}`);
   ta.oninput = () => agentUi.drafts.set(t.id, ta.value);
   ta.onkeydown = (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); form.requestSubmit(); } };
@@ -281,6 +282,7 @@ function replyForm(t) {
       if (r) { agentUi.drafts.delete(t.id); ta.value = ''; toast('Respuesta enviada: el agente sigue trabajando', false); }
     } catch (x) { err.textContent = x.message; } finally { send.disabled = false; }
   };
+  if (recovered) form.prepend(el('div', { className: 'reply-note', textContent: 'Cancelaste este mensaje: edítalo y reenvíalo.' }));
   form.append(ta, el('div', { className: 'reply-row' }, send), err);
   return form;
 }
@@ -304,9 +306,12 @@ async function renderAgent() {
   const name = state.agentOpen;
   if (!name) return;
   $('#agent-panel').hidden = false;
-  const mine = agentTasks(name);
-  const current = mine.find((t) => t.status === 'running') ?? mine.find((t) => t.status === 'queued');
-  const last = mine.find((t) => t !== current && FINISHED.has(t.status));
+  const view = () => {
+    const mine = agentTasks(name);
+    const current = mine.find((t) => t.status === 'running') ?? mine.find((t) => t.status === 'queued');
+    return { mine, current, last: mine.find((t) => t !== current && FINISHED.has(t.status)) };
+  };
+  let { mine, current, last } = view();
 
   // registro en vivo de la misión actual
   if ((current?.id ?? null) !== state.agentLive) {
@@ -318,6 +323,8 @@ async function renderAgent() {
       const events = await api(`/api/tasks/${id}/events`).catch(() => []);
       if (state.agentLive === id && state.agentOpen === name) for (const ev of events) appendLine(box, ev);
     }
+    if (state.agentOpen !== name) return;
+    ({ mine, current, last } = view()); // mientras esperábamos pudo llegar otro cambio: no pintar con datos viejos
   }
 
   // cada sección se reconstruye solo si cambió, para no perder lo que el usuario está escribiendo
@@ -335,16 +342,20 @@ async function renderAgent() {
     const now = $('#a-now');
     if (current) {
       const since = current.started_at ? ` · desde las ${parseTs(current.started_at).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' })}` : '';
-      const x = el('button', { type: 'button', className: 'danger x-cancel', textContent: '✕', title: 'Cancelar esta misión', ariaLabel: `Cancelar misión #${current.id}` });
+      const replying = !!current.reply_text; // la ejecución actual viene de un mensaje del usuario
+      const x = el('button', { type: 'button', className: 'danger x-cancel', textContent: '✕', title: replying ? 'Detener y editar mi mensaje' : 'Cancelar esta misión', ariaLabel: `Cancelar misión #${current.id}` });
       x.onclick = guard(async () => {
-        if (!(await confirmDialog('Cancelar misión', `Se detendrá «${current.title}» y volverá al Hangar. El trabajo en curso se pierde.`))) return;
+        if (!(await confirmDialog(replying ? 'Detener respuesta' : 'Cancelar misión', replying
+          ? 'Se detendrá al agente y volverás a tu mensaje para editarlo y reenviarlo. El trabajo en curso se pierde.'
+          : `Se detendrá «${current.title}» y volverá al Hangar. El trabajo en curso se pierde.`))) return;
         await post(`/api/tasks/${current.id}/cancel`);
-        toast('Misión cancelada', false);
+        toast(replying ? 'Respuesta detenida: edita tu mensaje y reenvíalo' : 'Misión cancelada', false);
       });
       now.replaceChildren(el('div', { className: 'now-row' },
         el('div', {},
           el('div', { textContent: `${current.status === 'running' ? '▶ En misión' : '⏳ En cola'}: #${current.id} ${current.title}` }),
-          el('div', { className: 'muted', textContent: `${current.engine}${current.model ? ':' + current.model : ''}/${current.mode}${current.project ? ' · 📁 ' + current.project : ''}${since}` })),
+          el('div', { className: 'muted', textContent: `${current.engine}${current.model ? ':' + current.model : ''}/${current.mode}${current.project ? ' · 📁 ' + current.project : ''}${since}` }),
+          ...(replying ? [el('div', { className: 'reply-sent', textContent: `Tu mensaje: «${current.reply_text.length > 200 ? current.reply_text.slice(0, 200) + '…' : current.reply_text}»` })] : [])),
         x));
     } else {
       now.replaceChildren(el('div', { textContent: mine.length ? 'Libre' : 'Libre · aún no tiene misiones' }));
