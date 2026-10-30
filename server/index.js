@@ -204,7 +204,7 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
         return send(res, 200, updated);
       }
     }
-    if ((r = m(/^\/api\/tasks\/(\d+)\/(run|cancel|events|launch)$/))) {
+    if ((r = m(/^\/api\/tasks\/(\d+)\/(run|cancel|events|launch|reply)$/))) {
       const id = Number(r[1]);
       const task = db.getTask(id);
       if (!task) return send(res, 404, { error: 'No existe' });
@@ -213,6 +213,15 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
         const body = await readJson(req);
         if (needsConfirm(task) && body.confirm !== true) return send(res, 409, { error: 'Esta tarea puede editar archivos: requiere confirmación', needsConfirm: true });
         try { runner.enqueue(id); } catch (e) { return send(res, 409, { error: e.message }); }
+        return send(res, 202, db.getTask(id));
+      }
+      if (r[2] === 'reply' && method === 'POST') {
+        const body = await readJson(req);
+        const text = typeof body.text === 'string' ? body.text.trim() : '';
+        if (!text) return send(res, 400, { error: 'Escribe una respuesta' });
+        if (text.length > 4000) return send(res, 400, { error: 'La respuesta es demasiado larga (máx. 4000 caracteres)' });
+        if (needsConfirm(task) && body.confirm !== true) return send(res, 409, { error: 'Esta misión puede editar archivos: requiere confirmación', needsConfirm: true });
+        try { runner.reply(id, text); } catch (e) { return send(res, 409, { error: e.message }); }
         return send(res, 202, db.getTask(id));
       }
       if (r[2] === 'cancel' && method === 'POST') { runner.cancel(id); return send(res, 200, db.getTask(id)); }

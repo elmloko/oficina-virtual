@@ -8,6 +8,7 @@ import { noopLogger } from './logger.js';
 
 const DONE_STATES = new Set(['review', 'done']);
 const RESULT_CONTEXT_LIMIT = 6000;
+const CONVERSATION_TURNS = 12; // mensajes (agente + usuario) que se reenvían como contexto
 
 /**
  * Cola con límite de concurrencia por motor, dependencias entre tareas, presupuesto y timeout.
@@ -29,7 +30,8 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
   const log = (id, kind, text) => { db.addEvent(id, kind, text); emit(id, { event: { kind, text } }); };
   const patch = (id, p) => { const t = db.updateTask(id, p); emit(id); return t; };
 
-  function enqueue(id) {
+  /** `prepare` corre tras las comprobaciones y antes de encolar: si algo falla antes, no deja rastro. */
+  function enqueue(id, prepare) {
     const task = db.getTask(id);
     if (!task) throw new Error('Tarea no existe');
     if (['queued', 'running'].includes(task.status)) throw new Error('La tarea ya está en curso');
@@ -38,12 +40,30 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     if (plan.engine === 'claude' && budget > 0 && db.costToday() >= budget) {
       throw new Error(`Presupuesto diario agotado ($${db.costToday().toFixed(2)} de $${budget})`);
     }
+    prepare?.(task);
     patch(id, { status: 'queued', engine: plan.engine, mode: plan.mode, error: null, result: null, finished_at: null });
     if (plan.note) log(id, 'info', plan.note);
     if (plan.engine !== 'claude' && task.project) log(id, 'info', 'Este motor no ve archivos del proyecto: solo recibe el texto de la misión.');
     waiting.push({ id, engine: plan.engine, model: plan.model });
     db.audit('task.run', id, `${task.agent} ${plan.engine}/${plan.mode} ${task.project ?? ''}`);
     pump();
+  }
+
+  /**
+   * El usuario responde a un agente y este continúa la misma misión. Cada ejecución es independiente
+   * (sin sesión persistente), así que la conversación viaja en el prompt: la respuesta anterior del agente
+   * se guarda como evento 'answer' y el mensaje del usuario como 'user'.
+   */
+  function reply(id, text) {
+    const task = db.getTask(id);
+    if (!task) throw new Error('Tarea no existe');
+    if (task.kind !== 'task') throw new Error('Solo se puede responder a misiones de un agente');
+    if (!['review', 'done', 'failed'].includes(task.status)) throw new Error(task.status === 'backlog' ? 'La misión aún no se ha ejecutado' : 'La misión sigue en curso: espera a que termine');
+    enqueue(id, (t) => {
+      if (t.result) db.addEvent(id, 'answer', t.result);
+      log(id, 'user', text);
+      db.audit('task.reply', id, text.slice(0, 200));
+    });
   }
 
   /** null = lista para correr, 'wait' = faltan dependencias, string = motivo de fallo. */
@@ -121,6 +141,11 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     for (const depId of task.depends_on) {
       const dep = db.getTask(depId);
       if (dep?.result) parts.push(`--- Resultado del paso previo #${dep.id} (${dep.title}) ---\n${dep.result.slice(0, RESULT_CONTEXT_LIMIT)}`);
+    }
+    const turns = db.events(task.id).filter((e) => e.kind === 'answer' || e.kind === 'user').slice(-CONVERSATION_TURNS);
+    if (turns.length) {
+      parts.push('--- Conversación hasta ahora (continúa a partir del último mensaje del usuario) ---');
+      for (const e of turns) parts.push(e.kind === 'user' ? `Usuario: ${e.text}` : `Tú (${task.agent}): ${e.text.slice(0, RESULT_CONTEXT_LIMIT)}`);
     }
     return parts.join('\n\n');
   }
@@ -257,5 +282,5 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     };
   }
 
-  return { enqueue, cancel, cancelAll, setPaused, snapshot, kick: pump, stats: () => ({ active: { ...active }, limit: limits(), waiting: waiting.length, paused }) };
+  return { enqueue, reply, cancel, cancelAll, setPaused, snapshot, kick: pump, stats: () => ({ active: { ...active }, limit: limits(), waiting: waiting.length, paused }) };
 }

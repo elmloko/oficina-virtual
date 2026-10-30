@@ -121,6 +121,12 @@ label.chk input { padding: 0; }
 .h-item summary .muted { color: var(--muted); }
 .h-body { padding: 0 8px 8px; display: grid; gap: 6px; }
 .h-result { white-space: pre-wrap; overflow-wrap: anywhere; background: #000; border: 2px solid var(--line); padding: 8px; margin: 0; max-height: 32vh; overflow: auto; font-size: 12px; }
+.h-head { padding: 6px 8px; font-size: 12px; display: grid; gap: 2px; overflow-wrap: anywhere; }
+.h-head .muted { color: var(--muted); }
+.h-last { border-width: 2px; }
+.reply { display: grid; gap: 6px; }
+.reply textarea { width: 100%; resize: vertical; min-height: 64px; box-sizing: border-box; }
+.reply-row { display: flex; gap: 8px; }
 .h-err { color: var(--red); font-size: 12px; overflow-wrap: anywhere; }
 .step { text-align: left; font-size: 12px; overflow-wrap: anywhere; }
 .step.running { border-color: var(--blue); } .step.review { border-color: var(--violet); } .step.done { border-color: var(--green); } .step.failed { border-color: var(--red); }

@@ -55,10 +55,10 @@ function confirmDialog(title, text) {
 }
 
 /** Ejecuta una acción que puede requerir confirmación de edición (409 needsConfirm). */
-async function withConfirm(path, text) {
-  try { return await post(path); } catch (e) {
+async function withConfirm(path, text, body = {}) {
+  try { return await post(path, body); } catch (e) {
     if (e.status === 409 && e.data?.needsConfirm) {
-      if (await confirmDialog('Permitir edición de archivos', text ?? e.message)) return post(path, { confirm: true });
+      if (await confirmDialog('Permitir edición de archivos', text ?? e.message)) return post(path, { ...body, confirm: true });
       return null;
     }
     throw e;
@@ -147,11 +147,7 @@ async function openDrawer(id) {
   drawer(state.tasks.get(id));
 }
 
-function logLine(ev) {
-  const box = $('#d-log');
-  box.append(el('div', { className: ev.kind, textContent: ev.kind === 'tool' ? `⚙ ${ev.text}` : ev.text }));
-  box.scrollTop = box.scrollHeight;
-}
+function logLine(ev) { appendLine($('#d-log'), ev); }
 
 function drawer(t) {
   if (!t) { $('#drawer').hidden = true; state.open = null; return; }
@@ -209,19 +205,20 @@ function drawer(t) {
 // ---------- panel de agente (clic en un avatar) ----------
 const STATUS_ES = { backlog: 'pendiente', queued: 'en cola', running: 'en misión', review: 'por revisar', done: 'completada', failed: 'fallida' };
 const HISTORY_MAX = 15;
-const agentUi = { expanded: new Set(), sig: '' };
+const agentUi = { expanded: new Set(), drafts: new Map(), sig: {} };
 
 const agentTasks = (name) => [...state.tasks.values()].filter((t) => t.agent === name && t.kind !== 'objective').sort((a, b) => b.id - a.id);
 const taskSecs = (t) => (t.started_at && t.finished_at ? (parseTs(t.finished_at) - parseTs(t.started_at)) / 1000 : null);
 
 function appendLine(box, ev) {
-  box.append(el('div', { className: ev.kind, textContent: ev.kind === 'tool' ? `⚙ ${ev.text}` : ev.text }));
+  if (ev.kind === 'answer') return; // copia interna de la respuesta anterior; ya se ve como resultado
+  box.append(el('div', { className: ev.kind, textContent: ev.kind === 'tool' ? `⚙ ${ev.text}` : ev.kind === 'user' ? `Tú: ${ev.text}` : ev.text }));
   box.scrollTop = box.scrollHeight;
 }
 
 function openAgent(name) {
   state.open = null; $('#drawer').hidden = true;
-  state.agentOpen = name; state.agentLive = null; agentUi.sig = ''; agentUi.expanded.clear();
+  state.agentOpen = name; state.agentLive = null; agentUi.sig = {}; agentUi.expanded.clear();
   $('#a-log').replaceChildren();
   renderAgent();
 }
@@ -243,6 +240,7 @@ async function fillHistoryBody(body, t) {
   const full = el('button', { type: 'button', textContent: 'Abrir misión completa' });
   full.onclick = () => openDrawer(t.id);
   parts.push(full);
+  if (FINISHED.has(t.status)) parts.push(replyForm(t));
   body.replaceChildren(...parts);
 }
 
@@ -262,12 +260,53 @@ function historyItem(t) {
   return d;
 }
 
+const FINISHED = new Set(['review', 'done', 'failed']);
+
+/** Campo para responder al agente: la misión continúa con la conversación como contexto. El borrador sobrevive a los refrescos. */
+function replyForm(t) {
+  const form = el('form', { className: 'reply' });
+  const ta = el('textarea', { rows: 3, maxLength: 4000, placeholder: 'Responde al agente o dale otra indicación… (Ctrl+Enter para enviar)', value: agentUi.drafts.get(t.id) ?? '' });
+  ta.setAttribute('aria-label', `Responder a #${t.id}`);
+  ta.oninput = () => agentUi.drafts.set(t.id, ta.value);
+  ta.onkeydown = (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); form.requestSubmit(); } };
+  const send = el('button', { type: 'submit', className: 'primary', textContent: 'Enviar y continuar' });
+  const err = el('div', { className: 'h-err' });
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const text = ta.value.trim();
+    if (!text) return;
+    send.disabled = true; err.textContent = '';
+    try {
+      const r = await withConfirm(`/api/tasks/${t.id}/reply`, 'Esta misión puede editar archivos de tu proyecto. ¿Permitirlo?', { text });
+      if (r) { agentUi.drafts.delete(t.id); ta.value = ''; toast('Respuesta enviada: el agente sigue trabajando', false); }
+    } catch (x) { err.textContent = x.message; } finally { send.disabled = false; }
+  };
+  form.append(ta, el('div', { className: 'reply-row' }, send), err);
+  return form;
+}
+
+function lastSection(t) {
+  const secs = taskSecs(t);
+  return [
+    el('h3', { textContent: 'Última respuesta' }),
+    el('div', { className: `h-item ${t.status} h-last` },
+      el('div', { className: 'h-head' },
+        el('span', { textContent: `#${t.id} ${t.title}` }),
+        el('span', { className: 'muted', textContent: [STATUS_ES[t.status] ?? t.status, t.engine, secs != null && fmtDur(secs), t.cost_usd && money(t.cost_usd)].filter(Boolean).join(' · ') })),
+      el('div', { className: 'h-body' },
+        ...(t.error ? [el('div', { className: 'h-err', textContent: `Error: ${t.error}` })] : []),
+        el('pre', { className: 'h-result', textContent: t.result || 'Sin resultado.' }),
+        replyForm(t))),
+  ];
+}
+
 async function renderAgent() {
   const name = state.agentOpen;
   if (!name) return;
   $('#agent-panel').hidden = false;
   const mine = agentTasks(name);
   const current = mine.find((t) => t.status === 'running') ?? mine.find((t) => t.status === 'queued');
+  const last = mine.find((t) => t !== current && FINISHED.has(t.status));
 
   // registro en vivo de la misión actual
   if ((current?.id ?? null) !== state.agentLive) {
@@ -281,36 +320,44 @@ async function renderAgent() {
     }
   }
 
-  const sig = JSON.stringify([name, appliedSkin?.id, current?.id, current?.status, mine.slice(0, HISTORY_MAX + 1).map((t) => [t.id, t.status, t.updated_at])]);
-  if (sig === agentUi.sig) return;
-  agentUi.sig = sig;
+  // cada sección se reconstruye solo si cambió, para no perder lo que el usuario está escribiendo
+  const sigs = {
+    head: JSON.stringify([name, appliedSkin?.id, current?.id, current?.status, current?.updated_at]),
+    last: JSON.stringify(last ? [last.id, last.status, last.updated_at] : null),
+    hist: JSON.stringify(mine.slice(0, HISTORY_MAX + 2).map((t) => [t.id, t.status, t.updated_at])),
+  };
 
-  const info = state.agents.find((a) => a.name === name);
-  const dept = DEPARTMENTS.find((d) => d.agents.includes(name));
-  $('#a-title').textContent = name;
-  $('#a-meta').textContent = [dept && deptView(dept, appliedSkin).label, info?.description].filter(Boolean).join(' · ');
-
-  const now = $('#a-now');
-  if (current) {
-    const since = current.started_at ? ` · desde las ${parseTs(current.started_at).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' })}` : '';
-    now.replaceChildren(
-      el('div', { textContent: `${current.status === 'running' ? '▶ En misión' : '⏳ En cola'}: #${current.id} ${current.title}` }),
-      el('div', { className: 'muted', textContent: `${current.engine}${current.model ? ':' + current.model : ''}/${current.mode}${current.project ? ' · 📁 ' + current.project : ''}${since}` }),
-    );
-  } else {
-    const waiting = mine.filter((t) => t.status === 'review').length;
-    now.replaceChildren(el('div', { textContent: mine.length ? `Libre${waiting ? ` · ${waiting} misión(es) por revisar` : ''}` : 'Libre · aún no tiene misiones' }));
+  if (sigs.head !== agentUi.sig.head) {
+    const info = state.agents.find((a) => a.name === name);
+    const dept = DEPARTMENTS.find((d) => d.agents.includes(name));
+    $('#a-title').textContent = name;
+    $('#a-meta').textContent = [dept && deptView(dept, appliedSkin).label, info?.description].filter(Boolean).join(' · ');
+    const now = $('#a-now');
+    if (current) {
+      const since = current.started_at ? ` · desde las ${parseTs(current.started_at).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' })}` : '';
+      now.replaceChildren(
+        el('div', { textContent: `${current.status === 'running' ? '▶ En misión' : '⏳ En cola'}: #${current.id} ${current.title}` }),
+        el('div', { className: 'muted', textContent: `${current.engine}${current.model ? ':' + current.model : ''}/${current.mode}${current.project ? ' · 📁 ' + current.project : ''}${since}` }),
+      );
+    } else {
+      now.replaceChildren(el('div', { textContent: mine.length ? 'Libre' : 'Libre · aún no tiene misiones' }));
+    }
+    const newBtn = el('button', { className: 'primary', type: 'button', textContent: 'Nueva misión' });
+    newBtn.onclick = () => openTaskDialog((f) => { f.agent.value = name; });
+    const stop = el('button', { type: 'button', textContent: 'Cancelar misión actual', disabled: !current });
+    stop.onclick = guard(() => post(`/api/tasks/${current.id}/cancel`));
+    $('#a-actions').replaceChildren(newBtn, stop);
+    agentUi.sig.head = sigs.head;
   }
-
-  const act = $('#a-actions');
-  const newBtn = el('button', { className: 'primary', type: 'button', textContent: 'Nueva misión' });
-  newBtn.onclick = () => openTaskDialog((f) => { f.agent.value = name; });
-  const stop = el('button', { type: 'button', textContent: 'Cancelar misión actual', disabled: !current });
-  stop.onclick = guard(() => post(`/api/tasks/${current.id}/cancel`));
-  act.replaceChildren(newBtn, stop);
-
-  const past = mine.filter((t) => t !== current).slice(0, HISTORY_MAX);
-  $('#a-history').replaceChildren(...(past.length ? past.map(historyItem) : [el('div', { className: 'muted', textContent: 'Sin historial todavía.' })]));
+  if (sigs.last !== agentUi.sig.last) {
+    $('#a-last').replaceChildren(...(last ? lastSection(last) : []));
+    agentUi.sig.last = sigs.last;
+  }
+  if (sigs.hist !== agentUi.sig.hist) {
+    const past = mine.filter((t) => t !== current && t !== last).slice(0, HISTORY_MAX);
+    $('#a-history').replaceChildren(...(past.length ? past.map(historyItem) : [el('div', { className: 'muted', textContent: 'Sin más historial.' })]));
+    agentUi.sig.hist = sigs.hist;
+  }
 }
 
 // ---------- formularios ----------

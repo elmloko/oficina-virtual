@@ -401,3 +401,64 @@ test('API: carpetas extra rechazan edición y la plantilla de Excel usa @Descarg
   assert.equal(s.body.agent, 'analyst');
   await call('DELETE', `/api/schedules/${s.body.id}`);
 });
+
+test('API: responder a un agente continúa la misma misión con la conversación como contexto', async () => {
+  const t = (await call('POST', '/api/tasks', { title: 'Revisar tarifas', agent: 'analyst' })).body;
+  assert.equal((await call('POST', `/api/tasks/${t.id}/reply`, { text: 'hola' })).status, 409); // aún no se ejecutó
+  await call('POST', `/api/tasks/${t.id}/run`, {});
+  await waitFor(() => app.db.getTask(t.id).status === 'review');
+
+  assert.equal((await call('POST', `/api/tasks/${t.id}/reply`, { text: '   ' })).status, 400);
+  assert.equal((await call('POST', `/api/tasks/${t.id}/reply`, { text: 'x'.repeat(4001) })).status, 400);
+  const before = apiCalls.length;
+  const r = await call('POST', `/api/tasks/${t.id}/reply`, { text: 'Usa la tarifa nacional' });
+  assert.equal(r.status, 202);
+  await waitFor(() => app.db.getTask(t.id).status === 'review');
+  app.db.updateTask(t.id, { status: 'running' }); // simula una misión en curso
+  const busy = await call('POST', `/api/tasks/${t.id}/reply`, { text: 'otra' });
+  assert.equal(busy.status, 409);
+  assert.match(busy.body.error, /en curso/);
+  app.db.updateTask(t.id, { status: 'review' });
+
+  const prompt = apiCalls.at(-1).input;
+  assert.equal(apiCalls.length, before + 1);
+  assert.match(prompt, /Revisar tarifas/);
+  assert.match(prompt, /Tú \(analyst\): hecho/); // la respuesta anterior del agente
+  assert.match(prompt, /Usuario: Usa la tarifa nacional/);
+  const kinds = app.db.events(t.id).map((e) => e.kind);
+  assert.ok(kinds.includes('user') && kinds.includes('answer'));
+  assert.ok(app.db.auditLog(50).some((a) => a.action === 'task.reply' && a.task_id === t.id));
+  assert.equal(app.db.getTask(t.id).result, 'hecho');
+});
+
+test('API: responder a una misión que edita archivos exige confirmación; los objetivos no admiten respuesta', async () => {
+  const t = (await call('POST', '/api/tasks', { title: 'Editar con charla', agent: 'backend', project: 'proj', mode: 'edit' })).body;
+  await call('POST', `/api/tasks/${t.id}/run`, { confirm: true });
+  await waitFor(() => app.db.getTask(t.id).status === 'review');
+  const sin = await call('POST', `/api/tasks/${t.id}/reply`, { text: 'sigue' });
+  assert.equal(sin.status, 409);
+  assert.equal(sin.body.needsConfirm, true);
+  assert.equal(app.db.events(t.id).filter((e) => e.kind === 'user').length, 0); // sin confirmar no deja rastro
+  assert.equal((await call('POST', `/api/tasks/${t.id}/reply`, { text: 'sigue', confirm: true })).status, 202);
+  await waitFor(() => app.db.getTask(t.id).status === 'review');
+
+  const obj = (await call('POST', '/api/objectives', { title: 'Un objetivo' })).body;
+  app.db.updateTask(obj.id, { status: 'review' });
+  assert.equal((await call('POST', `/api/tasks/${obj.id}/reply`, { text: 'hola' })).status, 409);
+  assert.equal((await call('POST', '/api/tasks/99999/reply', { text: 'hola' })).status, 404);
+});
+
+test('API: una respuesta rechazada por presupuesto no deja mensajes huérfanos', async () => {
+  const t = (await call('POST', '/api/tasks', { title: 'Con presupuesto', agent: 'tester' })).body;
+  await call('POST', `/api/tasks/${t.id}/run`, {});
+  await waitFor(() => app.db.getTask(t.id).status === 'review');
+  const prev = app.db.settings().daily_budget_usd;
+  app.db.setSettings({ daily_budget_usd: 0.0001 });
+  try {
+    const r = await call('POST', `/api/tasks/${t.id}/reply`, { text: 'más' });
+    assert.equal(r.status, 409);
+    assert.match(r.body.error, /Presupuesto/);
+    assert.equal(app.db.events(t.id).filter((e) => e.kind === 'user').length, 0);
+    assert.equal(app.db.getTask(t.id).status, 'review');
+  } finally { app.db.setSettings({ daily_budget_usd: prev }); }
+});
