@@ -346,7 +346,7 @@ export function createOffice(canvas, { onSelect, onSelectAgent } = {}) {
   canvas.addEventListener('click', (ev) => {
     const a = hit(ev);
     if (!a) return;
-    if (a.taskId) onSelect?.(a.taskId); else onSelectAgent?.(a.agent);
+    if (onSelectAgent) onSelectAgent(a.agent); else if (a.taskId) onSelect?.(a.taskId);
   });
 
   return {

@@ -105,6 +105,23 @@ label.chk { display: flex; flex-direction: row; align-items: center; gap: 4px; c
 label.chk input { padding: 0; }
 
 #d-steps { display: grid; gap: 4px; margin-top: 8px; }
+#agent-panel { position: fixed; top: 0; right: 0; width: min(520px, 100vw); height: 100vh; overflow: auto; background: var(--panel); border-left: 2px solid var(--gold); padding: 16px; z-index: 10; }
+#a-title { margin: 0; font-size: 16px; overflow-wrap: anywhere; }
+#a-meta { color: var(--muted); font-size: 12px; margin: 8px 0; overflow-wrap: anywhere; }
+#a-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+#a-now { font-size: 13px; overflow-wrap: anywhere; margin-bottom: 6px; }
+#a-log, .h-log { display: grid; gap: 4px; max-height: 32vh; overflow: auto; border: 2px solid var(--line); padding: 8px; background: #000; }
+#a-log:empty { display: none; }
+#a-log div, .h-log div { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+#a-log .tool, .h-log .tool { color: var(--blue); } #a-log .error, .h-log .error { color: var(--red); } #a-log .info, .h-log .info { color: var(--gold); }
+#a-history { display: grid; gap: 6px; }
+.h-item { border: 2px solid var(--line); background: var(--panel-2); }
+.h-item.running { border-color: var(--blue); } .h-item.review { border-color: var(--violet); } .h-item.done { border-color: var(--green); } .h-item.failed { border-color: var(--red); }
+.h-item summary { cursor: pointer; padding: 6px 8px; font-size: 12px; display: grid; gap: 2px; overflow-wrap: anywhere; }
+.h-item summary .muted { color: var(--muted); }
+.h-body { padding: 0 8px 8px; display: grid; gap: 6px; }
+.h-result { white-space: pre-wrap; overflow-wrap: anywhere; background: #000; border: 2px solid var(--line); padding: 8px; margin: 0; max-height: 32vh; overflow: auto; font-size: 12px; }
+.h-err { color: var(--red); font-size: 12px; overflow-wrap: anywhere; }
 .step { text-align: left; font-size: 12px; overflow-wrap: anywhere; }
 .step.running { border-color: var(--blue); } .step.review { border-color: var(--violet); } .step.done { border-color: var(--green); } .step.failed { border-color: var(--red); }
 

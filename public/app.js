@@ -1,6 +1,7 @@
 // UI sin build. Todo texto de usuario entra por textContent (nunca innerHTML).
 import { createOffice, drawSkinPreview } from './office.js';
-import { SKIN_LIST, AUTO, skinById, resolveSkin } from './skins.js';
+import { SKIN_LIST, AUTO, skinById, resolveSkin, deptView } from './skins.js';
+import { DEPARTMENTS } from './office-layout.js';
 
 const COLUMNS = [
   ['backlog', 'Hangar (pendientes)'],
@@ -22,7 +23,7 @@ const el = (tag, props = {}, ...kids) => {
 
 const state = {
   tasks: new Map(), agents: [], projects: [], providers: [], system: null, logs: [], stats: null, settings: {}, templates: [], schedules: [], costs: null,
-  open: null, view: 'office',
+  open: null, view: 'office', agentOpen: null, agentLive: null,
 };
 
 // ---------- utilidades ----------
@@ -87,6 +88,7 @@ function render() {
   if (state.view === 'routines') renderRoutines();
   if (state.view === 'system' && state.system) renderSystem();
   if (state.open) drawer(state.tasks.get(state.open));
+  if (state.agentOpen) renderAgent();
 }
 
 // ---------- tablero ----------
@@ -138,6 +140,7 @@ function card(t) {
 
 // ---------- panel lateral ----------
 async function openDrawer(id) {
+  closeAgent();
   state.open = id;
   $('#d-log').replaceChildren();
   for (const ev of await api(`/api/tasks/${id}/events`)) logLine(ev);
@@ -201,6 +204,113 @@ function drawer(t) {
       steps.append(row);
     }
   }
+}
+
+// ---------- panel de agente (clic en un avatar) ----------
+const STATUS_ES = { backlog: 'pendiente', queued: 'en cola', running: 'en misión', review: 'por revisar', done: 'completada', failed: 'fallida' };
+const HISTORY_MAX = 15;
+const agentUi = { expanded: new Set(), sig: '' };
+
+const agentTasks = (name) => [...state.tasks.values()].filter((t) => t.agent === name && t.kind !== 'objective').sort((a, b) => b.id - a.id);
+const taskSecs = (t) => (t.started_at && t.finished_at ? (parseTs(t.finished_at) - parseTs(t.started_at)) / 1000 : null);
+
+function appendLine(box, ev) {
+  box.append(el('div', { className: ev.kind, textContent: ev.kind === 'tool' ? `⚙ ${ev.text}` : ev.text }));
+  box.scrollTop = box.scrollHeight;
+}
+
+function openAgent(name) {
+  state.open = null; $('#drawer').hidden = true;
+  state.agentOpen = name; state.agentLive = null; agentUi.sig = ''; agentUi.expanded.clear();
+  $('#a-log').replaceChildren();
+  renderAgent();
+}
+
+function closeAgent() { state.agentOpen = null; state.agentLive = null; $('#agent-panel').hidden = true; }
+
+async function fillHistoryBody(body, t) {
+  body.replaceChildren(el('div', { className: 'muted', textContent: 'Cargando…' }));
+  let events = [];
+  try { events = await api(`/api/tasks/${t.id}/events`); } catch (e) { body.replaceChildren(el('div', { className: 'h-err', textContent: e.message })); return; }
+  const parts = [];
+  if (t.error) parts.push(el('div', { className: 'h-err', textContent: `Error: ${t.error}` }));
+  parts.push(el('h3', { textContent: 'Resultado' }), el('pre', { className: 'h-result', textContent: t.result || 'Sin resultado.' }));
+  if (events.length) {
+    const log = el('div', { className: 'h-log' });
+    for (const ev of events.slice(-40)) appendLine(log, ev);
+    parts.push(el('h3', { textContent: events.length > 40 ? `Registro (últimas 40 de ${events.length} líneas)` : 'Registro' }), log);
+  }
+  const full = el('button', { type: 'button', textContent: 'Abrir misión completa' });
+  full.onclick = () => openDrawer(t.id);
+  parts.push(full);
+  body.replaceChildren(...parts);
+}
+
+function historyItem(t) {
+  const secs = taskSecs(t);
+  const d = el('details', { className: `h-item ${t.status}` });
+  d.append(el('summary', {},
+    el('span', { textContent: `#${t.id} ${t.title}` }),
+    el('span', { className: 'muted', textContent: [STATUS_ES[t.status] ?? t.status, t.engine, secs != null && fmtDur(secs), t.cost_usd && money(t.cost_usd)].filter(Boolean).join(' · ') }),
+  ));
+  const body = el('div', { className: 'h-body' });
+  d.append(body);
+  d.addEventListener('toggle', () => {
+    if (d.open) { agentUi.expanded.add(t.id); fillHistoryBody(body, state.tasks.get(t.id) ?? t); } else agentUi.expanded.delete(t.id);
+  });
+  if (agentUi.expanded.has(t.id)) d.open = true;
+  return d;
+}
+
+async function renderAgent() {
+  const name = state.agentOpen;
+  if (!name) return;
+  $('#agent-panel').hidden = false;
+  const mine = agentTasks(name);
+  const current = mine.find((t) => t.status === 'running') ?? mine.find((t) => t.status === 'queued');
+
+  // registro en vivo de la misión actual
+  if ((current?.id ?? null) !== state.agentLive) {
+    state.agentLive = current?.id ?? null;
+    const box = $('#a-log');
+    box.replaceChildren();
+    if (current) {
+      const id = current.id;
+      const events = await api(`/api/tasks/${id}/events`).catch(() => []);
+      if (state.agentLive === id && state.agentOpen === name) for (const ev of events) appendLine(box, ev);
+    }
+  }
+
+  const sig = JSON.stringify([name, appliedSkin?.id, current?.id, current?.status, mine.slice(0, HISTORY_MAX + 1).map((t) => [t.id, t.status, t.updated_at])]);
+  if (sig === agentUi.sig) return;
+  agentUi.sig = sig;
+
+  const info = state.agents.find((a) => a.name === name);
+  const dept = DEPARTMENTS.find((d) => d.agents.includes(name));
+  $('#a-title').textContent = name;
+  $('#a-meta').textContent = [dept && deptView(dept, appliedSkin).label, info?.description].filter(Boolean).join(' · ');
+
+  const now = $('#a-now');
+  if (current) {
+    const since = current.started_at ? ` · desde las ${parseTs(current.started_at).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' })}` : '';
+    now.replaceChildren(
+      el('div', { textContent: `${current.status === 'running' ? '▶ En misión' : '⏳ En cola'}: #${current.id} ${current.title}` }),
+      el('div', { className: 'muted', textContent: `${current.engine}${current.model ? ':' + current.model : ''}/${current.mode}${current.project ? ' · 📁 ' + current.project : ''}${since}` }),
+    );
+  } else {
+    const waiting = mine.filter((t) => t.status === 'review').length;
+    now.replaceChildren(el('div', { textContent: mine.length ? `Libre${waiting ? ` · ${waiting} misión(es) por revisar` : ''}` : 'Libre · aún no tiene misiones' }));
+  }
+
+  const act = $('#a-actions');
+  const newBtn = el('button', { className: 'primary', type: 'button', textContent: 'Nueva misión' });
+  newBtn.onclick = () => openTaskDialog((f) => { f.agent.value = name; });
+  const stop = el('button', { type: 'button', textContent: 'Cancelar misión actual', disabled: !current });
+  stop.onclick = guard(() => post(`/api/tasks/${current.id}/cancel`));
+  act.replaceChildren(newBtn, stop);
+
+  const past = mine.filter((t) => t !== current).slice(0, HISTORY_MAX);
+  $('#a-history').replaceChildren(...(past.length ? past.map(historyItem) : [el('div', { className: 'muted', textContent: 'Sin historial todavía.' })]));
 }
 
 // ---------- formularios ----------
@@ -281,6 +391,7 @@ function setupForms() {
   $('#new-routine').onclick = () => openRoutineDialog(syncTpl);
   setupSystem();
   $('#d-close').onclick = () => { state.open = null; $('#drawer').hidden = true; };
+  $('#a-close').onclick = closeAgent;
   for (const b of document.querySelectorAll('#tabs button')) b.onclick = () => showView(b.dataset.view);
   $('#settings-form').onsubmit = guard(async (e) => {
     e.preventDefault();
@@ -513,6 +624,7 @@ function connect() {
     if (m.type === 'task') {
       state.tasks.set(m.task.id, m.task);
       if (m.event && state.open === m.task.id) logLine(m.event);
+      if (m.event && state.agentLive === m.task.id) appendLine($('#a-log'), m.event);
       render();
     } else if (m.type === 'log') {
       pushLog(m.entry);
@@ -550,6 +662,7 @@ function applySkin(announce = false) {
     $('#brand').textContent = sk.title;
     document.title = `${sk.title} · Oficina Virtual`;
     office?.setSkin(sk);
+    if (state.agentOpen) renderAgent(); // el nombre de la sala cambia con el skin
   }
   for (const b of document.querySelectorAll('.skin-card')) b.setAttribute('aria-checked', String(b.dataset.skin === skinChoice));
   if (announce) toast(`Skin: ${skinChoice === AUTO.id ? `Auto (${sk.name})` : sk.name}`, false);
@@ -578,8 +691,7 @@ function setupSkins() {
 }
 
 office = createOffice($('#office'), {
-  onSelect: (id) => openDrawer(id),
-  onSelectAgent: (name) => openTaskDialog((f) => { f.agent.value = name; }),
+  onSelectAgent: (name) => openAgent(name),
 });
 setupSkins();
 applySkin();
