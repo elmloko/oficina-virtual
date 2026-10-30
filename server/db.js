@@ -52,6 +52,15 @@ export function openDb(file = config.dbFile) {
       text TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_events_task ON events(task_id, id);
+    CREATE TABLE IF NOT EXISTS attachments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      mime TEXT NOT NULL,
+      size INTEGER NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_att_task ON attachments(task_id, id);
     CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS audit (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -98,6 +107,10 @@ export function openDb(file = config.dbFile) {
     list: db.prepare('SELECT * FROM tasks ORDER BY id DESC'),
     children: db.prepare('SELECT * FROM tasks WHERE parent_id = ? ORDER BY id'),
     del: db.prepare('DELETE FROM tasks WHERE id = ?'),
+    atts: db.prepare('SELECT * FROM attachments WHERE task_id = ? ORDER BY id'),
+    att: db.prepare('SELECT * FROM attachments WHERE id = ?'),
+    addAtt: db.prepare('INSERT INTO attachments (task_id, name, mime, size) VALUES (?, ?, ?, ?) RETURNING *'),
+    delAtt: db.prepare('DELETE FROM attachments WHERE id = ?'),
     addEvent: db.prepare('INSERT INTO events (task_id, kind, text) VALUES (?, ?, ?) RETURNING *'),
     events: db.prepare('SELECT * FROM events WHERE task_id = ? ORDER BY id'),
     delEvent: db.prepare('DELETE FROM events WHERE id = ?'),
@@ -137,6 +150,10 @@ export function openDb(file = config.dbFile) {
     listTasks: () => q.list.all().map(parseTask),
     children: (id) => q.children.all(id).map(parseTask),
     deleteTask: (id) => q.del.run(id).changes > 0,
+    attachments: (taskId) => q.atts.all(taskId),
+    getAttachment: (id) => q.att.get(id),
+    addAttachment: (taskId, name, mime, size) => q.addAtt.get(taskId, name, mime, size),
+    deleteAttachment: (id) => q.delAtt.run(id).changes > 0,
     events: (id) => q.events.all(id),
     deleteEvent: (id) => q.delEvent.run(id).changes > 0,
     addEvent: (id, kind, text) => q.addEvent.get(id, kind, String(text).slice(0, 20000)),

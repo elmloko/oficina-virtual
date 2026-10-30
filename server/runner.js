@@ -7,6 +7,7 @@ import { buildPlanPrompt, parsePlan } from './coordinator.js';
 import { chat, secretEnvNames } from './providers.js';
 import { noopLogger } from './logger.js';
 import * as gitworkDefault from './gitwork.js';
+import { promptSection, dirFor } from './attachments.js';
 
 const DONE_STATES = new Set(['review', 'done']);
 const RESULT_CONTEXT_LIMIT = 6000;
@@ -17,7 +18,7 @@ const REVIEW_PATCH_LIMIT = 20_000; // diff que se entrega a quien revisa una mis
  * Cola con límite de concurrencia por motor, dependencias entre tareas, presupuesto y timeout.
  * emit(taskId, extra) avisa a la UI. spawnFn, fetchFn y registry son inyectables para pruebas.
  */
-export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, registry = { listAgents, listProjects }, providers = {}, logger = noopLogger, gitwork = gitworkDefault } = {}) {
+export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, registry = { listAgents, listProjects }, providers = {}, logger = noopLogger, gitwork = gitworkDefault, attachmentsDir = config.attachmentsDir } = {}) {
   const active = { claude: 0, ollama: 0 };
   let paused = false;
   // Límites editables desde la web (se leen en cada ciclo); los proveedores en internet comparten `max_api`.
@@ -265,7 +266,7 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     db.audit('plan.created', task.id, `${ids.length} pasos`);
   }
 
-  function buildPrompt(task) {
+  async function buildPrompt(task) {
     if (task.kind === 'objective') {
       return buildPlanPrompt([task.title, task.description].filter(Boolean).join('\n'), registry.listAgents(), registry.listProjects());
     }
@@ -280,6 +281,8 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
       for (const e of turns) parts.push(e.kind === 'user' ? `Usuario: ${e.text}` : `Tú (${task.agent}): ${e.text.slice(0, RESULT_CONTEXT_LIMIT)}`);
     }
     if (extraPrompt.get(task.id)) parts.push(extraPrompt.get(task.id));
+    const files = await promptSection(attachmentsDir, db.attachments(task.id), task.engine);
+    if (files) parts.push(files);
     return parts.join('\n\n');
   }
 
@@ -295,6 +298,7 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     const args = ['-p', '--output-format', 'stream-json', '--verbose', '--no-session-persistence',
       '--permission-mode', task.mode === 'edit' ? 'acceptEdits' : 'plan'];
     if (task.kind !== 'objective') args.push('--agent', task.agent);
+    if (task.kind !== 'objective' && db.attachments(task.id).length) args.push('--add-dir', dirFor(attachmentsDir, task.id)); // para que pueda leer los adjuntos
     const { task_budget_usd: cap } = db.settings();
     if (cap > 0) args.push('--max-budget-usd', String(cap));
     return new Promise((resolve, reject) => {
@@ -326,7 +330,7 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
         if (final && !final.is_error) resolve({ result: final.result ?? '', cost: final.total_cost_usd });
         else reject(new Error(final?.result || stderr.trim() || `claude terminó con código ${code}`));
       });
-      child.stdin.end(buildPrompt(task));
+      buildPrompt(task).then((p) => child.stdin.end(p), (e) => { child.kill(); reject(e); });
     });
   }
 
@@ -337,7 +341,7 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     const res = await fetchFn(`${config.ollamaUrl}/api/chat`, {
       method: 'POST',
       signal: ctrl.signal,
-      body: JSON.stringify({ model, stream: true, messages: [{ role: 'system', content: sys }, { role: 'user', content: buildPrompt(task) }] }),
+      body: JSON.stringify({ model, stream: true, messages: [{ role: 'system', content: sys }, { role: 'user', content: await buildPrompt(task) }] }),
     });
     if (!res.ok) throw new Error(`Ollama respondió ${res.status}`);
     let text = '';
@@ -363,7 +367,7 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     const ctrl = new AbortController();
     procs.set(task.id, { kill: () => ctrl.abort() });
     const sys = `Eres el agente "${task.agent}". Responde en español, conciso y directo.`;
-    const out = await chat(provider, { model: task.model, system: sys, prompt: buildPrompt(task), signal: ctrl.signal, fetchFn });
+    const out = await chat(provider, { model: task.model, system: sys, prompt: await buildPrompt(task), signal: ctrl.signal, fetchFn });
     log(task.id, 'text', out.text);
     log(task.id, 'info', `${provider.name}/${out.model}: ${out.usage.input} tokens de entrada, ${out.usage.output} de salida (costo no calculado)`);
     return { result: out.text, cost: 0 };

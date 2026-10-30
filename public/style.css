@@ -87,6 +87,16 @@ header { flex-wrap: wrap; }
 .board-tools input[type=search] { flex: 1 1 240px; min-width: 160px; }
 .board-tools .muted { font-size: 12px; }
 #a-stats { font-size: 12px; margin: 2px 0 6px; }
+.files-field { display: grid; gap: 4px; }
+.files-field .pick { justify-self: start; cursor: pointer; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip-file { display: inline-flex; align-items: center; gap: 6px; border: 2px solid var(--line); padding: 2px 6px; font-size: 12px; max-width: 100%; }
+.chip-file span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 220px; }
+.chip-file button { padding: 0 4px; line-height: 1.2; }
+.atts { display: grid; gap: 6px; margin: 8px 0; }
+.att { display: flex; align-items: center; gap: 8px; border: 2px solid var(--line); padding: 4px 6px; font-size: 12px; }
+.att img { width: 44px; height: 44px; object-fit: cover; image-rendering: auto; border: 1px solid var(--line); }
+.att a { color: var(--gold); overflow-wrap: anywhere; flex: 1; }
 td.good { color: var(--green, #5fd38d); } td.bad { color: var(--red); }
 
 .panel { max-width: 980px; margin: 0 auto; background: var(--panel); border: 2px solid var(--line); padding: 16px; }

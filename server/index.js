@@ -14,13 +14,14 @@ import { createLogger } from './logger.js';
 import { setEnvVar, KEY_RE } from './envfile.js';
 import { createProbe, collectSystem } from './system.js';
 import { join } from 'node:path';
+import { checkUpload, saveFile, readStored, removeFile, removeTaskDir, isImage, extOf, MAX_FILE_BYTES, MAX_FILES_PER_TASK, MAX_TOTAL_BYTES } from './attachments.js';
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png' };
 const MANUAL_STATUSES = new Set(['backlog', 'review', 'done']); // el resto lo mueve el runner
 const MODES = new Set(['read', 'edit']);
 const MAX_REVIEWERS = 4;
 
-export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loadProviders(), logger = createLogger(), envFile = config.envFile, probe = createProbe({ config }) } = {}) {
+export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loadProviders(), logger = createLogger(), envFile = config.envFile, probe = createProbe({ config }), attachmentsDir = config.attachmentsDir } = {}) {
   const startedAt = new Date();
   const engineSet = () => new Set(['auto', 'claude', 'ollama', ...Object.keys(providers)]);
   /** Recarga los proveedores en el mismo objeto (el runner conserva la referencia). */
@@ -28,7 +29,7 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
   const sockets = new Set();
   const broadcast = (msg) => { const s = JSON.stringify(msg); for (const ws of sockets) if (ws.readyState === 1) ws.send(s); };
   const emit = (id, extra = {}) => { const task = db.getTask(id); if (task) broadcast({ type: 'task', task, ...extra }); };
-  const runner = createRunner(db, emit, { ...runnerOpts, providers, logger });
+  const runner = createRunner(db, emit, { attachmentsDir, ...runnerOpts, providers, logger });
   const scheduler = createScheduler({ db, runner, emit, now, logger });
   logger.subscribe((entry) => broadcast({ type: 'log', entry }));
   const publicDir = resolve(config.root, 'public');
@@ -42,6 +43,15 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
     req.on('data', (d) => { s += d; if (s.length > 1e6) { fail(new Error('Cuerpo demasiado grande')); req.destroy(); } });
     req.on('end', () => { try { ok(s ? JSON.parse(s) : {}); } catch { fail(new Error('JSON inválido')); } });
   });
+
+  /** Cuerpo binario con tope de tamaño; corta la conexión en cuanto se pasa. */
+  const readRaw = (req, max) => new Promise((ok, fail) => {
+    const chunks = []; let n = 0;
+    req.on('data', (d) => { n += d.length; if (n > max) { fail(new Error(`El archivo supera ${max / 1024 / 1024} MB`)); req.destroy(); } else chunks.push(d); });
+    req.on('end', () => ok(Buffer.concat(chunks)));
+    req.on('error', fail);
+  });
+  const dropAttachments = (id) => removeTaskDir(attachmentsDir, id).catch(() => {});
 
   // Anti DNS-rebinding / CSRF: solo aceptamos Host local y, si hay Origin, que sea local.
   const localHost = (h) => /^(127\.0\.0\.1|localhost)(:\d+)?$/.test(h ?? '');
@@ -199,9 +209,10 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
       if (!task) return send(res, 404, { error: 'No existe' });
       if (method === 'DELETE') {
         runner.cancel(id);
-        for (const c of db.children(id)) { runner.cancel(c.id); await runner.discardChanges(c.id).catch(() => {}); db.deleteTask(c.id); broadcast({ type: 'deleted', id: c.id }); }
+        for (const c of db.children(id)) { runner.cancel(c.id); await runner.discardChanges(c.id).catch(() => {}); db.deleteTask(c.id); await dropAttachments(c.id); broadcast({ type: 'deleted', id: c.id }); }
         await runner.discardChanges(id).catch(() => {}); // sin cambios pendientes no hace nada
         db.deleteTask(id);
+        await dropAttachments(id);
         db.audit('task.delete', id, task.title);
         broadcast({ type: 'deleted', id });
         return send(res, 200, { ok: true });
@@ -221,6 +232,49 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
         emit(id);
         runner.kick();
         return send(res, 200, updated);
+      }
+    }
+    // --- adjuntos ---
+    if ((r = m(/^\/api\/tasks\/(\d+)\/attachments$/))) {
+      const id = Number(r[1]);
+      const task = db.getTask(id);
+      if (!task) return send(res, 404, { error: 'No existe' });
+      if (method === 'GET') return send(res, 200, db.attachments(id));
+      if (method === 'POST') {
+        if (task.kind === 'objective') return send(res, 400, { error: 'Los objetivos no admiten adjuntos' });
+        const have = db.attachments(id);
+        if (have.length >= MAX_FILES_PER_TASK) return send(res, 409, { error: `Máximo ${MAX_FILES_PER_TASK} adjuntos por misión` });
+        if (Number(req.headers['content-length']) > MAX_FILE_BYTES) { res.setHeader('Connection', 'close'); return send(res, 413, { error: `El archivo supera ${MAX_FILE_BYTES / 1024 / 1024} MB` }); }
+        let buf;
+        try { buf = await readRaw(req, MAX_FILE_BYTES); } catch (e) { return send(res, 413, { error: e.message }); }
+        const chk = checkUpload(url.searchParams.get('name'), buf);
+        if (chk.error) return send(res, 400, { error: chk.error });
+        if (have.reduce((n, a) => n + a.size, 0) + buf.length > MAX_TOTAL_BYTES) return send(res, 409, { error: `Los adjuntos de una misión no pueden pasar de ${MAX_TOTAL_BYTES / 1024 / 1024} MB` });
+        const att = db.addAttachment(id, chk.name, chk.mime, buf.length);
+        try { await saveFile(attachmentsDir, att, buf); } catch (e) { db.deleteAttachment(att.id); return send(res, 500, { error: 'No se pudo guardar el archivo' }); }
+        db.audit('attachment.add', id, `${chk.name} (${buf.length} bytes)`);
+        return send(res, 201, att);
+      }
+    }
+    if ((r = m(/^\/api\/attachments\/(\d+)$/))) {
+      const att = db.getAttachment(Number(r[1]));
+      if (!att) return send(res, 404, { error: 'No existe' });
+      if (method === 'DELETE') {
+        db.deleteAttachment(att.id);
+        await removeFile(attachmentsDir, att).catch(() => {});
+        db.audit('attachment.delete', att.task_id, att.name);
+        return send(res, 200, { ok: true });
+      }
+      if (method === 'GET') {
+        let data;
+        try { data = await readStored(attachmentsDir, att); } catch { return send(res, 404, { error: 'El archivo ya no está en disco' }); }
+        const inline = isImage(extOf(att.name)); // el resto se descarga: nunca se interpreta como página
+        res.writeHead(200, {
+          'Content-Type': inline ? att.mime : 'application/octet-stream',
+          'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(att.name)}`,
+          'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'; sandbox", 'Cache-Control': 'no-store', 'Content-Length': data.length,
+        });
+        return res.end(data);
       }
     }
     if ((r = m(/^\/api\/tasks\/(\d+)\/(run|cancel|events|launch|reply|changes|apply|discard)$/))) {

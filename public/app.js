@@ -207,6 +207,7 @@ async function openDrawer(id) {
   $('#d-log').replaceChildren();
   for (const ev of await api(`/api/tasks/${id}/events`)) logLine(ev);
   drawer(state.tasks.get(id));
+  loadAtts(id);
 }
 
 function logLine(ev) { appendLine($('#d-log'), ev); }
@@ -258,6 +259,7 @@ function drawer(t) {
   del.onclick = guard(async () => { if (await confirmDialog('Eliminar misión', isObj && kids.length ? 'Se eliminarán también sus pasos.' : '¿Eliminar esta misión?')) await api(`/api/tasks/${t.id}`, { method: 'DELETE' }); });
   act.append(del);
 
+  renderAtts(t);
   const chg = $('#d-changes');
   const chgSig = JSON.stringify([t.id, t.status, t.change_state, t.branch]);
   if (chg.dataset.sig !== chgSig) { chg.dataset.sig = chgSig; const b = changesBlock(t); chg.replaceChildren(...(b ? [b] : [])); }
@@ -343,7 +345,93 @@ function changesBlock(t) {
 // ---------- panel de agente (clic en un avatar) ----------
 const STATUS_ES = { backlog: 'pendiente', queued: 'en cola', running: 'en misión', review: 'por revisar', done: 'completada', failed: 'fallida' };
 const HISTORY_MAX = 15;
-const agentUi = { expanded: new Set(), drafts: new Map(), sig: {} };
+const agentUi = { expanded: new Set(), drafts: new Map(), files: new Map(), sig: {} };
+
+// ---------- adjuntos ----------
+const ATT_MAX_BYTES = 8 * 1024 * 1024;
+const ATT_MAX_FILES = 10;
+const ATT_ACCEPT = '.png,.jpg,.jpeg,.gif,.webp,.pdf,.txt,.md,.csv,.json,.log,.xml,.yml,.yaml,.sql,.php,.js,.ts,.css,.html';
+const fmtSize = (n) => (n > 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1e3))} KB`);
+
+/** Sube los archivos a una misión (uno por petición, cuerpo binario). Devuelve los mensajes de error, si hubo. */
+async function uploadFiles(taskId, files) {
+  const errors = [];
+  for (const f of files) {
+    try {
+      const res = await fetch(`/api/tasks/${taskId}/attachments?name=${encodeURIComponent(f.name)}`, { method: 'POST', body: f });
+      if (!res.ok) errors.push(`${f.name}: ${(await res.json().catch(() => ({}))).error ?? res.status}`);
+    } catch { errors.push(`${f.name}: no se pudo subir`); }
+  }
+  return errors;
+}
+
+/**
+ * Selector de archivos (botón + pegar capturas desde el portapapeles). Trabaja sobre el arreglo `store`,
+ * que el llamador conserva para poder subir lo elegido al enviar.
+ */
+function filePicker(store, { pasteTarget, onChange } = {}) {
+  const chips = el('div', { className: 'chips' });
+  const input = el('input', { type: 'file', multiple: true, accept: ATT_ACCEPT, hidden: true });
+  const hint = el('div', { className: 'h-err' });
+  const draw = () => {
+    chips.replaceChildren(...store.map((f, i) => {
+      const x = el('button', { type: 'button', textContent: '✕', title: 'Quitar', ariaLabel: `Quitar ${f.name}` });
+      x.onclick = () => { store.splice(i, 1); draw(); };
+      return el('span', { className: 'chip-file' }, el('span', { textContent: `${f.name} · ${fmtSize(f.size)}`, title: f.name }), x);
+    }));
+    onChange?.();
+  };
+  const add = (list) => {
+    hint.textContent = '';
+    for (const f of list) {
+      if (f.size > ATT_MAX_BYTES) { hint.textContent = `«${f.name}» supera ${ATT_MAX_BYTES / 1024 / 1024} MB`; continue; }
+      if (store.length >= ATT_MAX_FILES) { hint.textContent = `Máximo ${ATT_MAX_FILES} archivos`; break; }
+      store.push(f);
+    }
+    draw();
+  };
+  input.onchange = () => { add([...input.files]); input.value = ''; };
+  const btn = el('button', { type: 'button', className: 'pick', textContent: '📎 Adjuntar', title: 'Archivos, o pega una captura con Ctrl+V' });
+  btn.onclick = () => input.click();
+  pasteTarget?.addEventListener('paste', (e) => {
+    const files = [...(e.clipboardData?.files ?? [])].map((f) => (f.name === 'image.png' ? new File([f], `captura-${Date.now() % 100000}.png`, { type: f.type }) : f));
+    if (files.length) { e.preventDefault(); add(files); }
+  });
+  draw();
+  return { node: el('div', { className: 'files-field' }, btn, input, chips, hint), clear: () => { store.length = 0; hint.textContent = ''; draw(); } };
+}
+
+const attsCache = new Map(); // id de misión -> adjuntos ya subidos
+async function loadAtts(id) {
+  try { attsCache.set(id, await api(`/api/tasks/${id}/attachments`)); } catch { attsCache.set(id, []); }
+  if (state.open === id) renderAtts(state.tasks.get(id));
+}
+
+function renderAtts(t) {
+  const box = $('#d-atts');
+  if (!t || t.kind === 'objective') { box.replaceChildren(); box.dataset.sig = ''; return; }
+  const list = attsCache.get(t.id) ?? [];
+  const sig = JSON.stringify([t.id, list.map((a) => a.id)]);
+  if (box.dataset.sig === sig) return;
+  box.dataset.sig = sig;
+  const rows = list.map((a) => {
+    const del = el('button', { type: 'button', className: 'danger', textContent: '✕', title: 'Quitar adjunto', ariaLabel: `Quitar ${a.name}` });
+    del.onclick = guard(async () => { await api(`/api/attachments/${a.id}`, { method: 'DELETE' }); await loadAtts(t.id); });
+    const img = a.mime.startsWith('image/') ? [el('img', { src: `/api/attachments/${a.id}`, alt: '', loading: 'lazy' })] : [];
+    return el('div', { className: 'att' }, ...img, el('a', { href: `/api/attachments/${a.id}`, target: '_blank', rel: 'noopener', textContent: a.name }), el('span', { className: 'muted', textContent: fmtSize(a.size) }), del);
+  });
+  const input = el('input', { type: 'file', multiple: true, accept: ATT_ACCEPT, hidden: true });
+  const add = el('button', { type: 'button', textContent: '📎 Adjuntar archivo' });
+  add.onclick = () => input.click();
+  input.onchange = guard(async () => {
+    const files = [...input.files].filter((f) => f.size <= ATT_MAX_BYTES);
+    input.value = '';
+    const errs = await uploadFiles(t.id, files);
+    if (errs.length) toast(errs.join(' · '));
+    await loadAtts(t.id);
+  });
+  box.replaceChildren(el('h3', { textContent: `Adjuntos (${list.length})` }), ...(rows.length ? [el('div', { className: 'atts' }, ...rows)] : []), add, input);
+}
 
 const agentTasks = (name) => [...state.tasks.values()].filter((t) => t.agent === name && t.kind !== 'objective').sort((a, b) => b.id - a.id);
 const taskSecs = (t) => (t.started_at && t.finished_at ? (parseTs(t.finished_at) - parseTs(t.started_at)) / 1000 : null);
@@ -410,6 +498,8 @@ function replyForm(t) {
   ta.setAttribute('aria-label', `Responder a #${t.id}`);
   ta.oninput = () => agentUi.drafts.set(t.id, ta.value);
   ta.onkeydown = (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); form.requestSubmit(); } };
+  if (!agentUi.files.has(t.id)) agentUi.files.set(t.id, []);
+  const picker = filePicker(agentUi.files.get(t.id), { pasteTarget: ta });
   const send = el('button', { type: 'submit', className: 'primary', textContent: 'Enviar y continuar' });
   const err = el('div', { className: 'h-err' });
   form.onsubmit = async (e) => {
@@ -418,12 +508,18 @@ function replyForm(t) {
     if (!text) return;
     send.disabled = true; err.textContent = '';
     try {
+      const files = agentUi.files.get(t.id);
+      if (files.length) { // los adjuntos suben antes de enviar: el agente los ve en esta misma respuesta
+        const errs = await uploadFiles(t.id, files);
+        if (errs.length) { err.textContent = `No se envió: ${errs.join(' · ')}`; return; }
+        picker.clear(); attsCache.delete(t.id);
+      }
       const r = await withConfirm(`/api/tasks/${t.id}/reply`, 'Esta misión puede editar archivos de tu proyecto. ¿Permitirlo?', { text });
       if (r) { agentUi.drafts.delete(t.id); ta.value = ''; toast('Respuesta enviada: el agente sigue trabajando', false); }
     } catch (x) { err.textContent = x.message; } finally { send.disabled = false; }
   };
   if (recovered) form.prepend(el('div', { className: 'reply-note', textContent: 'Cancelaste este mensaje: edítalo y reenvíalo.' }));
-  form.append(ta, el('div', { className: 'reply-row' }, send), err);
+  form.append(ta, picker.node, el('div', { className: 'reply-row' }, send), err);
   return form;
 }
 
@@ -553,13 +649,19 @@ function wireDialog(dialogSel, formSel, submit) {
 }
 
 let openTaskDialog, openObjDialog, openRoutineDialog;
+const newFiles = [];
 
 function setupForms() {
   fillSelects();
   setupBoardTools();
+  const newPicker = filePicker(newFiles, { pasteTarget: $('#new-form').description });
+  $('#new-files').replaceChildren(newPicker.node);
+  $('#new-dialog').addEventListener('close', () => newPicker.clear());
   openTaskDialog = wireDialog('#new-dialog', '#new-form', async (f) => {
     const fd = new FormData(f);
-    await post('/api/tasks', { ...Object.fromEntries(fd), review: fd.getAll('review') });
+    const task = await post('/api/tasks', { ...Object.fromEntries(fd), review: fd.getAll('review') });
+    const errs = await uploadFiles(task.id, newFiles);
+    if (errs.length) toast(`La misión se creó, pero fallaron adjuntos: ${errs.join(' · ')}`);
   });
   openObjDialog = wireDialog('#obj-dialog', '#obj-form', async (f) => {
     const o = await post('/api/objectives', Object.fromEntries(new FormData(f)));
