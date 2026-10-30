@@ -16,7 +16,7 @@ export const DEFAULT_SETTINGS = {
 const LIMIT_KEYS = new Set(['max_claude', 'max_ollama', 'max_api']);
 
 const TASK_COLUMNS = ['title', 'description', 'project', 'agent', 'engine', 'mode', 'status', 'result', 'error',
-  'cost_usd', 'started_at', 'finished_at', 'parent_id', 'depends_on', 'kind', 'schedule_id', 'model', 'reply_text'];
+  'cost_usd', 'started_at', 'finished_at', 'parent_id', 'depends_on', 'kind', 'schedule_id', 'model', 'reply_text', 'branch', 'worktree', 'base_sha', 'change_state'];
 
 function addColumnIfMissing(db, table, column, ddl) {
   const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
@@ -80,6 +80,10 @@ export function openDb(file = config.dbFile) {
   addColumnIfMissing(db, 'tasks', 'kind', "TEXT NOT NULL DEFAULT 'task'");
   addColumnIfMissing(db, 'tasks', 'schedule_id', 'INTEGER');
   addColumnIfMissing(db, 'tasks', 'model', 'TEXT');
+  addColumnIfMissing(db, 'tasks', 'branch', 'TEXT'); // misión que edita: rama y copia aislada donde trabaja
+  addColumnIfMissing(db, 'tasks', 'worktree', 'TEXT');
+  addColumnIfMissing(db, 'tasks', 'base_sha', 'TEXT');
+  addColumnIfMissing(db, 'tasks', 'change_state', 'TEXT'); // pending | applied | discarded
   addColumnIfMissing(db, 'tasks', 'reply_text', 'TEXT'); // respuesta del usuario en vuelo (o cancelada, lista para editar)
 
   // Una tarea que quedó "running"/"queued" en un reinicio ya no tiene proceso: se marca fallida.

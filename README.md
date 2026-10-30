@@ -36,3 +36,19 @@ Al tocar un avatar se abre su panel: misión actual con registro en vivo, **últ
 - Si la misión edita archivos, pide la misma confirmación que al ejecutarla. Respetan los mismos topes de presupuesto, cola y modo de solo lectura de infraestructura.
 - No aplica a objetivos (planes); sí a los pasos.
 - **Detener y editar:** mientras el agente trabaja en una respuesta, la ✕ de «Ahora» la detiene y la **deshace**: la misión vuelve a su estado anterior (con su resultado previo) y tu mensaje reaparece en el campo para corregirlo y reenviarlo; el mensaje equivocado nunca llega al agente. Cancelar una ejecución normal (no una respuesta) la devuelve al Hangar como antes. Lo que ya gastó la ejecución cancelada no se suma (no hay costo parcial); al completar una respuesta, su costo se suma al de la misión.
+
+## Avisos y bandeja de atención
+
+- **Campana «Avisos»** (cabecera): sonido (con timbre propio por skin) y notificación del navegador cuando una misión termina, falla, te hace una pregunta o un plan queda listo. La notificación de escritorio solo sale con la pestaña oculta y hay que dejar la pestaña abierta; el permiso se pide al activar la campana.
+- El título de la pestaña muestra `(n)` con lo que espera tu atención.
+- **Pestaña «Atención»**: preguntas del agente (heurística: la respuesta termina en pregunta), fallidas, planes por lanzar y resultados por revisar, con responder, aprobar, reintentar, «Al Hangar» y acciones en lote.
+
+## Cambios aislados en una rama git (misiones que editan)
+
+Cuando una misión en modo edición corre en un proyecto git con commits, **no toca el proyecto**: trabaja en una copia aislada (`git worktree` en `data/worktrees/<id>`, rama `oficina/m<id>`; configurable con `WORKTREES_DIR`). Al terminar, sus cambios quedan en un commit de esa rama y el panel muestra «Cambios en archivos» con el diff.
+
+- **Aplicar a mi proyecto**: hace `git merge --no-ff` de la rama en la rama actual del proyecto. Pide confirmación (`confirm:true` en la API); se rechaza si el proyecto tiene cambios sin guardar o está en HEAD desacoplado, y ante un conflicto se aborta el merge sin dejar nada a medias.
+- **Descartar**: borra la rama y la copia; el proyecto no se toca. También ocurre al borrar la misión.
+- Responder al agente (o reintentar) continúa en la misma rama. Cancelar una ejecución a medias devuelve la copia a su último commit. Si la misión no modificó archivos no queda rama.
+- La copia solo trae lo versionado: no incluye `vendor/`, `node_modules/` ni `.env` (lo ignorado por git). Proyectos sin git (o sin commits) se editan en su sitio, y la misión lo avisa porque no se podrá revertir.
+- API: `GET /api/tasks/:id/changes`, `POST /api/tasks/:id/apply`, `POST /api/tasks/:id/discard`.

@@ -142,6 +142,14 @@ label.chk input { padding: 0; }
 .attn-body.err { color: var(--red); }
 .attn-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .attn-empty { color: var(--muted); padding: 24px 0; text-align: center; }
+.changes { display: grid; gap: 6px; margin: 8px 0; }
+.changes h3 { margin: 4px 0 0; }
+.changes-view { display: grid; gap: 6px; }
+.chg-files { font-size: 12px; display: grid; gap: 2px; overflow-wrap: anywhere; }
+.chg-st { display: inline-block; min-width: 52px; padding: 0 4px; border: 1px solid var(--line); text-align: center; font-size: 11px; }
+.chg-st.A { color: var(--green); border-color: var(--green); } .chg-st.M { color: var(--gold); border-color: var(--gold); } .chg-st.D { color: var(--red); border-color: var(--red); }
+.diff { margin: 0; max-height: 50vh; overflow: auto; background: #000; border: 2px solid var(--line); padding: 8px; font-size: 11px; line-height: 1.4; white-space: pre; }
+.diff .add { color: var(--green); } .diff .del { color: var(--red); } .diff .hunk { color: var(--blue); } .diff .meta { color: var(--muted); }
 .reply-note { color: var(--gold); font-size: 12px; }
 .reply-sent { font-size: 12px; margin-top: 4px; overflow-wrap: anywhere; border-left: 2px solid var(--gold); padding-left: 6px; }
 .reply-row { display: flex; gap: 8px; }

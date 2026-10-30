@@ -195,6 +195,9 @@ function drawer(t) {
   del.onclick = guard(async () => { if (await confirmDialog('Eliminar misión', isObj && kids.length ? 'Se eliminarán también sus pasos.' : '¿Eliminar esta misión?')) await api(`/api/tasks/${t.id}`, { method: 'DELETE' }); });
   act.append(del);
 
+  const chg = $('#d-changes');
+  const chgSig = JSON.stringify([t.id, t.status, t.change_state, t.branch]);
+  if (chg.dataset.sig !== chgSig) { chg.dataset.sig = chgSig; const b = changesBlock(t); chg.replaceChildren(...(b ? [b] : [])); }
   const steps = $('#d-steps');
   steps.replaceChildren();
   if (kids.length) {
@@ -205,6 +208,59 @@ function drawer(t) {
       steps.append(row);
     }
   }
+}
+
+// ---------- cambios de una misión que edita (rama git aislada) ----------
+const FILE_STATUS = { A: 'nuevo', M: 'editado', D: 'borrado' };
+
+function renderChanges(view, c) {
+  if (!c.files.length) { view.replaceChildren(el('div', { className: 'muted', textContent: 'Sin cambios en archivos.' })); return; }
+  const add = c.files.reduce((n, f) => n + f.additions, 0); const del = c.files.reduce((n, f) => n + f.deletions, 0);
+  const list = el('div', { className: 'chg-files' }, ...c.files.map((f) => el('div', {},
+    el('span', { className: `chg-st ${f.status}`, textContent: FILE_STATUS[f.status] ?? f.status }),
+    el('span', { textContent: ` ${f.path} ` }),
+    el('span', { className: 'muted', textContent: f.binary ? '(binario)' : `+${f.additions} −${f.deletions}` }))));
+  const diff = el('pre', { className: 'diff' });
+  for (const line of c.patch.split('\n')) {
+    const k = line.startsWith('+++') || line.startsWith('---') || line.startsWith('diff ') || line.startsWith('index ') ? 'meta' : line.startsWith('@@') ? 'hunk' : line[0] === '+' ? 'add' : line[0] === '-' ? 'del' : '';
+    diff.append(el('span', { className: `dl ${k}`, textContent: line + '\n' }));
+  }
+  view.replaceChildren(el('div', { className: 'muted', textContent: `${c.files.length} archivo(s) · +${add} −${del}` }), list, diff,
+    ...(c.truncated ? [el('div', { className: 'muted', textContent: 'El diff es muy grande y se muestra recortado.' })] : []));
+}
+
+/** Bloque con el estado de los cambios de una misión y sus acciones; null si la misión no editó archivos. */
+function changesBlock(t) {
+  if (!t.change_state) return null;
+  const box = el('div', { className: 'changes' });
+  if (t.change_state !== 'pending') {
+    box.append(el('div', { className: 'muted', textContent: t.change_state === 'applied' ? '✔ Los cambios de esta misión se aplicaron a tu proyecto.' : '✖ Los cambios de esta misión se descartaron.' }));
+    return box;
+  }
+  const busy = t.status === 'queued' || t.status === 'running';
+  const view = el('div', { className: 'changes-view' });
+  const show = el('button', { type: 'button', textContent: 'Ver cambios', disabled: busy });
+  show.onclick = guard(async () => {
+    view.replaceChildren(el('div', { className: 'muted', textContent: 'Cargando…' }));
+    renderChanges(view, await api(`/api/tasks/${t.id}/changes`));
+  });
+  const apply = el('button', { type: 'button', className: 'primary', textContent: 'Aplicar a mi proyecto', disabled: busy });
+  apply.onclick = guard(async () => {
+    if (!(await confirmDialog('Aplicar cambios', `Se unirá la rama ${t.branch} a la rama actual de «${t.project}» (merge). Tu proyecto no debe tener cambios sin guardar. ¿Continuar?`))) return;
+    await post(`/api/tasks/${t.id}/apply`, { confirm: true });
+    toast('Cambios aplicados a tu proyecto', false);
+  });
+  const drop = el('button', { type: 'button', className: 'danger', textContent: 'Descartar cambios', disabled: busy });
+  drop.onclick = guard(async () => {
+    if (!(await confirmDialog('Descartar cambios', 'Se eliminarán la rama y la copia aislada. Tu proyecto no se toca, pero estos cambios se pierden.'))) return;
+    await post(`/api/tasks/${t.id}/discard`, { confirm: true });
+    toast('Cambios descartados', false);
+  });
+  box.append(
+    el('h3', { textContent: 'Cambios en archivos' }),
+    el('div', { className: 'muted', textContent: `Rama ${t.branch} · copia aislada: «${t.project}» no cambia hasta que los apliques.` }),
+    el('div', { className: 'attn-actions' }, show, apply, drop), view);
+  return box;
 }
 
 // ---------- panel de agente (clic en un avatar) ----------
@@ -245,6 +301,8 @@ async function fillHistoryBody(body, t) {
   const full = el('button', { type: 'button', textContent: 'Abrir misión completa' });
   full.onclick = () => openDrawer(t.id);
   parts.push(full);
+  const chg = changesBlock(t);
+  if (chg) parts.push(chg);
   if (FINISHED.has(t.status)) parts.push(replyForm(t));
   body.replaceChildren(...parts);
 }
@@ -303,6 +361,7 @@ function lastSection(t) {
       el('div', { className: 'h-body' },
         ...(t.error ? [el('div', { className: 'h-err', textContent: `Error: ${t.error}` })] : []),
         el('pre', { className: 'h-result', textContent: t.result || 'Sin resultado.' }),
+        ...(changesBlock(t) ? [changesBlock(t)] : []),
         replyForm(t))),
   ];
 }
@@ -335,7 +394,7 @@ async function renderAgent() {
   // cada sección se reconstruye solo si cambió, para no perder lo que el usuario está escribiendo
   const sigs = {
     head: JSON.stringify([name, appliedSkin?.id, current?.id, current?.status, current?.updated_at]),
-    last: JSON.stringify(last ? [last.id, last.status, last.updated_at] : null),
+    last: JSON.stringify(last ? [last.id, last.status, last.updated_at, last.change_state] : null),
     hist: JSON.stringify(mine.slice(0, HISTORY_MAX + 2).map((t) => [t.id, t.status, t.updated_at])),
   };
 
@@ -854,7 +913,7 @@ function attnCard({ kind, task: t }) {
     head.append(cb);
   }
   head.append(el('strong', { textContent: `#${t.id} ${t.title}` }));
-  const meta = el('div', { className: 'attn-meta', textContent: [t.kind === 'objective' ? 'coordinador' : t.agent, t.project || 'sin proyecto', t.engine, since(t.finished_at ?? t.updated_at)].filter(Boolean).join(' · ') });
+  const meta = el('div', { className: 'attn-meta', textContent: [t.kind === 'objective' ? 'coordinador' : t.agent, t.project || 'sin proyecto', t.engine, since(t.finished_at ?? t.updated_at), t.change_state === 'pending' && '✎ cambios por aplicar'].filter(Boolean).join(' · ') });
   const pending = kind === 'plan' ? children(t.id).filter((k) => ['backlog', 'failed'].includes(k.status)).length : 0;
   const text = kind === 'failed' ? (t.error || 'Falló sin detalle') : kind === 'plan' ? `${pending} paso(s) pendientes de lanzar` : (t.result || '');
   const body = text ? el('div', { className: `attn-body${kind === 'failed' ? ' err' : ''}`, textContent: text.length > 1500 ? text.slice(-1500) : text }) : null; // de una pregunta importa el final

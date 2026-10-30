@@ -181,7 +181,8 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
       if (!task) return send(res, 404, { error: 'No existe' });
       if (method === 'DELETE') {
         runner.cancel(id);
-        for (const c of db.children(id)) { runner.cancel(c.id); db.deleteTask(c.id); broadcast({ type: 'deleted', id: c.id }); }
+        for (const c of db.children(id)) { runner.cancel(c.id); await runner.discardChanges(c.id).catch(() => {}); db.deleteTask(c.id); broadcast({ type: 'deleted', id: c.id }); }
+        await runner.discardChanges(id).catch(() => {}); // sin cambios pendientes no hace nada
         db.deleteTask(id);
         db.audit('task.delete', id, task.title);
         broadcast({ type: 'deleted', id });
@@ -204,7 +205,7 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
         return send(res, 200, updated);
       }
     }
-    if ((r = m(/^\/api\/tasks\/(\d+)\/(run|cancel|events|launch|reply)$/))) {
+    if ((r = m(/^\/api\/tasks\/(\d+)\/(run|cancel|events|launch|reply|changes|apply|discard)$/))) {
       const id = Number(r[1]);
       const task = db.getTask(id);
       if (!task) return send(res, 404, { error: 'No existe' });
@@ -214,6 +215,20 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
         if (needsConfirm(task) && body.confirm !== true) return send(res, 409, { error: 'Esta tarea puede editar archivos: requiere confirmación', needsConfirm: true });
         try { runner.enqueue(id); } catch (e) { return send(res, 409, { error: e.message }); }
         return send(res, 202, db.getTask(id));
+      }
+      if (r[2] === 'changes' && method === 'GET') {
+        try { return send(res, 200, await runner.changes(id)); } catch (e) { return send(res, 409, { error: e.message }); }
+      }
+      if ((r[2] === 'apply' || r[2] === 'discard') && method === 'POST') {
+        const body = await readJson(req);
+        if (body.confirm !== true) {
+          return send(res, 409, { error: r[2] === 'apply' ? 'Aplicar modifica tu proyecto real: requiere confirmación' : 'Descartar elimina los cambios de la misión: requiere confirmación', needsConfirm: true });
+        }
+        try {
+          const out = r[2] === 'apply' ? await runner.applyChanges(id) : await runner.discardChanges(id);
+          if (out.ok === false) return send(res, 409, { error: out.message, reason: out.reason });
+          return send(res, 200, db.getTask(id));
+        } catch (e) { return send(res, 409, { error: e.message }); }
       }
       if (r[2] === 'reply' && method === 'POST') {
         const body = await readJson(req);

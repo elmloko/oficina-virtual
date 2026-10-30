@@ -39,4 +39,6 @@ export const config = {
   maxApi: Number(process.env.MAX_API_CONCURRENCY || 3),
   envFile: process.env.ENV_FILE || join(root, '.env'),
   dbFile: process.env.DB_FILE || join(root, 'data', 'oficina.db'),
+  // Copias aisladas (git worktree) de las misiones que editan archivos; fuera de los proyectos.
+  worktreesDir: process.env.WORKTREES_DIR || join(root, 'data', 'worktrees'),
 };

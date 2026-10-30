@@ -1,10 +1,12 @@
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { config } from './config.js';
 import { resolveProject, listAgents, listProjects } from './registry.js';
 import { route } from './router.js';
 import { buildPlanPrompt, parsePlan } from './coordinator.js';
 import { chat, secretEnvNames } from './providers.js';
 import { noopLogger } from './logger.js';
+import * as gitworkDefault from './gitwork.js';
 
 const DONE_STATES = new Set(['review', 'done']);
 const RESULT_CONTEXT_LIMIT = 6000;
@@ -14,7 +16,7 @@ const CONVERSATION_TURNS = 12; // mensajes (agente + usuario) que se reenvían c
  * Cola con límite de concurrencia por motor, dependencias entre tareas, presupuesto y timeout.
  * emit(taskId, extra) avisa a la UI. spawnFn, fetchFn y registry son inyectables para pruebas.
  */
-export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, registry = { listAgents, listProjects }, providers = {}, logger = noopLogger } = {}) {
+export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, registry = { listAgents, listProjects }, providers = {}, logger = noopLogger, gitwork = gitworkDefault } = {}) {
   const active = { claude: 0, ollama: 0 };
   let paused = false;
   // Límites editables desde la web (se leen en cada ciclo); los proveedores en internet comparten `max_api`.
@@ -113,14 +115,15 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     const timer = setTimeout(() => { timedOut.add(id); procs.get(id)?.kill(); }, db.settings().task_timeout_min * 60_000);
     try {
       const out = engine === 'claude' ? await runClaude(task) : engine === 'ollama' ? await runOllama(task, model) : await runProvider(task, engine);
-      if (db.getTask(id).status !== 'running') return; // cancelada
+      if (db.getTask(id).status !== 'running') { await afterCancel(id); return; } // cancelada
       if (task.kind === 'objective') createPlan(task, out.result);
+      await finalizeWorktree(id);
       const base = replySnaps.get(id)?.cost_usd ?? 0; // una respuesta suma al costo de lo ya gastado en la misión
       replySnaps.delete(id);
       patch(id, { status: 'review', result: out.result, cost_usd: base + (out.cost ?? 0), reply_text: null, finished_at: new Date().toISOString() });
       logger.info(`#${id} terminó (${engine}${out.cost ? ` · $${out.cost.toFixed(3)}` : ''})`);
     } catch (err) {
-      if (db.getTask(id).status !== 'running') return;
+      if (db.getTask(id).status !== 'running') { await afterCancel(id); return; }
       const msg = timedOut.has(id) ? `Tiempo agotado (${db.settings().task_timeout_min} min)` : err.message;
       log(id, 'error', msg);
       replySnaps.delete(id);
@@ -128,6 +131,86 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
       logger.error(`#${id} falló: ${msg.slice(0, 200)}`);
     } finally { clearTimeout(timer); }
   }
+
+  // ---------- misiones que editan: copia aislada en una rama de git ----------
+  async function prepareWorktree(task, repo) {
+    if (!(await gitwork.canIsolate(repo))) {
+      log(task.id, 'info', 'El proyecto no es un repositorio git con commits: se edita directamente y no se podrá revertir.');
+      return null;
+    }
+    if (task.worktree && existsSync(task.worktree)) return task.worktree;
+    const info = await gitwork.createWorktree({ repo, id: task.id, root: config.worktreesDir });
+    db.updateTask(task.id, { branch: info.branch, worktree: info.path, base_sha: info.base, change_state: 'pending' });
+    log(task.id, 'info', `Trabajando en la rama ${info.branch}, en una copia aislada: tu proyecto no cambia hasta que apliques los cambios.`);
+    return info.path;
+  }
+
+  /** Al terminar bien: guarda lo editado en un commit; si no se tocó nada, retira la copia. */
+  async function finalizeWorktree(id) {
+    const t = db.getTask(id);
+    if (!t?.worktree || t.change_state !== 'pending') return;
+    try {
+      await gitwork.commitAll(t.worktree, `Misión #${id}: ${t.title}`);
+      const c = await gitwork.changes(t.worktree, t.base_sha);
+      if (!c.files.length) {
+        await gitwork.discard({ repo: resolveProject(t.project), wt: t.worktree, branch: t.branch });
+        db.updateTask(id, { branch: null, worktree: null, base_sha: null, change_state: null });
+        log(id, 'info', 'La misión no modificó archivos.');
+      } else {
+        const add = c.files.reduce((n, f) => n + f.additions, 0); const del = c.files.reduce((n, f) => n + f.deletions, 0);
+        log(id, 'info', `Cambios guardados en la rama ${t.branch}: ${c.files.length} archivo(s), +${add} −${del}. Revísalos y aplícalos desde el panel.`);
+      }
+    } catch (e) { log(id, 'error', `No se pudieron guardar los cambios: ${e.message}`); }
+  }
+
+  /** Una ejecución cancelada puede dejar ediciones a medias: la copia vuelve a su último commit. */
+  async function afterCancel(id) {
+    const t = db.getTask(id);
+    if (t?.worktree) await gitwork.reset(t.worktree).catch(() => {});
+  }
+
+  let gitLock = Promise.resolve(); // una operación git sobre proyectos a la vez
+  const exclusive = (fn) => { const run = gitLock.then(fn, fn); gitLock = run.catch(() => {}); return run; };
+
+  function pendingChanges(id) {
+    const t = db.getTask(id);
+    if (!t) throw new Error('Tarea no existe');
+    if (['queued', 'running'].includes(t.status)) throw new Error('La misión sigue en curso: espera a que termine');
+    if (!t.worktree || t.change_state !== 'pending') throw new Error('Esta misión no tiene cambios pendientes');
+    const repo = resolveProject(t.project);
+    if (!repo) throw new Error(`Proyecto no válido: ${t.project}`);
+    return { t, repo };
+  }
+
+  const changesOf = (id) => exclusive(async () => {
+    const t = db.getTask(id);
+    if (!t) throw new Error('Tarea no existe');
+    if (!t.worktree || t.change_state !== 'pending') return { branch: t.branch, state: t.change_state, files: [], patch: '', truncated: false };
+    pendingChanges(id);
+    return { branch: t.branch, state: 'pending', base: t.base_sha, ...(await gitwork.changes(t.worktree, t.base_sha)) };
+  });
+
+  const applyChanges = (id) => exclusive(async () => {
+    const { t, repo } = pendingChanges(id);
+    await gitwork.commitAll(t.worktree, `Misión #${id}: ${t.title}`);
+    const r = await gitwork.apply({ repo, branch: t.branch, message: `Misión #${id}: ${t.title}` });
+    if (!r.ok) { log(id, 'error', r.message); return r; }
+    await gitwork.discard({ repo, wt: t.worktree, branch: t.branch });
+    patch(id, { change_state: 'applied', worktree: null, branch: null, status: 'done' });
+    log(id, 'info', `Cambios aplicados a tu proyecto (rama ${r.branch}).`);
+    db.audit('task.apply', id, `${t.project} → ${r.branch}`);
+    logger.info(`#${id} cambios aplicados en ${t.project} (${r.branch})`);
+    return r;
+  });
+
+  const discardChanges = (id) => exclusive(async () => {
+    const { t, repo } = pendingChanges(id);
+    await gitwork.discard({ repo, wt: t.worktree, branch: t.branch });
+    patch(id, { change_state: 'discarded', worktree: null, branch: null });
+    log(id, 'info', 'Cambios descartados: tu proyecto quedó como estaba.');
+    db.audit('task.discard', id, t.project);
+    return { ok: true };
+  });
 
   function createPlan(task, text) {
     const steps = parsePlan(text, new Set(registry.listAgents().map((a) => a.name)), new Set(registry.listProjects().map((p) => p.name)));
@@ -158,9 +241,12 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     return parts.join('\n\n');
   }
 
-  function runClaude(task) {
-    const cwd = task.project ? resolveProject(task.project) : process.cwd();
-    if (!cwd) return Promise.reject(new Error(`Proyecto no válido: ${task.project}`));
+  async function runClaude(task) {
+    const repo = task.project ? resolveProject(task.project) : null;
+    if (task.project && !repo) throw new Error(`Proyecto no válido: ${task.project}`);
+    let cwd = repo ?? process.cwd();
+    if (task.mode === 'edit' && repo) cwd = (await prepareWorktree(task, repo)) ?? cwd; // aislada si el proyecto es un repo git
+    if (db.getTask(task.id).status !== 'running') throw new Error('Cancelada'); // cancelada mientras se preparaba la copia
     // "plan" = solo lectura. "acceptEdits" permite editar archivos pero no ejecutar comandos arbitrarios.
     const args = ['-p', '--output-format', 'stream-json', '--verbose', '--no-session-persistence',
       '--permission-mode', task.mode === 'edit' ? 'acceptEdits' : 'plan'];
@@ -298,5 +384,5 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     };
   }
 
-  return { enqueue, reply, cancel, cancelAll, setPaused, snapshot, kick: pump, stats: () => ({ active: { ...active }, limit: limits(), waiting: waiting.length, paused }) };
+  return { enqueue, reply, cancel, changes: changesOf, applyChanges, discardChanges, cancelAll, setPaused, snapshot, kick: pump, stats: () => ({ active: { ...active }, limit: limits(), waiting: waiting.length, paused }) };
 }
