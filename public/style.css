@@ -111,6 +111,8 @@ label.chk input { padding: 0; }
 #a-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
 #a-now { font-size: 13px; overflow-wrap: anywhere; margin-bottom: 6px; }
 #a-log, .h-log { display: grid; gap: 4px; max-height: 32vh; overflow: auto; border: 2px solid var(--line); padding: 8px; background: #000; }
+.now-row { display: flex; justify-content: space-between; align-items: start; gap: 8px; }
+.x-cancel { flex: none; min-width: 32px; padding: 2px 8px; font-weight: 700; }
 #a-log:empty { display: none; }
 #a-log div, .h-log div { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
 #a-log .tool, .h-log .tool { color: var(--blue); } #a-log .error, .h-log .error { color: var(--red); } #a-log .info, .h-log .info { color: var(--gold); }

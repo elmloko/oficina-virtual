@@ -335,18 +335,23 @@ async function renderAgent() {
     const now = $('#a-now');
     if (current) {
       const since = current.started_at ? ` · desde las ${parseTs(current.started_at).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' })}` : '';
-      now.replaceChildren(
-        el('div', { textContent: `${current.status === 'running' ? '▶ En misión' : '⏳ En cola'}: #${current.id} ${current.title}` }),
-        el('div', { className: 'muted', textContent: `${current.engine}${current.model ? ':' + current.model : ''}/${current.mode}${current.project ? ' · 📁 ' + current.project : ''}${since}` }),
-      );
+      const x = el('button', { type: 'button', className: 'danger x-cancel', textContent: '✕', title: 'Cancelar esta misión', ariaLabel: `Cancelar misión #${current.id}` });
+      x.onclick = guard(async () => {
+        if (!(await confirmDialog('Cancelar misión', `Se detendrá «${current.title}» y volverá al Hangar. El trabajo en curso se pierde.`))) return;
+        await post(`/api/tasks/${current.id}/cancel`);
+        toast('Misión cancelada', false);
+      });
+      now.replaceChildren(el('div', { className: 'now-row' },
+        el('div', {},
+          el('div', { textContent: `${current.status === 'running' ? '▶ En misión' : '⏳ En cola'}: #${current.id} ${current.title}` }),
+          el('div', { className: 'muted', textContent: `${current.engine}${current.model ? ':' + current.model : ''}/${current.mode}${current.project ? ' · 📁 ' + current.project : ''}${since}` })),
+        x));
     } else {
       now.replaceChildren(el('div', { textContent: mine.length ? 'Libre' : 'Libre · aún no tiene misiones' }));
     }
     const newBtn = el('button', { className: 'primary', type: 'button', textContent: 'Nueva misión' });
     newBtn.onclick = () => openTaskDialog((f) => { f.agent.value = name; });
-    const stop = el('button', { type: 'button', textContent: 'Cancelar misión actual', disabled: !current });
-    stop.onclick = guard(() => post(`/api/tasks/${current.id}/cancel`));
-    $('#a-actions').replaceChildren(newBtn, stop);
+    $('#a-actions').replaceChildren(newBtn);
     agentUi.sig.head = sigs.head;
   }
   if (sigs.last !== agentUi.sig.last) {
