@@ -17,9 +17,9 @@ body {
   font: 14px/1.45 "Cascadia Mono", Consolas, "Courier New", monospace;
   /* estrellas pixeladas */
   background-image:
-    radial-gradient(1px 1px at 20px 30px, #fff8 50%, transparent 51%),
-    radial-gradient(1px 1px at 90px 120px, #fff6 50%, transparent 51%),
-    radial-gradient(2px 2px at 160px 60px, #ffd84a66 50%, transparent 51%);
+    radial-gradient(1px 1px at 20px 30px, var(--star1, #fff8) 50%, transparent 51%),
+    radial-gradient(1px 1px at 90px 120px, var(--star1, #fff8) 50%, transparent 51%),
+    radial-gradient(2px 2px at 160px 60px, var(--star2, #ffd84a66) 50%, transparent 51%);
   background-size: 200px 160px;
 }
 header { display: flex; align-items: center; gap: 16px; padding: 12px 20px; border-bottom: 2px solid var(--line); background: var(--panel); }
@@ -209,3 +209,19 @@ header { flex-wrap: nowrap; gap: 12px; }
 #stats { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
 nav#tabs button { padding: 6px 9px; }
 @media (max-width: 1000px) { header { flex-wrap: wrap; } #stats { flex-basis: 100%; text-align: left; order: 9; } }
+
+/* ---- selector flotante de skins ---- */
+#skin-widget { position: fixed; left: 16px; bottom: 16px; z-index: 40; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+#skin-fab { display: flex; align-items: center; gap: 8px; background: var(--panel); border: 2px solid var(--gold); color: var(--gold); font-weight: 700; padding: 8px 12px; box-shadow: 3px 3px 0 #000; }
+#skin-fab:hover:not(:disabled) { border-color: var(--text); color: var(--text); }
+.fab-gem { width: 12px; height: 12px; background: var(--gold); box-shadow: 0 0 0 2px #000; transform: rotate(45deg); }
+#skin-panel { width: min(600px, calc(100vw - 32px)); max-height: min(82vh, 720px); overflow: auto; padding: 10px; background: var(--panel); border: 2px solid var(--gold); box-shadow: 4px 4px 0 #000;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 10px; }
+#skin-panel[hidden] { display: none; }
+.skin-card { display: flex; flex-direction: column; gap: 4px; padding: 6px; text-align: left; background: var(--panel-2); border: 2px solid var(--line); }
+.skin-card canvas { display: block; width: 100%; height: auto; image-rendering: pixelated; border: 1px solid #000; }
+.skin-card .sk-name { font-weight: 700; display: flex; justify-content: space-between; gap: 6px; }
+.skin-card .sk-tag { color: var(--muted); font-size: 12px; }
+.skin-card[aria-checked="true"] { border-color: var(--gold); box-shadow: 0 0 0 2px var(--gold) inset; }
+.skin-card[aria-checked="true"] .sk-name::after { content: "✓"; color: var(--gold); }
+@media (max-width: 520px) { #skin-widget { left: 8px; bottom: 8px; } }

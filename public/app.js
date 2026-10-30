@@ -1,5 +1,6 @@
 // UI sin build. Todo texto de usuario entra por textContent (nunca innerHTML).
-import { createOffice } from './office.js';
+import { createOffice, drawSkinPreview } from './office.js';
+import { SKIN_LIST, AUTO, skinById, resolveSkin } from './skins.js';
 
 const COLUMNS = [
   ['backlog', 'Hangar (pendientes)'],
@@ -528,10 +529,60 @@ function connect() {
   ws.onclose = () => setTimeout(connect, 1500); // reconexión simple
 }
 
+// ---------- skins ----------
+const SKIN_KEY = 'oficina.skin';
+const UI_VARS = { bg: '--bg', panel: '--panel', panel2: '--panel-2', line: '--line', text: '--text', muted: '--muted', gold: '--gold', blue: '--blue', red: '--red', green: '--green', violet: '--violet', star1: '--star1', star2: '--star2' };
+const skinStore = {
+  get() { try { return localStorage.getItem(SKIN_KEY); } catch { return null; } },
+  set(v) { try { localStorage.setItem(SKIN_KEY, v); } catch { /* sin almacenamiento: el skin vale solo esta sesión */ } },
+};
+let skinChoice = new URLSearchParams(location.search).get('skin') || skinStore.get() || 'clasico';
+if (skinChoice !== AUTO.id && !skinById(skinChoice)) skinChoice = 'clasico';
+let appliedSkin = null;
+
+function applySkin(announce = false) {
+  const sk = resolveSkin(skinChoice);
+  if (sk !== appliedSkin) {
+    appliedSkin = sk;
+    const root = document.documentElement;
+    for (const [k, v] of Object.entries(UI_VARS)) root.style.setProperty(v, sk.ui[k]);
+    root.dataset.skin = sk.id;
+    $('#brand').textContent = sk.title;
+    document.title = `${sk.title} · Oficina Virtual`;
+    office?.setSkin(sk);
+  }
+  for (const b of document.querySelectorAll('.skin-card')) b.setAttribute('aria-checked', String(b.dataset.skin === skinChoice));
+  if (announce) toast(`Skin: ${skinChoice === AUTO.id ? `Auto (${sk.name})` : sk.name}`, false);
+}
+
+function setupSkins() {
+  const panel = $('#skin-panel'); const fab = $('#skin-fab');
+  const entries = [...SKIN_LIST, AUTO];
+  for (const e of entries) {
+    const canvas = el('canvas');
+    if (e.id === AUTO.id) drawSkinPreview(canvas, skinById(AUTO.day), skinById(AUTO.night)); else drawSkinPreview(canvas, e);
+    const card = el('button', { type: 'button', className: 'skin-card' }, canvas, el('span', { className: 'sk-name', textContent: e.name }), el('span', { className: 'sk-tag', textContent: e.tagline }));
+    card.dataset.skin = e.id;
+    card.setAttribute('role', 'radio');
+    card.onclick = () => { skinChoice = e.id; skinStore.set(e.id); applySkin(true); };
+    panel.append(card);
+  }
+  const toggle = (open) => {
+    panel.hidden = !open; fab.setAttribute('aria-expanded', String(open));
+    if (open) panel.querySelector('[aria-checked="true"]')?.focus();
+  };
+  fab.onclick = () => toggle(panel.hidden);
+  document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape' && !panel.hidden) { toggle(false); fab.focus(); } });
+  document.addEventListener('click', (ev) => { if (!panel.hidden && !ev.target.closest('#skin-widget')) toggle(false); });
+  setInterval(() => { if (skinChoice === AUTO.id) applySkin(); }, 60_000); // Auto cambia con la hora
+}
+
 office = createOffice($('#office'), {
   onSelect: (id) => openDrawer(id),
   onSelectAgent: (name) => openTaskDialog((f) => { f.agent.value = name; }),
 });
+setupSkins();
+applySkin();
 await refreshState();
 setupForms();
 showView('office');

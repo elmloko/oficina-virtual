@@ -2,6 +2,8 @@
 // hologramas, props temáticos y personajes animados (caminan, teclean, saludan, parpadean, se averían).
 import { CANVAS, CHAR, DEPARTMENTS, OPS_ROOM, DESK, GAP, layoutOffice, stepToward, wanderTarget } from './office-layout.js';
 import { getSprite } from './sprites.js';
+import { SCENES, EMBLEMS } from './scenes.js';
+import { DEFAULT_SKIN, deptView } from './skins.js';
 
 const FONT = '"Cascadia Mono", Consolas, monospace';
 const STATE_COLOR = { working: '#4aa3ff', queued: '#9aa6cc', review: '#b18cff', failed: '#ff5a5a' };
@@ -15,24 +17,24 @@ const px = (ctx, x, y, w, h, c) => { ctx.fillStyle = c; ctx.fillRect(Math.round(
 const mod = (a, n) => ((a % n) + n) % n;
 
 // ---------- capas estáticas por sala (cacheadas) ----------
-function buildRoomLayer(dept, w, h, ops = false) {
+function buildRoomLayer(dept, w, h, ops = false, skin = DEFAULT_SKIN) {
   const c = document.createElement('canvas');
   c.width = w; c.height = h;
   const ctx = c.getContext('2d');
   const seed = hash(dept.id);
   // suelo de placas metálicas con juntas y desgaste
   for (let ty = 0; ty < h; ty += 24) for (let tx = 0; tx < w; tx += 24) {
-    px(ctx, tx, ty, 24, 24, (tx / 24 + ty / 24) % 2 ? '#10152a' : '#0e1326');
-    px(ctx, tx, ty, 24, 1, '#070a16'); px(ctx, tx, ty, 1, 24, '#070a16');
+    px(ctx, tx, ty, 24, 24, (tx / 24 + ty / 24) % 2 ? skin.floor.a : skin.floor.b);
+    px(ctx, tx, ty, 24, 1, skin.floor.joint); px(ctx, tx, ty, 1, 24, skin.floor.joint);
     px(ctx, tx + 1, ty + 1, 22, 1, '#ffffff08');
-    if (rand01(seed, tx, ty) > 0.78) px(ctx, tx + 3 + Math.floor(rand01(seed, ty, tx) * 16), ty + 3 + Math.floor(rand01(seed, tx, ty + 1) * 16), 2, 1, '#ffffff10');
+    if (rand01(seed, tx, ty) > 0.78) px(ctx, tx + 3 + Math.floor(rand01(seed, ty, tx) * 16), ty + 3 + Math.floor(rand01(seed, tx, ty + 1) * 16), 2, 1, skin.floor.speck);
   }
   // pared superior con paneles y franja de color
-  px(ctx, 0, 0, w, 62, '#0a0e1c');
-  for (let x = 0; x < w; x += 48) { px(ctx, x, 52, 1, 10, '#05070f'); px(ctx, x + 1, 53, 46, 1, '#ffffff0a'); }
+  px(ctx, 0, 0, w, 62, skin.wall);
+  for (let x = 0; x < w; x += 48) { px(ctx, x, 52, 1, 10, skin.wallLine); px(ctx, x + 1, 53, 46, 1, '#ffffff0a'); }
   px(ctx, 0, 60, w, 2, dept.color + '66');
   // marco del ventanal
-  px(ctx, WIN.x - 3, WIN.y - 3, w - 2 * (WIN.x - 3), WIN.h + 6, '#1a2038');
+  px(ctx, WIN.x - 3, WIN.y - 3, w - 2 * (WIN.x - 3), WIN.h + 6, skin.frame);
   px(ctx, WIN.x - 3, WIN.y - 3, w - 2 * (WIN.x - 3), 1, dept.color + 'aa');
   // alfombra / zona de descanso
   if (!ops) {
@@ -48,7 +50,7 @@ function buildRoomLayer(dept, w, h, ops = false) {
   px(ctx, 2, 2, w - 4, 14, '#000c');
   ctx.fillStyle = dept.color; ctx.font = `bold 11px ${FONT}`;
   ctx.fillText(dept.label.toUpperCase(), 18, 13);
-  px(ctx, 8, 6, 6, 6, dept.color); px(ctx, 10, 4, 2, 10, dept.color); px(ctx, 6, 8, 10, 2, dept.color); // rombo
+  (EMBLEMS[skin.emblem] ?? EMBLEMS.diamond)(ctx, 6, 4, dept.color); // emblema del skin
   // borde
   ctx.strokeStyle = dept.color; ctx.lineWidth = 2; ctx.strokeRect(1, 1, w - 2, h - 2);
   ctx.strokeStyle = dept.color + '33'; ctx.lineWidth = 1; ctx.strokeRect(4.5, 4.5, w - 9, h - 9);
@@ -56,44 +58,15 @@ function buildRoomLayer(dept, w, h, ops = false) {
 }
 
 // ---------- ventanal animado ----------
-function drawWindow(ctx, room, dept, t) {
+function drawWindow(ctx, room, dept, t, skin) {
   const x = room.rect.x + WIN.x; const y = room.rect.y + WIN.y; const w = room.rect.w - 2 * WIN.x; const h = WIN.h;
-  const seed = hash(dept.id);
   ctx.save();
   ctx.beginPath(); ctx.rect(x, y, w, h); ctx.clip();
-  const g = ctx.createLinearGradient(0, y, 0, y + h);
-  g.addColorStop(0, '#02030a'); g.addColorStop(1, '#0a1030');
-  ctx.fillStyle = g; ctx.fillRect(x, y, w, h);
-  // nebulosa tenue
-  ctx.fillStyle = dept.color + '14'; ctx.beginPath(); ctx.ellipse(x + w * ((seed % 70) / 100 + 0.1), y + h * 0.7, 46, 12, 0, 0, Math.PI * 2); ctx.fill();
-  // estrellas con paralaje
-  for (const [n, speed, size, alpha] of [[18, 3, 1, 0.45], [11, 8, 1, 0.8], [6, 18, 2, 1]]) {
-    for (let i = 0; i < n; i++) {
-      const sx = mod(rand01(seed, i, speed) * w - t * speed, w);
-      const sy = rand01(seed, i + 40, speed) * (h - 2);
-      const tw = 0.6 + 0.4 * Math.sin(t * 2 + i * 1.7);
-      ctx.fillStyle = `rgba(255,255,255,${alpha * tw})`; ctx.fillRect(Math.floor(x + sx), Math.floor(y + sy), size, size);
-    }
-  }
-  // planeta con anillo
-  const pw = w + 80;
-  const planetX = x + mod((seed % 200) - t * 1.6, pw) - 40;
-  const planetY = y + 12 + (seed % 9);
-  const pc = ['#c97a4a', '#4a8ac9', '#8ac94a', '#b36ac9', '#c9b34a', '#4ac9b3', '#c94a6a'][seed % 7];
-  ctx.fillStyle = pc; ctx.beginPath(); ctx.arc(planetX, planetY, 10, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = '#00000055'; ctx.beginPath(); ctx.arc(planetX + 4, planetY + 2, 8, 0, Math.PI * 2); ctx.fill();
-  ctx.strokeStyle = '#ffffff55'; ctx.lineWidth = 1; ctx.beginPath(); ctx.ellipse(planetX, planetY, 17, 4, -0.3, 0, Math.PI * 2); ctx.stroke();
-  // nave que cruza cada ~12 s
-  const cyc = 12; const prog = mod(t + (seed % cyc), cyc) / cyc;
-  if (prog < 0.5) {
-    const sx = x - 12 + (prog / 0.5) * (w + 24); const sy = y + 6 + (seed % 14);
-    px(ctx, sx - 10, sy + 1, 8, 1, '#4ae0ff55'); // estela
-    px(ctx, sx - 2, sy, 8, 3, '#9aa4b8'); px(ctx, sx, sy - 2, 2, 7, '#7b8599'); px(ctx, sx + 6, sy + 1, 2, 1, '#e8f4ff'); px(ctx, sx - 3, sy + 1, 1, 1, '#4ae0ff');
-  }
-  // montantes del ventanal
-  for (let bx = 72; bx < w; bx += 72) px(ctx, x + bx, y, 3, h, '#1a2038');
+  (SCENES[skin.scene] ?? SCENES.space)(ctx, x, y, w, h, t, hash(dept.id), dept);
+  for (let bx = 72; bx < w; bx += 72) px(ctx, x + bx, y, 3, h, skin.frame); // montantes
   ctx.restore();
   ctx.strokeStyle = dept.color + '66'; ctx.lineWidth = 1; ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+  const seed = hash(dept.id);
   // luces de la pared pulsando
   for (let i = 0; i < 6; i++) {
     const on = 0.4 + 0.6 * Math.abs(Math.sin(t * 1.3 + i * 0.9 + seed));
@@ -102,12 +75,13 @@ function drawWindow(ctx, room, dept, t) {
 }
 
 // ---------- decoración temática (columna central entre escritorios) ----------
-function drawProp(ctx, id, room, t) {
+function drawProp(ctx, id, room, t, skin) {
+  const M = skin.metal; const MD = skin.metalDark;
   const cx = room.rect.x + GAP.x + GAP.w / 2; const top = room.rect.y + 80; const base = room.rect.y + 196;
   const glow = (_c, col, a, r, x, y) => { const g = ctx.createRadialGradient(x, y, 1, x, y, r); g.addColorStop(0, col + a); g.addColorStop(1, col + '00'); ctx.fillStyle = g; ctx.fillRect(x - r, y - r, r * 2, r * 2); };
   switch (id) {
     case 'mando': { // pedestal con globo holográfico
-      px(ctx, cx - 9, base - 8, 18, 8, '#2a3150'); px(ctx, cx - 4, base - 30, 8, 22, '#1a2038');
+      px(ctx, cx - 9, base - 8, 18, 8, M); px(ctx, cx - 4, base - 30, 8, 22, MD);
       const gy = base - 52; glow(ctx, '#ffd84a', '55', 28, cx, gy);
       ctx.strokeStyle = '#ffd84a'; ctx.lineWidth = 1;
       for (let i = 0; i < 3; i++) { ctx.beginPath(); ctx.ellipse(cx, gy, 12 * Math.abs(Math.cos(t * 0.8 + i * 1.05)) + 1, 12, 0, 0, Math.PI * 2); ctx.stroke(); }
@@ -123,10 +97,10 @@ function drawProp(ctx, id, room, t) {
     case 'inteligencia': { // pilar escáner con barrido rojo
       px(ctx, cx - 7, top + 20, 14, base - top - 20, '#1a1f30'); px(ctx, cx - 5, top + 24, 10, base - top - 28, '#0c1020');
       const sy = top + 28 + mod(t * 30, base - top - 40); glow(ctx, '#ff5a5a', '88', 16, cx, sy); px(ctx, cx - 5, Math.round(sy), 10, 1, '#ff8a8a');
-      px(ctx, cx - 8, top + 16, 16, 4, '#2a3150'); px(ctx, cx - 2, top + 10, 4, 6, '#ff5a5a');
+      px(ctx, cx - 8, top + 16, 16, 4, M); px(ctx, cx - 2, top + 10, 4, 6, '#ff5a5a');
       break; }
     case 'flota': { // reactor con burbujas de plasma
-      px(ctx, cx - 9, base - 6, 18, 6, '#2a3150'); px(ctx, cx - 9, top + 14, 18, 4, '#2a3150');
+      px(ctx, cx - 9, base - 6, 18, 6, M); px(ctx, cx - 9, top + 14, 18, 4, M);
       px(ctx, cx - 6, top + 18, 12, base - top - 24, '#0a1a2e');
       glow(ctx, '#4aa3ff', '66', 34, cx, (top + base) / 2);
       for (let i = 0; i < 6; i++) { const by = base - 10 - mod(t * (14 + i * 3) + i * 19, base - top - 36); px(ctx, cx - 4 + ((i * 5) % 8), Math.round(by), 2, 2, '#9fd0ff'); }
@@ -134,20 +108,20 @@ function drawProp(ctx, id, room, t) {
       break; }
     case 'diplomacia': { // estandarte y planta
       px(ctx, cx - 9, top - 14, 18, 3, '#8b6b3d');
-      px(ctx, cx - 7, top - 11, 14, 46, '#8a2a2a'); px(ctx, cx - 7, top + 35, 7, 5, '#8a2a2a'); px(ctx, cx, top + 35, 7, 5, '#0a0e1c');
+      px(ctx, cx - 7, top - 11, 14, 46, skin.banner); px(ctx, cx - 7, top + 35, 7, 5, skin.banner); px(ctx, cx, top + 35, 7, 5, '#0a0e1c');
       px(ctx, cx - 3, top + 4, 6, 6, '#d9c7a0'); px(ctx, cx - 1, top + 2, 2, 10, '#d9c7a0'); px(ctx, cx - 5, top + 6, 10, 2, '#d9c7a0');
       px(ctx, cx - 7, base - 14, 14, 14, '#5b3b24'); px(ctx, cx - 7, base - 14, 14, 2, '#7a5233');
       const sw = Math.sin(t * 1.4) * 1.5;
       px(ctx, cx - 1 + sw, base - 30, 2, 16, '#3a8a4a'); px(ctx, cx - 7 + sw, base - 26, 6, 3, '#4aae5a'); px(ctx, cx + 1 + sw, base - 32, 6, 3, '#4aae5a');
       break; }
     case 'taller': { // cristal flotante sobre pedestal
-      px(ctx, cx - 8, base - 8, 16, 8, '#2a3150'); px(ctx, cx - 3, base - 22, 6, 14, '#1a2038');
+      px(ctx, cx - 8, base - 8, 16, 8, M); px(ctx, cx - 3, base - 22, 6, 14, MD);
       const by = base - 46 + Math.sin(t * 1.6) * 3; glow(ctx, '#b18cff', '77', 24, cx, by);
       ctx.fillStyle = '#c9a8ff'; ctx.beginPath(); ctx.moveTo(cx, by - 12); ctx.lineTo(cx + 7, by); ctx.lineTo(cx, by + 12); ctx.lineTo(cx - 7, by); ctx.closePath(); ctx.fill();
       ctx.fillStyle = '#ffffff88'; ctx.beginPath(); ctx.moveTo(cx, by - 12); ctx.lineTo(cx + 3, by - 2); ctx.lineTo(cx, by); ctx.lineTo(cx - 4, by - 2); ctx.closePath(); ctx.fill();
       break; }
     case 'reconocimiento': { // antena de radar giratoria
-      px(ctx, cx - 3, base - 70, 6, 70, '#1a2038'); px(ctx, cx - 9, base - 6, 18, 6, '#2a3150');
+      px(ctx, cx - 3, base - 70, 6, 70, MD); px(ctx, cx - 9, base - 6, 18, 6, M);
       const a = t * 1.4; const ry = base - 74;
       ctx.strokeStyle = '#9aa4b8'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(cx - Math.cos(a) * 14, ry - Math.sin(a) * 4); ctx.lineTo(cx + Math.cos(a) * 14, ry + Math.sin(a) * 4); ctx.stroke();
       px(ctx, cx - 2, ry - 2, 4, 4, '#4ade80');
@@ -158,13 +132,13 @@ function drawProp(ctx, id, room, t) {
 }
 
 // ---------- escritorios ----------
-function drawDeskBack(ctx, d, state, t, seed) {
+function drawDeskBack(ctx, d, state, t, seed, skin) {
   const mx = d.x + 70; const my = d.y + 6;
-  px(ctx, mx + 12, my + 20, 8, 6, '#1a2038'); // pie
+  px(ctx, mx + 12, my + 20, 8, 6, skin.metalDark); // pie
   px(ctx, mx, my, 34, 22, '#10152a'); px(ctx, mx + 1, my + 1, 32, 20, '#0a0e1c');
   const on = state != null;
   if (!on) { px(ctx, mx + 3, my + 3, 28, 16, '#0f1a2e'); if (Math.floor(t * 0.8 + seed) % 2) px(ctx, mx + 15, my + 10, 2, 2, '#2a6a8a'); return; }
-  const col = state === 'failed' ? '#ff5a5a' : state === 'review' ? '#b18cff' : state === 'queued' ? '#9aa6cc' : '#4ae0ff';
+  const col = state === 'failed' ? '#ff5a5a' : state === 'review' ? '#b18cff' : state === 'queued' ? '#9aa6cc' : skin.holo;
   px(ctx, mx + 3, my + 3, 28, 16, state === 'failed' ? '#2a0a0e' : '#06202c');
   ctx.fillStyle = col;
   for (let i = 0; i < 5; i++) {
@@ -177,32 +151,34 @@ function drawDeskBack(ctx, d, state, t, seed) {
   ctx.fillStyle = g; ctx.fillRect(mx - 18, my - 12, 70, 56);
 }
 
-function drawDeskFront(ctx, d, state, t) {
-  px(ctx, d.x, d.y + 30, d.w, 8, '#7a5a3a'); px(ctx, d.x, d.y + 30, d.w, 1, '#a07a50'); // tablero
-  px(ctx, d.x, d.y + 38, d.w, 14, '#4a3524'); px(ctx, d.x, d.y + 38, d.w, 1, '#2a1c10');
-  px(ctx, d.x + 6, d.y + 38, 4, 14, '#35261a'); px(ctx, d.x + d.w - 10, d.y + 38, 4, 14, '#35261a');
+function drawDeskFront(ctx, d, state, t, skin) {
+  const D = skin.desk;
+  px(ctx, d.x, d.y + 30, d.w, 8, D.top); px(ctx, d.x, d.y + 30, d.w, 1, D.topHi); // tablero
+  px(ctx, d.x, d.y + 38, d.w, 14, D.body); px(ctx, d.x, d.y + 38, d.w, 1, D.bodyDark);
+  px(ctx, d.x + 6, d.y + 38, 4, 14, D.leg); px(ctx, d.x + d.w - 10, d.y + 38, 4, 14, D.leg);
   px(ctx, d.x + 16, d.y + 31, 28, 5, '#2a3042'); px(ctx, d.x + 17, d.y + 32, 26, 1, '#4a5470'); // teclado
-  if (state === 'working' && Math.floor(t * 9) % 2) px(ctx, d.x + 20 + (Math.floor(t * 9) % 18), d.y + 33, 3, 1, '#4ae0ff');
+  if (state === 'working' && Math.floor(t * 9) % 2) px(ctx, d.x + 20 + (Math.floor(t * 9) % 18), d.y + 33, 3, 1, skin.holo);
   px(ctx, d.x + 54, d.y + 24, 6, 7, '#d9d9e0'); px(ctx, d.x + 60, d.y + 26, 2, 3, '#d9d9e0'); // taza
   if (state === 'working') { const s = Math.sin(t * 3); px(ctx, d.x + 56 + s, d.y + 19, 1, 3, '#ffffff55'); }
 }
 
 // ---------- sala de operaciones ----------
-function drawOpsBack(ctx, room, stats, t) {
+function drawOpsBack(ctx, room, stats, t, skin) {
   const { x, y, w } = room.rect;
   const cx = x + w / 2; const cy = y + 150;
-  const g = ctx.createRadialGradient(cx, cy, 4, cx, cy, 96); g.addColorStop(0, '#7dd3fc44'); g.addColorStop(1, '#7dd3fc00'); ctx.fillStyle = g; ctx.fillRect(cx - 100, cy - 100, 200, 200);
-  px(ctx, cx - 56, cy + 22, 112, 14, '#1a2038'); px(ctx, cx - 50, cy + 18, 100, 6, '#2a3150'); // base de la holomesa
+  const g = ctx.createRadialGradient(cx, cy, 4, cx, cy, 96); g.addColorStop(0, skin.holo + '44'); g.addColorStop(1, skin.holo + '00'); ctx.fillStyle = g; ctx.fillRect(cx - 100, cy - 100, 200, 200);
+  px(ctx, cx - 56, cy + 22, 112, 14, skin.metalDark); px(ctx, cx - 50, cy + 18, 100, 6, skin.metal); // base de la holomesa
   // galaxia espiral giratoria
   for (let i = 0; i < 90; i++) {
     const arm = i % 3; const k = i / 90; const ang = t * 0.5 + k * 9 + arm * 2.09; const rad = 4 + k * 48;
-    ctx.fillStyle = `rgba(125,211,252,${0.9 - k * 0.6})`; ctx.fillRect(Math.round(cx + Math.cos(ang) * rad), Math.round(cy + Math.sin(ang) * rad * 0.38), 2, 2);
+    ctx.globalAlpha = 0.9 - k * 0.6; ctx.fillStyle = skin.holo; ctx.fillRect(Math.round(cx + Math.cos(ang) * rad), Math.round(cy + Math.sin(ang) * rad * 0.38), 2, 2);
   }
+  ctx.globalAlpha = 1;
   px(ctx, cx - 3, cy - 2, 6, 4, '#fff6c8');
   const a = t * 1.1; px(ctx, cx + Math.cos(a) * 62 - 2, cy + Math.sin(a) * 24 - 2, 5, 5, '#ffd84a');
   // panel de datos
-  px(ctx, x + 14, y + 214, w - 28, 80, '#06101a'); ctx.strokeStyle = '#7dd3fc88'; ctx.lineWidth = 1; ctx.strokeRect(x + 14.5, y + 214.5, w - 29, 79);
-  ctx.fillStyle = '#7dd3fc'; ctx.font = `11px ${FONT}`; ctx.textAlign = 'left';
+  px(ctx, x + 14, y + 214, w - 28, 80, '#06101a'); ctx.strokeStyle = skin.holo + '88'; ctx.lineWidth = 1; ctx.strokeRect(x + 14.5, y + 214.5, w - 29, 79);
+  ctx.fillStyle = skin.holo; ctx.font = `11px ${FONT}`; ctx.textAlign = 'left';
   const lines = [
     `Claude   ${stats?.active.claude ?? 0}/${stats?.limit?.claude ?? 2} activos`,
     `Ollama   ${stats?.active.ollama ?? 0}/${stats?.limit?.ollama ?? 1} activos`,
@@ -234,13 +210,13 @@ function poseOf(a, t) {
   return p;
 }
 
-function drawActor(ctx, a, t) {
+function drawActor(ctx, a, t, skin) {
   const pose = poseOf(a, t);
   if (a.seat !== 'desk' || a.walking) { // sombra en el suelo
     ctx.fillStyle = '#00000066'; ctx.beginPath(); ctx.ellipse(a.x, a.y - 1, 12, 3, 0, 0, Math.PI * 2); ctx.fill();
   }
   const hop = a.walking && pose.leg === 1 ? -1 : 0;
-  const sprite = getSprite(a.dept, a.agent, pose);
+  const sprite = getSprite(a.dept, a.agent, pose, skin);
   ctx.drawImage(sprite, Math.round(a.x - CHAR.w / 2), Math.round(a.y - CHAR.h + hop), CHAR.w, CHAR.h);
   if (a.state === 'working' && a.seated && a.dept === 'taller') { /* el sable solo aparece al revisar */ }
 }
@@ -276,11 +252,12 @@ export function createOffice(canvas, { onSelect, onSelectAgent } = {}) {
   const actors = new Map();
   const layers = new Map();
   let hover = null;
+  let skin = DEFAULT_SKIN;
   let raf = 0;
   let last = 0;
 
   const layerFor = (room, dept) => {
-    if (!layers.has(room.id)) layers.set(room.id, buildRoomLayer(dept ?? OPS_ROOM, room.rect.w, room.rect.h, !dept));
+    if (!layers.has(room.id)) layers.set(room.id, buildRoomLayer(dept ? deptView(dept, skin) : { ...OPS_ROOM, color: skin.holo }, room.rect.w, room.rect.h, !dept, skin));
     return layers.get(room.id);
   };
 
@@ -321,24 +298,25 @@ export function createOffice(canvas, { onSelect, onSelectAgent } = {}) {
     last = now;
     if (!reduced) update(dt);
 
-    ctx.fillStyle = '#05060c'; ctx.fillRect(0, 0, CANVAS.w, CANVAS.h);
+    ctx.fillStyle = skin.void; ctx.fillRect(0, 0, CANVAS.w, CANVAS.h);
     const drawables = [];
     for (const room of layout.rooms) {
-      const dept = DEPARTMENTS.find((d) => d.id === room.id);
-      ctx.drawImage(layerFor(room, dept), room.rect.x, room.rect.y);
-      if (!dept) { drawWindow(ctx, room, OPS_ROOM, t); drawOpsBack(ctx, room, model.stats, t); continue; }
-      drawWindow(ctx, room, dept, t);
-      drawProp(ctx, room.id, room, t);
+      const base = DEPARTMENTS.find((d) => d.id === room.id);
+      const dept = base && deptView(base, skin);
+      ctx.drawImage(layerFor(room, base), room.rect.x, room.rect.y);
+      if (!dept) { drawWindow(ctx, room, { ...OPS_ROOM, color: skin.holo }, t, skin); drawOpsBack(ctx, room, model.stats, t, skin); continue; }
+      drawWindow(ctx, room, dept, t, skin);
+      drawProp(ctx, room.id, room, t, skin);
       // estado de cada escritorio según quién lo ocupa
       const sitting = [...actors.values()].filter((a) => a.dept === room.id && a.seat === 'desk');
       room.desks.forEach((d, i) => {
         const occupant = sitting.find((a) => Math.abs(a.home.x - (d.x + 34)) < 1 && Math.abs(a.home.y - (d.y + 44)) < 1);
         const st = occupant?.state ?? null;
-        drawDeskBack(ctx, d, st, t, i);
-        drawables.push({ y: d.y + d.h, draw: () => drawDeskFront(ctx, d, st, t) });
+        drawDeskBack(ctx, d, st, t, i, skin);
+        drawables.push({ y: d.y + d.h, draw: () => drawDeskFront(ctx, d, st, t, skin) });
       });
     }
-    for (const a of actors.values()) drawables.push({ y: a.y, draw: () => drawActor(ctx, a, t), fx: () => drawEffects(ctx, a, t) });
+    for (const a of actors.values()) drawables.push({ y: a.y, draw: () => drawActor(ctx, a, t, skin), fx: () => drawEffects(ctx, a, t) });
     drawables.sort((p, q) => p.y - q.y);
     for (const d of drawables) d.draw();
     for (const d of drawables) d.fx?.();
@@ -350,8 +328,8 @@ export function createOffice(canvas, { onSelect, onSelectAgent } = {}) {
         ctx.font = `bold 11px ${FONT}`; ctx.textAlign = 'left';
         const tw = ctx.measureText(text).width + 12;
         const tx = Math.max(2, Math.min(a.x - tw / 2, CANVAS.w - tw - 2)); const ty = Math.max(2, a.y - CHAR.h - 34);
-        px(ctx, tx, ty, tw, 18, '#000e'); ctx.strokeStyle = '#ffd84a'; ctx.lineWidth = 1; ctx.strokeRect(tx + 0.5, ty + 0.5, tw - 1, 17);
-        ctx.fillStyle = '#ffd84a'; ctx.fillText(text, tx + 6, ty + 13);
+        px(ctx, tx, ty, tw, 18, '#000e'); ctx.strokeStyle = skin.ui.gold; ctx.lineWidth = 1; ctx.strokeRect(tx + 0.5, ty + 0.5, tw - 1, 17);
+        ctx.fillStyle = skin.ui.gold; ctx.fillText(text, tx + 6, ty + 13);
       }
     }
     if (!reduced) raf = requestAnimationFrame(draw);
@@ -372,10 +350,34 @@ export function createOffice(canvas, { onSelect, onSelectAgent } = {}) {
   });
 
   return {
+    setSkin(next) { skin = next; layers.clear(); if (reduced) draw(); },
     update(next) { model = { ...model, ...next }; layout = layoutOffice(model.agents, model.tasks); sync(); if (reduced) draw(); },
     start() { cancelAnimationFrame(raf); last = 0; raf = requestAnimationFrame(draw); if (reduced) draw(); },
     stop() { cancelAnimationFrame(raf); },
     get layout() { return layout; },
     get actors() { return actors; },
   };
+}
+
+/** Miniatura de un skin (sala con ventanal y cuatro personajes). Con `night` se parte en dos: día | noche (skin Auto). */
+export function drawSkinPreview(canvas, skin, night = null) {
+  const W = 160; const H = 84;
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = false;
+  const pose = { leg: 0, arm: 'down', bob: 0, blink: false, slump: false, dome: 0, saber: false };
+  const paint = (sk, x0, x1) => {
+    ctx.save(); ctx.beginPath(); ctx.rect(x0, 0, x1 - x0, H); ctx.clip();
+    ctx.fillStyle = sk.wall; ctx.fillRect(0, 0, W, 44);
+    for (let ty = 44; ty < H; ty += 12) for (let tx = 0; tx < W; tx += 12) { ctx.fillStyle = (tx / 12 + ty / 12) % 2 ? sk.floor.a : sk.floor.b; ctx.fillRect(tx, ty, 12, 12); }
+    ctx.fillStyle = sk.frame; ctx.fillRect(4, 3, W - 8, 38);
+    ctx.save(); ctx.beginPath(); ctx.rect(6, 5, W - 12, 34); ctx.clip();
+    (SCENES[sk.scene] ?? SCENES.space)(ctx, 6, 5, W - 12, 34, 3.5, 11, { color: sk.ui.gold });
+    ctx.restore();
+    ctx.fillStyle = sk.ui.gold; ctx.fillRect(0, 43, W, 1);
+    ['mando', 'hangar', 'taller', 'flota'].forEach((d, i) => ctx.drawImage(getSprite(d, `vista${i}`, pose, sk), 14 + i * 36, 52));
+    ctx.restore();
+  };
+  paint(skin, 0, night ? W / 2 : W);
+  if (night) { paint(night, W / 2, W); ctx.fillStyle = '#fff'; ctx.fillRect(W / 2 - 1, 0, 2, H); }
 }

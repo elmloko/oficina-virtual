@@ -9,7 +9,7 @@
 </head>
 <body>
   <header>
-    <h1>⟡ BASE REBELDE <small>oficina virtual</small></h1>
+    <h1>⟡ <span id="brand">BASE REBELDE</span> <small>oficina virtual</small></h1>
     <nav id="tabs" role="tablist" aria-label="Vistas">
       <button role="tab" data-view="office" aria-selected="true">Oficina</button>
       <button role="tab" data-view="board" aria-selected="false">Tablero</button>
@@ -184,6 +184,11 @@
     <h3>Resultado</h3>
     <pre id="d-result"></pre>
   </aside>
+
+  <div id="skin-widget">
+    <div id="skin-panel" role="radiogroup" aria-label="Skin de la oficina" hidden></div>
+    <button id="skin-fab" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="skin-panel" title="Cambiar skin"><span class="fab-gem" aria-hidden="true"></span><span id="skin-fab-label">Skin</span></button>
+  </div>
 
   <script type="module" src="/app.js"></script>
 </body>
