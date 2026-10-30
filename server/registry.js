@@ -43,6 +43,6 @@ export function listAgents(dir = config.agentsDir) {
   return readdirSync(dir).filter((f) => f.endsWith('.md')).map((f) => {
     const text = readFileSync(join(dir, f), 'utf8');
     const get = (k) => (text.match(new RegExp(`^${k}:\\s*"?(.*?)"?\\s*$`, 'm')) || [])[1] || '';
-    return { name: get('name') || f.slice(0, -3), description: get('description') };
+    return { name: get('name') || f.slice(0, -3), description: get('description'), tools: get('tools') };
   }).sort((a, b) => a.name.localeCompare(b.name));
 }

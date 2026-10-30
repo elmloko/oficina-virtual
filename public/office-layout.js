@@ -1,9 +1,9 @@
 // Distribución de la oficina: lógica pura (sin canvas) para poder probarla en Node.
-export const CANVAS = { w: 1200, h: 700 };
+export const CANVAS = { w: 1560, h: 700 }; // proporción ~2.2:1: casi llena un monitor 16:9 (menos el encabezado) sin franjas
 export const CHAR = { w: 32, h: 44 }; // sprite 16x22 a escala 2
 const MARGIN = 8;
 const COLS = 4;
-const ROOM_W = (CANVAS.w - MARGIN * (COLS + 1)) / COLS; // 290
+const ROOM_W = (CANVAS.w - MARGIN * (COLS + 1)) / COLS; // 380
 const ROOM_H = (CANVAS.h - MARGIN * 3) / 2; // 298
 export const ROOM = { w: ROOM_W, h: ROOM_H };
 
@@ -43,11 +43,14 @@ export function roomRect(i) {
 export const ROOM_ORDER = [...DEPARTMENTS.map((d) => d.id), OPS_ROOM.id];
 
 // Posiciones relativas a la sala.
-const DESK_SLOTS = [[18, 66], [160, 66], [18, 150], [160, 150]];
+// El diseño base mide 290 px de ancho de sala; el espacio sobrante se reparte para que todo quede centrado.
+const EXTRA = ROOM_W - 290;
+const X1 = 18 + EXTRA * 0.25; const X2 = 160 + EXTRA * 0.75;
+const DESK_SLOTS = [[X1, 66], [X2, 66], [X1, 150], [X2, 150]];
 export const DESK = { w: 112, h: 52 };
 export const SEAT = { dx: 34, dy: 44 }; // el personaje se sienta a la izquierda; el monitor queda a la derecha
-const LOUNGE = { x: 10, y: 226, dx: 34, dy: 48, cols: 8 };
-export const GAP = { x: 130, w: 30 }; // columna central entre escritorios (decoración)
+const LOUNGE = { x: 10 + EXTRA / 2, y: 226, dx: 34, dy: 48, cols: 8 };
+export const GAP = { x: 130 + EXTRA / 2, w: 30 }; // columna central entre escritorios (decoración)
 
 const PRIORITY = { running: 4, queued: 3, review: 2, failed: 1 };
 const STATE_OF = { running: 'working', queued: 'queued', review: 'review', failed: 'failed' };

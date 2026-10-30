@@ -15,6 +15,7 @@ import { setEnvVar, KEY_RE } from './envfile.js';
 import { createProbe, collectSystem } from './system.js';
 import { join } from 'node:path';
 import { telegramFromEnv } from './telegram.js';
+import { createDispatcher, askClaude } from './dispatcher.js';
 import { checkUpload, saveFile, readStored, removeFile, removeTaskDir, isImage, extOf, MAX_FILE_BYTES, MAX_FILES_PER_TASK, MAX_TOTAL_BYTES } from './attachments.js';
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png' };
@@ -22,7 +23,7 @@ const MANUAL_STATUSES = new Set(['backlog', 'review', 'done']); // el resto lo m
 const MODES = new Set(['read', 'edit']);
 const MAX_REVIEWERS = 4;
 
-export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loadProviders(), logger = createLogger(), envFile = config.envFile, probe = createProbe({ config }), attachmentsDir = config.attachmentsDir } = {}) {
+export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loadProviders(), logger = createLogger(), envFile = config.envFile, probe = createProbe({ config }), attachmentsDir = config.attachmentsDir, dispatcher } = {}) {
   const startedAt = new Date();
   const engineSet = () => new Set(['auto', 'claude', 'ollama', ...Object.keys(providers)]);
   /** Recarga los proveedores en el mismo objeto (el runner conserva la referencia). */
@@ -31,6 +32,7 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
   const broadcast = (msg) => { const s = JSON.stringify(msg); for (const ws of sockets) if (ws.readyState === 1) ws.send(s); };
   const emit = (id, extra = {}) => { const task = db.getTask(id); if (task) broadcast({ type: 'task', task, ...extra }); };
   const runner = createRunner(db, emit, { attachmentsDir, ...runnerOpts, providers, logger });
+  dispatcher ??= createDispatcher({ listAgents, agentsDir: config.agentsDir, logger, ask: (p) => askClaude(p, { spawnFn: runnerOpts.spawnFn }) });
   const scheduler = createScheduler({ db, runner, emit, now, logger });
   logger.subscribe((entry) => broadcast({ type: 'log', entry }));
   const publicDir = resolve(config.root, 'public');
@@ -186,15 +188,30 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
 
     // --- tareas ---
     if (method === 'POST' && url.pathname === '/api/tasks') {
-      const body = await readJson(req);
+      let body = await readJson(req);
+      // Sin agente (o "auto"): lo elige el despachador y, si ninguno encaja, crea uno nuevo.
+      const auto = !body.agent || body.agent === 'auto';
+      if (auto) {
+        const probe = validate({ ...body, agent: listAgents()[0]?.name });
+        if (probe.error) return send(res, 400, { error: probe.error });
+      }
+      let choice = null;
+      if (auto) {
+        try { choice = await dispatcher.choose({ title: body.title, description: body.description ?? '', project: body.project || null, mode: body.mode ?? 'read' }); } catch (e) { return send(res, 409, { error: `No se pudo elegir agente: ${e.message}` }); }
+        body = { ...body, agent: choice.agent };
+      }
       const { error, value } = validate(body);
       if (error) return send(res, 400, { error });
       const chain = parseChain(body.review, value.agent);
       if (chain.error) return send(res, 400, { error: chain.error });
       const task = db.createTask({ ...value, chain: chain.value });
       db.audit('task.create', task.id, `${task.agent} ${task.project ?? ''}`);
+      if (choice) {
+        if (choice.created) db.audit('agent.create', task.id, `${choice.created.name}: ${choice.created.description}`);
+        db.addEvent(task.id, 'info', `Agente elegido automáticamente: ${choice.agent}${choice.created ? ' (agente nuevo creado)' : ''} — ${choice.reason}`);
+      }
       emit(task.id);
-      return send(res, 201, task);
+      return send(res, 201, choice ? { ...task, auto: choice } : task);
     }
     if (method === 'POST' && url.pathname === '/api/objectives') {
       const body = await readJson(req);

@@ -80,11 +80,26 @@ function showView(v) {
   state.view = v;
   for (const b of document.querySelectorAll('#tabs button')) b.setAttribute('aria-selected', String(b.dataset.view === v));
   for (const s of document.querySelectorAll('.view')) s.hidden = s.id !== `view-${v}`;
+  requestAnimationFrame(fitOffice);
   if (v === 'costs') refreshCosts();
   clearInterval(showView.timer);
   if (v === 'system') { refreshSystem(); showView.timer = setInterval(refreshSystem, 2000); }
   render();
 }
+
+/** Ajusta el mapa para que quepa entero en la ventana (sin scroll), conservando su proporción. */
+function fitOffice() {
+  const stage = document.querySelector('#view-office .stage');
+  const canvas = $('#office');
+  if (!stage || !canvas.width || $('#view-office').hidden) return;
+  const w = stage.clientWidth; const h = stage.clientHeight;
+  if (!w || !h) return;
+  const scale = Math.min(w / canvas.width, h / canvas.height);
+  canvas.style.width = `${Math.floor(canvas.width * scale)}px`;
+  canvas.style.height = `${Math.floor(canvas.height * scale)}px`;
+}
+window.addEventListener('resize', fitOffice);
+if (window.ResizeObserver) new ResizeObserver(fitOffice).observe(document.body);
 
 function render() {
   const s = state.stats;
@@ -619,7 +634,9 @@ async function renderAgent() {
 // ---------- formularios ----------
 function fillSelects() {
   const f = $('#new-form');
-  f.agent.replaceChildren(...state.agents.map((a) => el('option', { value: a.name, textContent: `${a.name} — ${a.description}`.slice(0, 80) })));
+  const keepAgent = f.agent.value;
+  f.agent.replaceChildren(el('option', { value: 'auto', textContent: '🤖 Automático — el sistema elige (y crea uno si hace falta)' }), ...state.agents.map((a) => el('option', { value: a.name, textContent: `${a.name} — ${a.description}`.slice(0, 80) })));
+  if (keepAgent && [...f.agent.options].some((o) => o.value === keepAgent)) f.agent.value = keepAgent;
   const projectOptions = () => [el('option', { value: '', textContent: '(sin proyecto)' }), ...state.projects.map((p) => el('option', { value: p.name, textContent: p.name }))];
   f.project.replaceChildren(...projectOptions());
   const engines = [['auto', 'Auto (el router decide)'], ['claude', 'Claude (suscripción)'], ['ollama', 'Ollama (local)'], ...state.providers.map((p) => [p.name, `${p.name} · en internet (${p.model})`])];
@@ -643,7 +660,10 @@ function wireDialog(dialogSel, formSel, submit) {
     e.preventDefault();
     const err = f.querySelector('.form-error');
     err.textContent = '';
-    try { await submit(f); f.reset(); d.close(); } catch (x) { err.textContent = x.message; }
+    const btn = f.querySelector('button[type=submit], button.primary:not([type=button])');
+    const label = btn?.textContent;
+    if (btn) { btn.disabled = true; btn.textContent = 'Procesando…'; } // elegir agente automáticamente puede tardar unos segundos
+    try { await submit(f); f.reset(); d.close(); } catch (x) { err.textContent = x.message; } finally { if (btn) { btn.disabled = false; btn.textContent = label; } }
   };
   return (setup) => { f.querySelector('.form-error').textContent = ''; setup?.(f); d.showModal(); };
 }
@@ -660,6 +680,7 @@ function setupForms() {
   openTaskDialog = wireDialog('#new-dialog', '#new-form', async (f) => {
     const fd = new FormData(f);
     const task = await post('/api/tasks', { ...Object.fromEntries(fd), review: fd.getAll('review') });
+    if (task.auto) toast(`${task.auto.created ? 'Agente nuevo creado: ' : 'Agente elegido: '}${task.agent} — ${task.auto.reason.length > 110 ? task.auto.reason.slice(0, 110) + '…' : task.auto.reason}`, false);
     const errs = await uploadFiles(task.id, newFiles);
     if (errs.length) toast(`La misión se creó, pero fallaron adjuntos: ${errs.join(' · ')}`);
   });

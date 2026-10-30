@@ -22,7 +22,9 @@ body {
     radial-gradient(2px 2px at 160px 60px, var(--star2, #ffd84a66) 50%, transparent 51%);
   background-size: 200px 160px;
 }
-header { display: flex; align-items: center; gap: 16px; padding: 12px 20px; border-bottom: 2px solid var(--line); background: var(--panel); }
+html, body { height: 100%; }
+body { display: flex; flex-direction: column; overflow: hidden; }
+header { flex: none; display: flex; align-items: center; gap: 16px; padding: 12px 20px; border-bottom: 2px solid var(--line); background: var(--panel); }
 h1 { margin: 0; font-size: 18px; letter-spacing: 3px; color: var(--gold); text-shadow: 2px 2px 0 #000; }
 h1 small { color: var(--muted); letter-spacing: 1px; font-size: 12px; }
 #stats { margin-left: auto; color: var(--muted); font-size: 12px; }
@@ -76,10 +78,13 @@ nav#tabs button { border-color: transparent; background: transparent; color: var
 nav#tabs button[aria-selected="true"] { color: var(--gold); border-color: var(--gold); background: var(--panel-2); }
 header { flex-wrap: wrap; }
 #stats { margin-left: auto; }
-.view { padding: 12px 20px; }
+.view { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 12px 20px; }
 .view[hidden] { display: none; }
-#office { display: block; width: 100%; max-width: 1200px; height: auto; margin: 0 auto; image-rendering: pixelated; border: 2px solid var(--line); background: #07090f; }
-.legend { max-width: 1200px; margin: 8px auto 0; color: var(--muted); font-size: 12px; }
+#view-office { display: flex; flex-direction: column; align-items: center; overflow: hidden; padding: 8px 12px; }
+#view-office[hidden] { display: none; }
+#view-office .stage { flex: 1 1 auto; min-height: 0; width: 100%; display: flex; align-items: center; justify-content: center; }
+#office { display: block; flex: none; /* el tamaño lo fija fitOffice() para que todo el mapa quepa en la pantalla */ width: 100%; height: auto; image-rendering: pixelated; border: 2px solid var(--line); background: #07090f; }
+.legend { flex: none; margin: 6px auto 0; color: var(--muted); font-size: 12px; text-align: center; }
 .dot { display: inline-block; width: 9px; height: 9px; margin: 0 4px 0 12px; }
 .dot.work { background: var(--blue); } .dot.queued { background: var(--muted); } .dot.review { background: var(--violet); } .dot.fail { background: var(--red); }
 #board { padding: 0; }
