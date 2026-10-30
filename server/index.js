@@ -18,6 +18,7 @@ import { join } from 'node:path';
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png' };
 const MANUAL_STATUSES = new Set(['backlog', 'review', 'done']); // el resto lo mueve el runner
 const MODES = new Set(['read', 'edit']);
+const MAX_REVIEWERS = 4;
 
 export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loadProviders(), logger = createLogger(), envFile = config.envFile, probe = createProbe({ config }) } = {}) {
   const startedAt = new Date();
@@ -60,6 +61,20 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
       if (!resolveProject(out.project)) return { error: 'Proyecto fuera de htdocs o inexistente' };
       if (isExtraRoot(out.project) && out.mode === 'edit') return { error: 'Las carpetas extra son de solo lectura' };
     } else if (out.mode === 'edit') return { error: 'Editar requiere un proyecto' };
+    return { value: out };
+  }
+
+  /** Agentes que revisarán la misión al terminar: lista de agentes existentes, sin repetir ni incluir al propio autor. */
+  function parseChain(raw, author) {
+    if (raw == null || raw === '') return { value: [] };
+    if (!Array.isArray(raw)) return { error: 'La revisión automática debe ser una lista de agentes' };
+    const agents = new Set(listAgents().map((a) => a.name));
+    const out = [...new Set(raw)];
+    if (out.length > MAX_REVIEWERS) return { error: `Como máximo ${MAX_REVIEWERS} revisores` };
+    for (const a of out) {
+      if (typeof a !== 'string' || !agents.has(a)) return { error: `Revisor desconocido: ${String(a).slice(0, 40)}` };
+      if (a === author) return { error: 'Un agente no puede revisarse a sí mismo' };
+    }
     return { value: out };
   }
 
@@ -160,9 +175,12 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
 
     // --- tareas ---
     if (method === 'POST' && url.pathname === '/api/tasks') {
-      const { error, value } = validate(await readJson(req));
+      const body = await readJson(req);
+      const { error, value } = validate(body);
       if (error) return send(res, 400, { error });
-      const task = db.createTask(value);
+      const chain = parseChain(body.review, value.agent);
+      if (chain.error) return send(res, 400, { error: chain.error });
+      const task = db.createTask({ ...value, chain: chain.value });
       db.audit('task.create', task.id, `${task.agent} ${task.project ?? ''}`);
       emit(task.id);
       return send(res, 201, task);

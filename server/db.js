@@ -16,7 +16,7 @@ export const DEFAULT_SETTINGS = {
 const LIMIT_KEYS = new Set(['max_claude', 'max_ollama', 'max_api']);
 
 const TASK_COLUMNS = ['title', 'description', 'project', 'agent', 'engine', 'mode', 'status', 'result', 'error',
-  'cost_usd', 'started_at', 'finished_at', 'parent_id', 'depends_on', 'kind', 'schedule_id', 'model', 'reply_text', 'branch', 'worktree', 'base_sha', 'change_state'];
+  'cost_usd', 'started_at', 'finished_at', 'parent_id', 'depends_on', 'kind', 'schedule_id', 'model', 'reply_text', 'branch', 'worktree', 'base_sha', 'change_state', 'chain_fired'];
 
 function addColumnIfMissing(db, table, column, ddl) {
   const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
@@ -84,6 +84,9 @@ export function openDb(file = config.dbFile) {
   addColumnIfMissing(db, 'tasks', 'worktree', 'TEXT');
   addColumnIfMissing(db, 'tasks', 'base_sha', 'TEXT');
   addColumnIfMissing(db, 'tasks', 'change_state', 'TEXT'); // pending | applied | discarded
+  addColumnIfMissing(db, 'tasks', 'chain', "TEXT NOT NULL DEFAULT '[]'"); // agentes que revisan la misión al terminar
+  addColumnIfMissing(db, 'tasks', 'chain_fired', 'INTEGER NOT NULL DEFAULT 0');
+  addColumnIfMissing(db, 'tasks', 'review_of', 'INTEGER'); // esta misión revisa a la #review_of
   addColumnIfMissing(db, 'tasks', 'reply_text', 'TEXT'); // respuesta del usuario en vuelo (o cancelada, lista para editar)
 
   // Una tarea que quedó "running"/"queued" en un reinicio ya no tiene proceso: se marca fallida.
@@ -118,15 +121,16 @@ export function openDb(file = config.dbFile) {
     delSchedule: db.prepare('DELETE FROM schedules WHERE id = ?'),
   };
 
-  const parseTask = (t) => (t ? { ...t, depends_on: JSON.parse(t.depends_on || '[]') } : t);
+  const parseTask = (t) => (t ? { ...t, depends_on: JSON.parse(t.depends_on || '[]'), chain: JSON.parse(t.chain || '[]') } : t);
 
   return {
     raw: db,
     createTask(t) {
-      const row = db.prepare(`INSERT INTO tasks (title, description, project, agent, engine, mode, parent_id, depends_on, kind, schedule_id, model)
-                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`)
+      const row = db.prepare(`INSERT INTO tasks (title, description, project, agent, engine, mode, parent_id, depends_on, kind, schedule_id, model, chain, review_of)
+                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`)
         .get(t.title, t.description ?? '', t.project ?? null, t.agent, t.engine ?? 'auto', t.mode ?? 'read',
-          t.parent_id ?? null, JSON.stringify(t.depends_on ?? []), t.kind ?? 'task', t.schedule_id ?? null, t.model ?? null);
+          t.parent_id ?? null, JSON.stringify(t.depends_on ?? []), t.kind ?? 'task', t.schedule_id ?? null, t.model ?? null,
+          JSON.stringify(t.chain ?? []), t.review_of ?? null);
       return parseTask(row);
     },
     getTask: (id) => parseTask(q.get.get(id)),

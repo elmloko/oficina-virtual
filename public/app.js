@@ -14,6 +14,7 @@ const COLUMNS = [
   ['failed', 'Fallidas'],
 ];
 const MANUAL = new Set(['backlog', 'review', 'done']);
+const REVIEWERS = [['reviewer', 'Calidad del código, bugs y regresiones'], ['security', 'Seguridad, secretos y aislamiento entre tenants'], ['tester', 'Cobertura y casos de prueba que faltan']];
 const DAYS = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
 
 const $ = (s) => document.querySelector(s);
@@ -135,6 +136,8 @@ function card(t) {
   if (t.cost_usd) meta.append(el('span', { textContent: money(t.cost_usd) }));
   if (kids.length) meta.append(el('span', { textContent: `pasos ${kids.filter((k) => ['review', 'done'].includes(k.status)).length}/${kids.length}` }));
   if (t.parent_id) meta.append(el('span', { textContent: `↳ #${t.parent_id}` }));
+  if (t.review_of) meta.append(el('span', { textContent: `revisa #${t.review_of}` }));
+  if (t.chain?.length) meta.append(el('span', { textContent: `revisan: ${t.chain.join(', ')}` }));
   if (t.depends_on?.length) meta.append(el('span', { textContent: `espera ${t.depends_on.map((d) => '#' + d).join(' ')}` }));
   c.append(el('div', { className: 't', textContent: `#${t.id} ${t.title}` }), meta);
   c.addEventListener('dragstart', (e) => e.dataTransfer.setData('text/plain', String(t.id)));
@@ -200,6 +203,20 @@ function drawer(t) {
   if (chg.dataset.sig !== chgSig) { chg.dataset.sig = chgSig; const b = changesBlock(t); chg.replaceChildren(...(b ? [b] : [])); }
   const steps = $('#d-steps');
   steps.replaceChildren();
+  const reviews = [...state.tasks.values()].filter((k) => k.review_of === t.id).sort((a, b) => a.id - b.id);
+  if (reviews.length) {
+    steps.append(el('h3', { textContent: 'Revisiones automáticas' }));
+    for (const k of reviews) {
+      const row = el('button', { className: `step ${k.status}`, textContent: `#${k.id} [${STATUS_ES[k.status] ?? k.status}] ${k.agent}` });
+      row.onclick = () => openDrawer(k.id);
+      steps.append(row);
+    }
+  }
+  if (t.review_of) {
+    const back = el('button', { className: 'step', textContent: `↩ Revisa la misión #${t.review_of}${state.tasks.get(t.review_of) ? ' — ' + state.tasks.get(t.review_of).title : ''}` });
+    back.onclick = () => state.tasks.has(t.review_of) && openDrawer(t.review_of);
+    steps.append(back);
+  }
   if (kids.length) {
     steps.append(el('h3', { textContent: 'Plan' }));
     for (const k of kids) {
@@ -452,6 +469,10 @@ function fillSelects() {
   if (engines.some(([v]) => v === keep)) f.engine.value = keep;
   $('#routine-form').project.replaceChildren(...projectOptions());
   $('#routine-form').template.replaceChildren(...state.templates.map((t) => el('option', { value: t.id, textContent: `${t.name}${t.needsProject ? ' (requiere proyecto)' : ''}` })));
+  const names = new Set(state.agents.map((a) => a.name));
+  const reviewers = REVIEWERS.filter(([n]) => names.has(n));
+  $('#review-set').hidden = !reviewers.length;
+  $('#review-opts').replaceChildren(...reviewers.map(([n, why]) => el('label', { className: 'chk', title: why }, el('input', { type: 'checkbox', name: 'review', value: n }), el('span', { textContent: n }))));
   $('#days').replaceChildren(...DAYS.map((d, i) => el('label', { className: 'chk' }, el('input', { type: 'checkbox', name: 'day', value: String(i) }), el('span', { textContent: d }))));
 }
 
@@ -472,7 +493,10 @@ let openTaskDialog, openObjDialog, openRoutineDialog;
 
 function setupForms() {
   fillSelects();
-  openTaskDialog = wireDialog('#new-dialog', '#new-form', async (f) => { await post('/api/tasks', Object.fromEntries(new FormData(f))); });
+  openTaskDialog = wireDialog('#new-dialog', '#new-form', async (f) => {
+    const fd = new FormData(f);
+    await post('/api/tasks', { ...Object.fromEntries(fd), review: fd.getAll('review') });
+  });
   openObjDialog = wireDialog('#obj-dialog', '#obj-form', async (f) => {
     const o = await post('/api/objectives', Object.fromEntries(new FormData(f)));
     await post(`/api/tasks/${o.id}/run`).catch((e) => toast(e.message));
@@ -913,7 +937,7 @@ function attnCard({ kind, task: t }) {
     head.append(cb);
   }
   head.append(el('strong', { textContent: `#${t.id} ${t.title}` }));
-  const meta = el('div', { className: 'attn-meta', textContent: [t.kind === 'objective' ? 'coordinador' : t.agent, t.project || 'sin proyecto', t.engine, since(t.finished_at ?? t.updated_at), t.change_state === 'pending' && '✎ cambios por aplicar'].filter(Boolean).join(' · ') });
+  const meta = el('div', { className: 'attn-meta', textContent: [t.kind === 'objective' ? 'coordinador' : t.agent, t.project || 'sin proyecto', t.engine, since(t.finished_at ?? t.updated_at), t.review_of && `revisión de #${t.review_of}`, t.change_state === 'pending' && '✎ cambios por aplicar'].filter(Boolean).join(' · ') });
   const pending = kind === 'plan' ? children(t.id).filter((k) => ['backlog', 'failed'].includes(k.status)).length : 0;
   const text = kind === 'failed' ? (t.error || 'Falló sin detalle') : kind === 'plan' ? `${pending} paso(s) pendientes de lanzar` : (t.result || '');
   const body = text ? el('div', { className: `attn-body${kind === 'failed' ? ' err' : ''}`, textContent: text.length > 1500 ? text.slice(-1500) : text }) : null; // de una pregunta importa el final

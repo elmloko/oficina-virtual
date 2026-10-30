@@ -238,3 +238,20 @@ test('una misión de solo lectura no crea copias ni ramas', opts, async () => {
   assert.equal(db.getTask(t.id).worktree, null);
   db.raw.close();
 });
+
+test('el revisor recibe el diff de la misión y lee el código en su copia aislada', opts, async () => {
+  const t0 = (await call('POST', '/api/tasks', { title: 'Cambio revisable', agent: 'backend', project: 'proj', mode: 'edit', engine: 'claude', review: ['reviewer'] })).body;
+  await call('POST', `/api/tasks/${t0.id}/run`, { confirm: true });
+  const rev = await waitFor(() => app.db.listTasks().find((x) => x.review_of === t0.id && x.status === 'review'));
+  const orig = app.db.getTask(t0.id);
+  assert.equal(orig.change_state, 'pending'); // el diff estaba listo antes de revisar
+  const revCall = calls.find((c) => c.input.includes(`Revisa con criterio el trabajo de la misión #${t0.id}`));
+  assert.ok(revCall, 'se lanzó el revisor');
+  assert.equal(revCall.cwd, join(worktrees, String(t0.id))); // el revisor lee la copia con los cambios
+  assert.ok(revCall.input.includes(`--- Cambios de la misión #${t0.id} (rama oficina/m${t0.id}) ---`));
+  assert.ok(revCall.input.includes('M a.txt (+1 −1)'));
+  assert.ok(revCall.input.includes('+DOS EDITADO'));
+  assert.equal(app.db.getTask(rev.id).mode, 'read');
+  assert.equal(rd(join(repoDir, 'a.txt')), 'uno\ndos\ntres\n'); // revisar no toca el proyecto
+  await call('POST', `/api/tasks/${t0.id}/discard`, { confirm: true });
+});

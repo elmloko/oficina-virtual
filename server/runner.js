@@ -11,6 +11,7 @@ import * as gitworkDefault from './gitwork.js';
 const DONE_STATES = new Set(['review', 'done']);
 const RESULT_CONTEXT_LIMIT = 6000;
 const CONVERSATION_TURNS = 12; // mensajes (agente + usuario) que se reenvían como contexto
+const REVIEW_PATCH_LIMIT = 20_000; // diff que se entrega a quien revisa una misión que editó archivos
 
 /**
  * Cola con límite de concurrencia por motor, dependencias entre tareas, presupuesto y timeout.
@@ -28,6 +29,7 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
   const waiting = []; // { id, engine, model }
   const procs = new Map(); // id -> { kill }
   const timedOut = new Set();
+  const extraPrompt = new Map(); // id -> contexto adicional calculado antes de ejecutar (p. ej. el diff a revisar)
   const replySnaps = new Map(); // id -> estado previo a una respuesta en vuelo, para poder deshacerla al cancelar
 
   const log = (id, kind, text) => { db.addEvent(id, kind, text); emit(id, { event: { kind, text } }); };
@@ -114,6 +116,7 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     logger.info(`#${id} «${task.title.slice(0, 60)}» empezó (${task.agent} · ${engine})`);
     const timer = setTimeout(() => { timedOut.add(id); procs.get(id)?.kill(); }, db.settings().task_timeout_min * 60_000);
     try {
+      if (task.review_of) { const ctx = await reviewContext(task); if (ctx) extraPrompt.set(id, ctx); }
       const out = engine === 'claude' ? await runClaude(task) : engine === 'ollama' ? await runOllama(task, model) : await runProvider(task, engine);
       if (db.getTask(id).status !== 'running') { await afterCancel(id); return; } // cancelada
       if (task.kind === 'objective') createPlan(task, out.result);
@@ -122,6 +125,7 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
       replySnaps.delete(id);
       patch(id, { status: 'review', result: out.result, cost_usd: base + (out.cost ?? 0), reply_text: null, finished_at: new Date().toISOString() });
       logger.info(`#${id} terminó (${engine}${out.cost ? ` · $${out.cost.toFixed(3)}` : ''})`);
+      try { spawnReviews(id); } catch (e) { log(id, 'error', `No se pudo lanzar la revisión automática: ${e.message}`); } // nunca debe fallar la misión original
     } catch (err) {
       if (db.getTask(id).status !== 'running') { await afterCancel(id); return; }
       const msg = timedOut.has(id) ? `Tiempo agotado (${db.settings().task_timeout_min} min)` : err.message;
@@ -129,7 +133,44 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
       replySnaps.delete(id);
       patch(id, { status: 'failed', error: msg, reply_text: null, finished_at: new Date().toISOString() });
       logger.error(`#${id} falló: ${msg.slice(0, 200)}`);
-    } finally { clearTimeout(timer); }
+    } finally { clearTimeout(timer); extraPrompt.delete(id); }
+  }
+
+  // ---------- revisión cruzada: otros agentes revisan el trabajo al terminar ----------
+  const reviewBrief = (agent, task) => [
+    `Revisa con criterio el trabajo de la misión #${task.id} («${task.title}»), hecha por el agente ${task.agent}. Evalúa desde tu especialidad (${agent}).`,
+    'Responde en español con: 1) Veredicto: APROBAR o CAMBIOS NECESARIOS. 2) Hallazgos ordenados por gravedad (con archivo y línea si aplica). 3) Qué corregirías. No modifiques archivos.',
+    ...(agent === 'security' ? ['Presta atención especial al aislamiento entre tenants, a la validación de entradas y a posibles fugas de datos o secretos.'] : []),
+  ].join('\n');
+
+  /** Lanza una misión de solo lectura por cada agente de la cadena. Solo la primera vez que la misión termina bien. */
+  function spawnReviews(id) {
+    const task = db.getTask(id);
+    if (!task || task.kind !== 'task' || !task.chain.length || task.chain_fired) return;
+    db.updateTask(id, { chain_fired: 1 });
+    const launched = [];
+    for (const agent of task.chain) {
+      const rev = db.createTask({
+        title: `Revisar #${id}: ${task.title}`.slice(0, 200), description: reviewBrief(agent, task), project: task.project,
+        agent, engine: 'auto', mode: 'read', review_of: id, depends_on: [id],
+      });
+      emit(rev.id);
+      try { enqueue(rev.id); launched.push(`#${rev.id} ${agent}`); } catch (e) { log(id, 'error', `No se pudo lanzar la revisión de ${agent}: ${e.message}`); }
+    }
+    if (launched.length) log(id, 'info', `Revisión automática en curso: ${launched.join(', ')}.`);
+    db.audit('review.chain', id, task.chain.join(','));
+  }
+
+  /** Quien revisa una misión que editó archivos recibe su diff (el modo plan no puede ejecutar git). */
+  async function reviewContext(task) {
+    const orig = db.getTask(task.review_of);
+    if (!orig?.worktree || orig.change_state !== 'pending' || !existsSync(orig.worktree)) return '';
+    try {
+      const c = await exclusive(() => gitwork.changes(orig.worktree, orig.base_sha)); // dos revisores no deben tocar el índice a la vez
+      if (!c.files.length) return '';
+      const list = c.files.map((f) => `${f.status} ${f.path} (+${f.additions} −${f.deletions})`).join('\n');
+      return `--- Cambios de la misión #${orig.id} (rama ${orig.branch}) ---\n${list}\n\n${c.patch.slice(0, REVIEW_PATCH_LIMIT)}${c.patch.length > REVIEW_PATCH_LIMIT ? '\n[diff recortado]' : ''}`;
+    } catch { return ''; }
   }
 
   // ---------- misiones que editan: copia aislada en una rama de git ----------
@@ -238,6 +279,7 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
       parts.push('--- Conversación hasta ahora (continúa a partir del último mensaje del usuario) ---');
       for (const e of turns) parts.push(e.kind === 'user' ? `Usuario: ${e.text}` : `Tú (${task.agent}): ${e.text.slice(0, RESULT_CONTEXT_LIMIT)}`);
     }
+    if (extraPrompt.get(task.id)) parts.push(extraPrompt.get(task.id));
     return parts.join('\n\n');
   }
 
@@ -246,6 +288,8 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     if (task.project && !repo) throw new Error(`Proyecto no válido: ${task.project}`);
     let cwd = repo ?? process.cwd();
     if (task.mode === 'edit' && repo) cwd = (await prepareWorktree(task, repo)) ?? cwd; // aislada si el proyecto es un repo git
+    const orig = task.review_of ? db.getTask(task.review_of) : null;
+    if (orig?.worktree && orig.change_state === 'pending' && existsSync(orig.worktree)) cwd = orig.worktree; // el revisor lee el código ya modificado
     if (db.getTask(task.id).status !== 'running') throw new Error('Cancelada'); // cancelada mientras se preparaba la copia
     // "plan" = solo lectura. "acceptEdits" permite editar archivos pero no ejecutar comandos arbitrarios.
     const args = ['-p', '--output-format', 'stream-json', '--verbose', '--no-session-persistence',

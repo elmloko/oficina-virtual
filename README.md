@@ -52,3 +52,12 @@ Cuando una misión en modo edición corre en un proyecto git con commits, **no t
 - Responder al agente (o reintentar) continúa en la misma rama. Cancelar una ejecución a medias devuelve la copia a su último commit. Si la misión no modificó archivos no queda rama.
 - La copia solo trae lo versionado: no incluye `vendor/`, `node_modules/` ni `.env` (lo ignorado por git). Proyectos sin git (o sin commits) se editan en su sitio, y la misión lo avisa porque no se podrá revertir.
 - API: `GET /api/tasks/:id/changes`, `POST /api/tasks/:id/apply`, `POST /api/tasks/:id/discard`.
+
+## Revisión cruzada automática
+
+Al crear una misión puedes marcar **revisores** (`reviewer`, `security`, `tester`). Cuando la misión termina bien, se crean y lanzan solas una misión de solo lectura por revisor (`review_of`, dependen de la original):
+
+- Reciben el resultado de la misión original y, si editó archivos en una rama, el **diff** (hasta 20 KB) y leen el código en esa copia aislada.
+- Su veredicto llega a la bandeja de atención y se enlaza desde el panel de la misión original («Revisiones automáticas»).
+- Se lanzan **una sola vez** (responder o reintentar después no las repite) y solo si la misión original terminó bien. Un revisor que no pueda lanzarse (p. ej. presupuesto diario agotado) deja un aviso en el registro pero nunca marca fallida a la misión original.
+- Máximo 4 revisores, sin repetir y sin el propio autor. Cada revisión cuenta para el presupuesto diario.

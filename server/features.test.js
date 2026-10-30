@@ -531,3 +531,71 @@ test('cancelar una ejecución normal (no una respuesta) sigue mandando la misió
   await new Promise((r) => setTimeout(r, 250)); // deja terminar el proceso cancelado antes de cerrar la base
   db.raw.close();
 });
+
+// ---------- revisión cruzada ----------
+test('API: valida la cadena de revisión (lista de agentes existentes, sin repetir y sin el propio autor)', async () => {
+  const mk = (review) => call('POST', '/api/tasks', { title: 'X', agent: 'backend', review });
+  assert.equal((await mk('reviewer')).status, 400); // no es lista
+  assert.equal((await mk(['fantasma'])).status, 400);
+  assert.equal((await mk(['backend'])).status, 400); // el autor no se revisa a sí mismo
+  assert.equal((await mk(['reviewer', 'security', 'tester', 'devops', 'analyst'])).status, 400); // demasiados
+  const ok = await mk(['reviewer', 'reviewer', 'security']); // los repetidos se colapsan
+  assert.equal(ok.status, 201);
+  assert.deepEqual(ok.body.chain, ['reviewer', 'security']);
+  assert.deepEqual((await call('POST', '/api/tasks', { title: 'Sin cadena', agent: 'backend' })).body.chain, []);
+});
+
+test('revisión cruzada: al terminar bien se lanzan los revisores (solo lectura, con el resultado), una sola vez', async () => {
+  const t = (await call('POST', '/api/tasks', { title: 'Endpoint de guías', agent: 'backend', review: ['reviewer', 'security'] })).body;
+  await call('POST', `/api/tasks/${t.id}/run`, {});
+  await waitFor(() => app.db.listTasks().filter((x) => x.review_of === t.id).length === 2 && app.db.listTasks().filter((x) => x.review_of === t.id).every((x) => x.status === 'review'), 6000);
+  const revs = app.db.listTasks().filter((x) => x.review_of === t.id).sort((a, b) => a.id - b.id);
+  assert.deepEqual(revs.map((r) => r.agent), ['reviewer', 'security']);
+  for (const r of revs) {
+    assert.equal(r.mode, 'read');
+    assert.deepEqual(r.depends_on, [t.id]);
+    assert.equal(r.project, null);
+    assert.match(r.title, new RegExp(`Revisar #${t.id}`));
+  }
+  assert.match(revs[1].description, /tenants/); // el revisor de seguridad recibe su foco
+  assert.equal(app.db.getTask(t.id).chain_fired, 1);
+  assert.ok(app.db.events(t.id).some((e) => /Revisión automática en curso/.test(e.text)));
+
+  // el revisor ve el resultado de la misión original
+  const revPrompt = apiCalls.filter((c) => c.input.includes(`Revisa con criterio el trabajo de la misión #${t.id}`));
+  assert.equal(revPrompt.length, 2);
+  assert.ok(revPrompt[0].input.includes(`--- Resultado del paso previo #${t.id} (Endpoint de guías) ---\nhecho`));
+
+  // responder a la misión original no vuelve a lanzar revisiones
+  await call('POST', `/api/tasks/${t.id}/reply`, { text: 'ajusta algo' });
+  await waitFor(() => app.db.getTask(t.id).status === 'review' && app.db.getTask(t.id).reply_text === null);
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(app.db.listTasks().filter((x) => x.review_of === t.id).length, 2);
+});
+
+test('revisión cruzada: una misión fallida o cancelada no lanza revisores', async () => {
+  const f = claudeFactory(() => [{ type: 'result', is_error: true, result: 'boom', total_cost_usd: 0 }]);
+  const db = openDb(':memory:');
+  const runner = createRunner(db, () => {}, { spawnFn: f.spawnFn, registry });
+  const t = db.createTask({ title: 'Falla', agent: 'backend', engine: 'claude', chain: ['reviewer'] });
+  runner.enqueue(t.id);
+  await waitFor(() => db.getTask(t.id).status === 'failed');
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(db.listTasks().length, 1);
+  assert.equal(db.getTask(t.id).chain_fired, 0); // si se reintenta y sale bien, entonces sí se revisa
+  db.raw.close();
+});
+
+test('revisión cruzada: si falla el presupuesto de un revisor, la misión original sigue bien y queda el aviso', async () => {
+  const f = claudeFactory(ok('listo', 5)); // cada ejecución cuesta $5
+  const db = openDb(':memory:');
+  db.setSettings({ daily_budget_usd: 1 });
+  const runner = createRunner(db, () => {}, { spawnFn: f.spawnFn, registry });
+  const t = db.createTask({ title: 'Cara', agent: 'backend', engine: 'claude', chain: ['reviewer'] });
+  runner.enqueue(t.id);
+  await waitFor(() => db.getTask(t.id).status === 'review');
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(db.getTask(t.id).status, 'review'); // no se marca fallida por culpa del revisor
+  assert.ok(db.events(t.id).some((e) => /No se pudo lanzar la revisión de reviewer: Presupuesto/.test(e.text)));
+  db.raw.close();
+});
