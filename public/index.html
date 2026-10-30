@@ -12,12 +12,14 @@
     <h1>⟡ <span id="brand">BASE REBELDE</span> <small>oficina virtual</small></h1>
     <nav id="tabs" role="tablist" aria-label="Vistas">
       <button role="tab" data-view="office" aria-selected="true">Oficina</button>
+      <button role="tab" data-view="attention" aria-selected="false">Atención <span id="attn-badge" class="badge" hidden>0</span></button>
       <button role="tab" data-view="board" aria-selected="false">Tablero</button>
       <button role="tab" data-view="routines" aria-selected="false">Rutinas</button>
       <button role="tab" data-view="costs" aria-selected="false">Costos</button>
       <button role="tab" data-view="system" aria-selected="false">Sistema</button>
     </nav>
     <div id="stats" aria-live="polite"></div>
+    <button id="alerts-btn" type="button" aria-pressed="false" title="Sonido y notificaciones cuando un agente termine, falle o pregunte">🔕 Avisos: no</button>
     <button id="obj-btn">★ Nuevo objetivo</button>
     <button id="new-btn" class="primary">+ Nueva misión</button>
   </header>
@@ -25,6 +27,14 @@
   <section id="view-office" class="view">
     <canvas id="office" aria-label="Oficina virtual: agentes en sus puestos" role="img"></canvas>
     <p class="legend"><span class="dot work"></span>trabajando <span class="dot queued"></span>en cola <span class="dot review"></span>por revisar <span class="dot fail"></span>falló · clic en un agente para ver su misión o asignarle una</p>
+  </section>
+
+  <section id="view-attention" class="view" hidden>
+    <div class="panel">
+      <div class="panel-head"><h2>Necesita tu atención</h2><div id="attn-bulk"></div></div>
+      <p class="hint">Preguntas de los agentes, misiones fallidas, planes por lanzar y resultados por revisar. Se actualiza solo.</p>
+      <div id="attention-list"></div>
+    </div>
   </section>
 
   <section id="view-board" class="view" hidden>

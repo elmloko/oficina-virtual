@@ -128,6 +128,20 @@ label.chk input { padding: 0; }
 .h-last { border-width: 2px; }
 .reply { display: grid; gap: 6px; }
 .reply textarea { width: 100%; resize: vertical; min-height: 64px; box-sizing: border-box; }
+.badge { display: inline-block; min-width: 16px; padding: 0 5px; margin-left: 4px; background: var(--red); color: #fff; font-size: 11px; line-height: 16px; text-align: center; border-radius: 8px; }
+.badge[hidden] { display: none; }
+#attn-bulk { display: flex; gap: 8px; flex-wrap: wrap; }
+.attn-group { margin: 14px 0 6px; font-size: 12px; letter-spacing: 2px; text-transform: uppercase; }
+.attn-group.question { color: var(--gold); } .attn-group.failed { color: var(--red); } .attn-group.plan { color: var(--blue); } .attn-group.review { color: var(--violet); }
+.attn { border: 2px solid var(--line); background: var(--panel-2); padding: 10px; margin-bottom: 8px; display: grid; gap: 6px; }
+.attn.question { border-color: var(--gold); } .attn.failed { border-color: var(--red); } .attn.plan { border-color: var(--blue); } .attn.review { border-color: var(--violet); }
+.attn-head { display: flex; gap: 8px; align-items: center; overflow-wrap: anywhere; }
+.attn-head input { width: auto; flex: none; }
+.attn-meta { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.attn-body { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; max-height: 9em; overflow: auto; background: #000; border: 2px solid var(--line); padding: 8px; }
+.attn-body.err { color: var(--red); }
+.attn-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.attn-empty { color: var(--muted); padding: 24px 0; text-align: center; }
 .reply-note { color: var(--gold); font-size: 12px; }
 .reply-sent { font-size: 12px; margin-top: 4px; overflow-wrap: anywhere; border-left: 2px solid var(--gold); padding-left: 6px; }
 .reply-row { display: flex; gap: 8px; }

@@ -2,6 +2,8 @@
 import { createOffice, drawSkinPreview } from './office.js';
 import { SKIN_LIST, AUTO, skinById, resolveSkin, deptView } from './skins.js';
 import { DEPARTMENTS } from './office-layout.js';
+import { attentionItems, transition, KIND_LABEL } from './attention.js';
+import { createAlerts } from './alerts.js';
 
 const COLUMNS = [
   ['backlog', 'Hangar (pendientes)'],
@@ -23,7 +25,7 @@ const el = (tag, props = {}, ...kids) => {
 
 const state = {
   tasks: new Map(), agents: [], projects: [], providers: [], system: null, logs: [], stats: null, settings: {}, templates: [], schedules: [], costs: null,
-  open: null, view: 'office', agentOpen: null, agentLive: null,
+  open: null, view: 'office', agentOpen: null, agentLive: null, booted: false,
 };
 
 // ---------- utilidades ----------
@@ -84,6 +86,9 @@ function render() {
   const s = state.stats;
   $('#stats').textContent = s ? `Claude ${s.active.claude}/${s.limit?.claude ?? '?'} · Ollama ${s.active.ollama}/${s.limit?.ollama ?? '?'} · ${s.waiting} en espera${s.paused ? ' · COLA EN PAUSA' : ''} · hoy ${money(state.costs?.today)}` : '';
   office.update({ agents: state.agents, tasks: [...state.tasks.values()], stats: s ? { ...s, costToday: state.costs?.today ?? 0 } : null });
+  const attn = attentionItems([...state.tasks.values()]);
+  paintBadge(attn.length);
+  if (state.view === 'attention') renderAttention(attn);
   if (state.view === 'board') renderBoard();
   if (state.view === 'routines') renderRoutines();
   if (state.view === 'system' && state.system) renderSystem();
@@ -675,7 +680,10 @@ async function refreshState() {
   const provSig = JSON.stringify(s.providers ?? []);
   const provChanged = provSig !== JSON.stringify(state.providers);
   Object.assign(state, { agents: s.agents, projects: s.projects, providers: s.providers ?? [], stats: s.stats, settings: s.settings, templates: s.templates, schedules: s.schedules, costs: s.costs });
+  const before = state.tasks;
   state.tasks = new Map(s.tasks.map((t) => [t.id, t]));
+  if (state.booted) for (const t of s.tasks) handleTransition(before.get(t.id)?.status, t); // por si el WebSocket se perdió un cambio
+  state.booted = true;
   if (provChanged && openTaskDialog) fillSelects(); // un proveedor nuevo aparece en el selector sin recargar
   render();
 }
@@ -685,7 +693,9 @@ function connect() {
   ws.onmessage = (e) => {
     const m = JSON.parse(e.data);
     if (m.type === 'task') {
+      const prevStatus = state.tasks.get(m.task.id)?.status;
       state.tasks.set(m.task.id, m.task);
+      handleTransition(prevStatus, m.task);
       if (m.event && state.open === m.task.id) logLine(m.event);
       if (m.event && state.agentLive === m.task.id) appendLine($('#a-log'), m.event);
       render();
@@ -714,6 +724,15 @@ const skinStore = {
 let skinChoice = new URLSearchParams(location.search).get('skin') || skinStore.get() || 'clasico';
 if (skinChoice !== AUTO.id && !skinById(skinChoice)) skinChoice = 'clasico';
 let appliedSkin = null;
+let baseTitle = document.title;
+let attnCount = 0;
+
+function paintBadge(n) {
+  attnCount = n;
+  const b = $('#attn-badge');
+  b.hidden = !n; b.textContent = String(n);
+  document.title = n ? `(${n}) ${baseTitle}` : baseTitle;
+}
 
 function applySkin(announce = false) {
   const sk = resolveSkin(skinChoice);
@@ -723,7 +742,8 @@ function applySkin(announce = false) {
     for (const [k, v] of Object.entries(UI_VARS)) root.style.setProperty(v, sk.ui[k]);
     root.dataset.skin = sk.id;
     $('#brand').textContent = sk.title;
-    document.title = `${sk.title} · Oficina Virtual`;
+    baseTitle = `${sk.title} · Oficina Virtual`;
+    paintBadge(attnCount);
     office?.setSkin(sk);
     if (state.agentOpen) renderAgent(); // el nombre de la sala cambia con el skin
   }
@@ -753,11 +773,118 @@ function setupSkins() {
   setInterval(() => { if (skinChoice === AUTO.id) applySkin(); }, 60_000); // Auto cambia con la hora
 }
 
+// ---------- avisos y bandeja de atención ----------
+const alerts = createAlerts({
+  skinId: () => appliedSkin?.id,
+  onOpen: (t) => (t.kind === 'objective' ? openDrawer(t.id) : openAgent(t.agent)),
+});
+const notified = new Set();
+
+function handleTransition(prevStatus, task) {
+  const ev = transition(prevStatus, task);
+  if (!ev) return;
+  const key = `${task.id}:${task.status}:${task.finished_at}`;
+  if (notified.has(key)) return; // el WebSocket y el refresco periódico pueden ver el mismo cambio
+  notified.add(key);
+  if (alerts.fire(ev) && !document.hidden) toast(`${KIND_LABEL[ev.kind]}: #${task.id} ${task.title}`, ev.kind === 'failed');
+}
+
+function setupAlerts() {
+  const bell = $('#alerts-btn');
+  const paint = () => { bell.setAttribute('aria-pressed', String(alerts.enabled)); bell.textContent = alerts.enabled ? '🔔 Avisos: sí' : '🔕 Avisos: no'; };
+  bell.onclick = async () => {
+    const on = alerts.setEnabled(!alerts.enabled);
+    paint(); // el botón cambia ya; el permiso del navegador puede tardar en contestarse
+    if (!on) return toast('Avisos desactivados', false);
+    toast('Avisos activados con sonido', false);
+    const perm = await alerts.ensurePermission();
+    if (perm === 'granted') toast('Avisos activados: sonido y notificaciones del navegador', false);
+    else if (perm !== 'default') toast('Las notificaciones del navegador no están permitidas: solo sonará (puedes habilitarlas en el candado de la barra de direcciones)', false);
+  };
+  paint();
+}
+
+const attn = { selected: new Set(), dirty: false };
+$('#attention-list').addEventListener('focusout', () => setTimeout(() => { if (attn.dirty && !$('#attention-list').contains(document.activeElement)) renderAttention(); }));
+const GROUPS = [['question', 'Te hacen una pregunta'], ['failed', 'Fallidas'], ['plan', 'Planes por lanzar'], ['review', 'Por revisar']];
+const since = (ts) => { if (!ts) return ''; const m = Math.max(0, Math.round((Date.now() - parseTs(ts)) / 60000)); return m < 1 ? 'hace un momento' : m < 60 ? `hace ${m} min` : m < 1440 ? `hace ${Math.round(m / 60)} h` : `hace ${Math.round(m / 1440)} d`; };
+
+function renderAttention(items = attentionItems([...state.tasks.values()])) {
+  const box = $('#attention-list');
+  if (box.contains(document.activeElement) && document.activeElement.matches('textarea')) { attn.dirty = true; return; } // no pisar lo que se está escribiendo
+  attn.dirty = false;
+  for (const id of [...attn.selected]) if (!items.some((i) => i.task.id === id)) attn.selected.delete(id);
+  const parts = [];
+  for (const [kind, label] of GROUPS) {
+    const group = items.filter((i) => i.kind === kind);
+    if (!group.length) continue;
+    parts.push(el('h3', { className: `attn-group ${kind}`, textContent: `${label} (${group.length})` }), ...group.map(attnCard));
+  }
+  box.replaceChildren(...(parts.length ? parts : [el('div', { className: 'attn-empty', textContent: 'Nada pendiente: todos tus agentes están al día.' })]));
+  renderBulk(items);
+}
+
+function renderBulk(items) {
+  const sel = items.filter((i) => attn.selected.has(i.task.id));
+  const approvable = sel.filter((i) => i.kind === 'review' || i.kind === 'question');
+  const retryable = sel.filter((i) => i.kind === 'failed');
+  const all = el('button', { type: 'button', textContent: 'Seleccionar por revisar', disabled: !items.some((i) => i.kind === 'review') });
+  all.onclick = () => { for (const i of items) if (i.kind === 'review') attn.selected.add(i.task.id); renderAttention(); };
+  const approve = el('button', { type: 'button', className: 'primary', textContent: `Aprobar (${approvable.length})`, disabled: !approvable.length });
+  approve.onclick = guard(async () => {
+    for (const i of approvable) await api(`/api/tasks/${i.task.id}`, { method: 'PATCH', body: JSON.stringify({ status: 'done' }) });
+    attn.selected.clear();
+    toast(`${approvable.length} misión(es) aprobada(s)`, false);
+  });
+  const retry = el('button', { type: 'button', textContent: `Reintentar (${retryable.length})`, disabled: !retryable.length });
+  retry.onclick = guard(async () => {
+    for (const i of retryable) await withConfirm(`/api/tasks/${i.task.id}/run`, `«${i.task.title}» puede editar archivos de tu proyecto. ¿Permitirlo?`);
+    attn.selected.clear();
+  });
+  $('#attn-bulk').replaceChildren(all, approve, retry);
+}
+
+function attnCard({ kind, task: t }) {
+  const card = el('article', { className: `attn ${kind}` });
+  const head = el('div', { className: 'attn-head' });
+  if (kind !== 'plan') {
+    const cb = el('input', { type: 'checkbox', checked: attn.selected.has(t.id) });
+    cb.setAttribute('aria-label', `Seleccionar #${t.id}`);
+    cb.onchange = () => { cb.checked ? attn.selected.add(t.id) : attn.selected.delete(t.id); renderBulk(attentionItems([...state.tasks.values()])); };
+    head.append(cb);
+  }
+  head.append(el('strong', { textContent: `#${t.id} ${t.title}` }));
+  const meta = el('div', { className: 'attn-meta', textContent: [t.kind === 'objective' ? 'coordinador' : t.agent, t.project || 'sin proyecto', t.engine, since(t.finished_at ?? t.updated_at)].filter(Boolean).join(' · ') });
+  const pending = kind === 'plan' ? children(t.id).filter((k) => ['backlog', 'failed'].includes(k.status)).length : 0;
+  const text = kind === 'failed' ? (t.error || 'Falló sin detalle') : kind === 'plan' ? `${pending} paso(s) pendientes de lanzar` : (t.result || '');
+  const body = text ? el('div', { className: `attn-body${kind === 'failed' ? ' err' : ''}`, textContent: text.length > 1500 ? text.slice(-1500) : text }) : null; // de una pregunta importa el final
+  const act = el('div', { className: 'attn-actions' });
+  const open = el('button', { type: 'button', textContent: kind === 'plan' ? 'Abrir plan' : 'Abrir' });
+  open.onclick = () => openDrawer(t.id);
+  if (kind === 'failed') {
+    const retry = el('button', { type: 'button', className: 'primary', textContent: 'Reintentar' });
+    retry.onclick = guard(() => withConfirm(`/api/tasks/${t.id}/run`, 'Esta misión puede editar archivos de tu proyecto. ¿Permitirlo?'));
+    const hangar = el('button', { type: 'button', textContent: 'Al Hangar' });
+    hangar.onclick = guard(() => api(`/api/tasks/${t.id}`, { method: 'PATCH', body: JSON.stringify({ status: 'backlog' }) }));
+    act.append(retry, hangar, open);
+  } else if (kind === 'plan') {
+    act.append(open);
+  } else {
+    const ok = el('button', { type: 'button', textContent: 'Aprobar ✓' });
+    ok.onclick = guard(() => api(`/api/tasks/${t.id}`, { method: 'PATCH', body: JSON.stringify({ status: 'done' }) }));
+    act.append(ok, open);
+  }
+  card.append(head, meta, ...(body ? [body] : []), act);
+  if (kind === 'review' || kind === 'question') card.append(replyForm(t));
+  return card;
+}
+
 office = createOffice($('#office'), {
   onSelectAgent: (name) => openAgent(name),
 });
 setupSkins();
 applySkin();
+setupAlerts();
 await refreshState();
 setupForms();
 showView('office');
