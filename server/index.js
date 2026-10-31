@@ -30,7 +30,10 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
   const startedAt = new Date();
   const engineSet = () => new Set(['auto', 'claude', 'ollama', ...Object.keys(providers)]);
   /** Recarga los proveedores en el mismo objeto (el runner conserva la referencia). */
-  const reloadProviders = () => { for (const k of Object.keys(providers)) delete providers[k]; Object.assign(providers, loadProviders()); };
+  // Los proveedores apagados a mano se quitan del conjunto activo (su clave sigue guardada en .env).
+  const applyOff = () => { for (const n of db.disabledProviders()) delete providers[n]; };
+  const reloadProviders = () => { for (const k of Object.keys(providers)) delete providers[k]; Object.assign(providers, loadProviders()); applyOff(); };
+  applyOff();
   const sockets = new Set();
   const broadcast = (msg) => { const s = JSON.stringify(msg); for (const ws of sockets) if (ws.readyState === 1) ws.send(s); };
   const emit = (id, extra = {}) => { const task = db.getTask(id); if (task) broadcast({ type: 'task', task, ...extra }); };
@@ -71,7 +74,7 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
     if (out.model != null && !MODEL_RE.test(out.model)) return { error: 'Modelo inválido' };
     if (!partial || 'title' in out) if (typeof out.title !== 'string' || !out.title.trim()) return { error: 'Falta el título' };
     if (!partial || 'agent' in out) if (!agents.has(out.agent)) return { error: 'Agente desconocido' };
-    if ('engine' in out && !engineSet().has(out.engine)) return { error: 'Motor inválido (¿falta la clave del proveedor?)' };
+    if ('engine' in out && !engineSet().has(out.engine)) return { error: 'Motor inválido (¿falta la clave del proveedor o está desactivado?)' };
     if ('mode' in out && !MODES.has(out.mode)) return { error: 'Modo inválido' };
     if (out.project) {
       if (!resolveProject(out.project)) return { error: 'Proyecto fuera de htdocs o inexistente' };
@@ -163,11 +166,22 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
       broadcast({ type: 'queue', paused });
       return send(res, 200, { paused });
     }
-    if ((r = m(/^\/api\/system\/providers\/([\w-]+)\/(test|key)$/))) {
-      const def = knownProviders().find((p) => p.name === r[1]);
+    if ((r = m(/^\/api\/system\/providers\/([\w-]+)\/(test|key|toggle)$/))) {
+      const def = knownProviders(process.env, db.disabledProviders()).find((p) => p.name === r[1]);
       if (!def) return send(res, 404, { error: 'Proveedor desconocido' });
+      if (r[2] === 'toggle' && method === 'PUT') {
+        if (!def.configured) return send(res, 400, { error: 'Primero pon la clave del proveedor' });
+        const { enabled } = await readJson(req);
+        if (typeof enabled !== 'boolean') return send(res, 400, { error: 'Falta enabled (true/false)' });
+        db.setProviderEnabled(def.name, enabled);
+        reloadProviders();
+        db.audit(enabled ? 'provider.enabled' : 'provider.disabled', null, def.name);
+        logger.info(`Proveedor ${def.name} ${enabled ? 'activado' : 'desactivado'}`);
+        broadcast({ type: 'providers' });
+        return send(res, 200, knownProviders(process.env, db.disabledProviders()).find((p) => p.name === def.name));
+      }
       if (r[2] === 'test' && method === 'POST') {
-        const p = providers[def.name];
+        const p = providers[def.name] ?? (db.disabledProviders().includes(def.name) ? loadProviders()[def.name] : undefined); // también se puede probar la clave de uno apagado
         if (!p) return send(res, 400, { error: 'El proveedor no tiene clave configurada' });
         const out = await testProvider(p, { fetchFn: runnerOpts.fetchFn });
         logger[out.ok ? 'info' : 'warn'](`Prueba de ${def.name}: ${out.ok ? `OK (${out.ms} ms)` : out.error}`);
@@ -187,7 +201,7 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
         reloadProviders();
         db.audit(method === 'PUT' ? 'provider.key_set' : 'provider.key_removed', null, def.name); // jamás se registra la clave
         logger.info(`Clave de ${def.name} ${method === 'PUT' ? 'guardada' : 'eliminada'}`);
-        return send(res, 200, knownProviders().find((p) => p.name === def.name));
+        return send(res, 200, knownProviders(process.env, db.disabledProviders()).find((p) => p.name === def.name));
       }
     }
 

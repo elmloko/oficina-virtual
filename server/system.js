@@ -50,7 +50,7 @@ export async function collectSystem({ db, runner, probe, config, startedAt, env 
     db: { file: config.dbFile, size_bytes: fileSize(config.dbFile), tasks: db.countsByStatus() },
     claude,
     ollama,
-    providers: knownProviders(env),
+    providers: knownProviders(env, db.disabledProviders()),
     paths: {
       htdocs: { path: config.htdocs, exists: existsSync(config.htdocs), projects: listProjects().filter((p) => !p.extra && !p.docs).length },
       docs: { path: config.docsRoot, exists: existsSync(config.docsRoot) },

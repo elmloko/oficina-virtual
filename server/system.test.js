@@ -20,6 +20,8 @@ for (const k of ['GROQ_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'DEEPSEEK_A
 const { openDb } = await import('./db.js');
 const { createRunner } = await import('./runner.js');
 const { createApp } = await import('./index.js');
+// config.js carga el .env real al importarse: se vuelven a quitar las claves para que las pruebas no dependan de las del usuario
+for (const k of ['GROQ_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'DEEPSEEK_API_KEY', 'OPENROUTER_API_KEY', 'OFICINA_ANTHROPIC_API_KEY', 'CUSTOM_LLM']) delete process.env[k];
 const { createLogger } = await import('./logger.js');
 const { setEnvVar } = await import('./envfile.js');
 const { nextRun } = await import('./scheduler.js');

@@ -232,6 +232,17 @@ export function openDb(file = config.dbFile) {
       return this.settings();
     },
 
+    /** Proveedores en internet que el usuario apagó (la clave se conserva en .env). */
+    disabledProviders() {
+      try { const v = JSON.parse(q.getSetting.get('providers_off')?.value ?? '[]'); return Array.isArray(v) ? v.filter((n) => typeof n === 'string') : []; } catch { return []; }
+    },
+    setProviderEnabled(name, enabled) {
+      const off = new Set(this.disabledProviders());
+      if (enabled) off.delete(name); else off.add(name);
+      q.setSetting.run('providers_off', JSON.stringify([...off].sort()));
+      return [...off];
+    },
+
     audit: (action, taskId = null, detail = '') => { q.addAudit.run(action, taskId, String(detail).slice(0, 2000)); },
     auditLog: (limit = 100) => q.audit.all(limit),
 

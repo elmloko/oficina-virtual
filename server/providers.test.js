@@ -154,7 +154,7 @@ test('runner: proveedor sin configurar o con error HTTP deja la tarea fallida', 
   const a = db.createTask({ title: 'x', agent: 'summarizer', engine: 'gemini' });
   createRunner(db, () => {}, { providers: {} }).enqueue(a.id);
   await waitFor(() => db.getTask(a.id).status === 'failed');
-  assert.match(db.getTask(a.id).error, /no configurado/);
+  assert.match(db.getTask(a.id).error, /no está activo/);
 
   const b = db.createTask({ title: 'y', agent: 'summarizer', engine: 'openai' });
   const providers = loadProviders({ OPENAI_API_KEY: SECRET });

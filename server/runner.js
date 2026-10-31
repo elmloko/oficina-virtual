@@ -489,7 +489,7 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
 
   async function runProvider(task, engine) {
     const provider = providers[engine];
-    if (!provider) throw new Error(`Proveedor "${engine}" no configurado (falta su clave en .env)`);
+    if (!provider) throw new Error(`Proveedor "${engine}" no está activo (falta su clave en .env o está desactivado en Sistema)`);
     const ctrl = new AbortController();
     procs.set(task.id, { kill: () => ctrl.abort() });
     const sys = `Eres el agente "${task.agent}". Responde en español, conciso y directo.`;

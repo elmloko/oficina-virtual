@@ -105,3 +105,7 @@ No implementado a propósito: abrir la propia oficina desde fuera de casa. Exigi
 - Al terminar, el registro de la misión lista los archivos guardados y el panel de la misión tiene el botón **📂 Abrir carpeta** (abre el Explorador). Si la misión no guardó nada o falló sin crear archivos, la carpeta vacía se retira. Una respuesta posterior sigue en la misma carpeta.
 - En solo lectura no se crea carpeta ni se da acceso a Documentos (si necesita un archivo, adjúntalo a la misión).
 - La ruta se detecta sola (`OneDrive\Documentos`, `Documents`…); se puede fijar con `DOCS_ROOT` en `.env`.
+
+## Activar / desactivar proveedores en internet
+
+En **Sistema → Modelos en internet**, cada proveedor con clave tiene un botón **⏻ Desactivar / Activar**. Desactivarlo deja de ofrecerlo como motor (selector de misiones y rutinas) y rechaza nuevas misiones con él, **sin borrar la clave** del `.env`; al activarlo vuelve al instante, sin reiniciar. La opción se guarda en la base de datos (ajuste `providers_off`) y queda anotada en la auditoría. «Probar» sigue funcionando con un proveedor desactivado, para comprobar su clave.

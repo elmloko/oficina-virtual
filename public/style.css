@@ -375,3 +375,4 @@ header.hd #stats { flex: 0 1 auto; margin: 0 0 8px; padding: 2px 10px; border: 1
 #drawer #d-comms { max-height: 16vh; overflow: auto; }
 #d-comms .talk { font-size: 12px; overflow-wrap: anywhere; padding: 2px 0; border-bottom: 1px dashed var(--line); }
 #d-comms .talk.request strong { color: var(--gold); } #d-comms .talk.answer strong { color: var(--green); }
+.prov-row.off { opacity: .6; }

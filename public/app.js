@@ -985,8 +985,9 @@ function renderSystem() {
 
 function providerRow(p) {
   const row = el('div', { className: 'prov-row' });
-  const status = !p.needsKey ? 'sin clave (local)' : p.configured ? `activo · clave ${p.keyHint}` : 'sin configurar';
-  row.append(el('strong', { textContent: p.name }), el('span', {}, el('span', { className: p.configured ? 'dot-ok' : 'dot-off' }), span(`${status} · ${p.model}`)));
+  const status = !p.needsKey ? 'sin clave (local)' : !p.configured ? 'sin configurar' : p.enabled ? `activo · clave ${p.keyHint}` : `DESACTIVADO · clave ${p.keyHint} guardada`;
+  row.append(el('strong', { textContent: p.name }), el('span', {}, el('span', { className: p.enabled ? 'dot-ok' : 'dot-off' }), span(`${status} · ${p.model}`)));
+  if (p.configured && !p.enabled) row.classList.add('off');
   const btns = el('span', { className: 'btns' });
   const res = el('div', { className: 'res' });
   const keyform = el('form', { className: 'keyform', hidden: true });
@@ -1000,6 +1001,11 @@ function providerRow(p) {
     await refreshState(); await refreshSystem();
   });
   if (p.configured) {
+    btns.append(el('button', { className: p.enabled ? '' : 'primary', textContent: p.enabled ? '⏻ Desactivar' : '⏻ Activar', title: p.enabled ? 'Deja de usar este proveedor sin borrar su clave' : 'Vuelve a usar este proveedor', onclick: guard(async () => {
+      await api(`/api/system/providers/${p.name}/toggle`, { method: 'PUT', body: JSON.stringify({ enabled: !p.enabled }) });
+      toast(`${p.name} ${p.enabled ? 'desactivado: no se usará hasta que lo actives' : 'activado'}`, false);
+      await refreshState(); await refreshSystem();
+    }) }));
     btns.append(el('button', { textContent: 'Probar', onclick: guard(async () => {
       res.className = 'res'; res.textContent = 'Probando…';
       const r = await post(`/api/system/providers/${p.name}/test`);

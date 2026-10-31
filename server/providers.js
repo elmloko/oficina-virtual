@@ -100,10 +100,11 @@ export async function chat(provider, { model, system, prompt, signal, fetchFn = 
 export const maskKey = (key) => (key ? `••••${key.slice(-4)}` : '');
 
 /** Todos los proveedores conocidos (con o sin clave) para administrarlos desde la web. */
-export function knownProviders(env = process.env) {
+export function knownProviders(env = process.env, off = []) {
   return [...BUILTIN, ...parseCustom(env.CUSTOM_LLM)].map((p) => {
     const key = p.keyEnv ? env[p.keyEnv] : '';
     return {
+      enabled: (!p.keyEnv || !!key) && !off.includes(p.name), // con clave y no apagado a mano
       name: p.name, kind: p.kind, baseUrl: p.baseUrl, model: (p.modelEnv && env[p.modelEnv]) || p.model,
       custom: !!p.custom, keyEnv: p.keyEnv ?? null, needsKey: !!p.keyEnv, configured: !p.keyEnv || !!key, keyHint: maskKey(key),
     };
