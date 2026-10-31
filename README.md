@@ -98,3 +98,10 @@ No implementado a propósito: abrir la propia oficina desde fuera de casa. Exigi
 - **Límites**: máximo 3 consultas por misión, una sola ronda (en la segunda fase no puede volver a consultar), los colegas consultados, las revisiones automáticas y las rutinas no pueden consultar a otros, y no se puede consultar a un agente inexistente ni a uno mismo. Cancelar la misión original cancela las consultas pendientes. Cada consulta gasta como una misión normal (presupuesto diario y tope por tarea incluidos).
 - **Ver cómo interactúan**: en la **Oficina**, un arco punteado une a los dos agentes mientras la consulta está en curso (globo «¿?» en quien pregunta, «…» en quien responde) y un sobre vuela de uno a otro con cada mensaje; bajo el mapa aparece el último mensaje. La pestaña **Comunicaciones** (con contador de consultas en curso) muestra cada conversación como chat; el panel de una misión muestra su conversación y el tablero marca las tarjetas «🤝 consulta de #N».
 - **Apagarlo**: botón «Colaboración» en la pestaña Comunicaciones o ajuste `collab` (0/1) en Sistema → Ajustes.
+
+## Trabajar y guardar archivos en Documentos
+
+- En **Nueva misión**, el proyecto «📄 Documentos — carpeta nueva por tema» (`+Documentos`) sirve para trabajos que no son código: informes, manuales, tablas, textos… Con «puede editar» (pide confirmación como cualquier edición), la misión crea una **carpeta nueva dentro de Documentos con el nombre de su tema** (el título de la misión; si ya existe otra igual añade `(2)`, `(3)`… y nunca reutiliza ni pisa una existente). El agente solo trabaja dentro de esa carpeta; no ve el resto de Documentos.
+- Al terminar, el registro de la misión lista los archivos guardados y el panel de la misión tiene el botón **📂 Abrir carpeta** (abre el Explorador). Si la misión no guardó nada o falló sin crear archivos, la carpeta vacía se retira. Una respuesta posterior sigue en la misma carpeta.
+- En solo lectura no se crea carpeta ni se da acceso a Documentos (si necesita un archivo, adjúntalo a la misión).
+- La ruta se detecta sola (`OneDrive\Documentos`, `Documents`…); se puede fijar con `DOCS_ROOT` en `.env`.

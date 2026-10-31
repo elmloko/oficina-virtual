@@ -52,7 +52,8 @@ export async function collectSystem({ db, runner, probe, config, startedAt, env 
     ollama,
     providers: knownProviders(env),
     paths: {
-      htdocs: { path: config.htdocs, exists: existsSync(config.htdocs), projects: listProjects().filter((p) => !p.extra).length },
+      htdocs: { path: config.htdocs, exists: existsSync(config.htdocs), projects: listProjects().filter((p) => !p.extra && !p.docs).length },
+      docs: { path: config.docsRoot, exists: existsSync(config.docsRoot) },
       extra: Object.entries(config.extraRoots).map(([name, path]) => ({ name, path, exists: existsSync(path) })),
     },
     queue: runner.snapshot(),

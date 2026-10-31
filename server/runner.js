@@ -1,7 +1,9 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { config } from './config.js';
-import { resolveProject, listAgents, listProjects } from './registry.js';
+import { resolveProject, listAgents, listProjects, isDocsRoot } from './registry.js';
+import { createTopicFolder, insideBase, listFiles, removeIfEmpty } from './workspace.js';
+import { tmpdir } from 'node:os';
 import { route } from './router.js';
 import { buildPlanPrompt, parsePlan } from './coordinator.js';
 import { chat, secretEnvNames } from './providers.js';
@@ -19,7 +21,7 @@ const REVIEW_PATCH_LIMIT = 20_000; // diff que se entrega a quien revisa una mis
  * Cola con límite de concurrencia por motor, dependencias entre tareas, presupuesto y timeout.
  * emit(taskId, extra) avisa a la UI. spawnFn, fetchFn y registry son inyectables para pruebas.
  */
-export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, registry = { listAgents, listProjects }, providers = {}, logger = noopLogger, gitwork = gitworkDefault, attachmentsDir = config.attachmentsDir } = {}) {
+export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, registry = { listAgents, listProjects }, providers = {}, logger = noopLogger, gitwork = gitworkDefault, attachmentsDir = config.attachmentsDir, docsRoot = config.docsRoot } = {}) {
   const active = { claude: 0, ollama: 0 };
   let paused = false;
   // Límites editables desde la web (se leen en cada ciclo); los proveedores en internet comparten `max_api`.
@@ -127,6 +129,7 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
       out.result = stripConsults(out.result);
       if (task.kind === 'objective') createPlan(task, out.result);
       await finalizeWorktree(id);
+      reportWorkdir(id);
       const base = (replySnaps.get(id)?.cost_usd ?? 0) + (carry.get(id) ?? 0); // una respuesta suma al costo de lo ya gastado en la misión
       replySnaps.delete(id); carry.delete(id);
       patch(id, { status: task.consult_of ? 'done' : 'review', result: out.result, cost_usd: base + (out.cost ?? 0), reply_text: null, finished_at: new Date().toISOString() });
@@ -137,6 +140,7 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
       const msg = timedOut.has(id) ? `Tiempo agotado (${db.settings().task_timeout_min} min)` : err.message;
       log(id, 'error', msg);
       replySnaps.delete(id); carry.delete(id);
+      dropEmptyWorkdir(id); // retira la carpeta de Documentos si quedó vacía
       patch(id, { status: 'failed', error: msg, reply_text: null, finished_at: new Date().toISOString() });
       logger.error(`#${id} falló: ${msg.slice(0, 200)}`);
     } finally { clearTimeout(timer); extraPrompt.delete(id); }
@@ -285,9 +289,43 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     } catch (e) { log(id, 'error', `No se pudieron guardar los cambios: ${e.message}`); }
   }
 
+  // ---------- misiones en «Documentos»: una carpeta nueva por tema ----------
+  /** Carpeta donde trabaja la misión: nueva (con el nombre del tema) si edita; sin carpeta si solo lee. */
+  function docsFolder(task) {
+    if (task.mode !== 'edit') {
+      log(task.id, 'info', 'Documentos en solo lectura: no se crea carpeta. Marca «puede editar» para que guarde archivos.');
+      return tmpdir();
+    }
+    if (task.workdir && existsSync(task.workdir) && insideBase(task.workdir, docsRoot)) return task.workdir; // una respuesta sigue en la misma carpeta
+    const dir = createTopicFolder(docsRoot, task.title);
+    db.updateTask(task.id, { workdir: dir });
+    log(task.id, 'info', `📂 Carpeta nueva para este tema: ${dir}. Todo lo que guarde el agente va ahí.`);
+    return dir;
+  }
+
+  /** Al terminar: dice qué archivos quedaron guardados; si no hay ninguno, retira la carpeta vacía. */
+  function reportWorkdir(id) {
+    const t = db.getTask(id);
+    if (!t?.workdir) return;
+    if (!existsSync(t.workdir)) { db.updateTask(id, { workdir: null }); return; }
+    const { files, total } = listFiles(t.workdir);
+    if (!total) {
+      if (removeIfEmpty(t.workdir)) { db.updateTask(id, { workdir: null }); log(id, 'info', 'La misión no guardó ningún archivo: se retiró la carpeta vacía.'); }
+      return;
+    }
+    log(id, 'info', `📂 ${total} archivo(s) guardados en ${t.workdir}:\n${files.map((f) => `- ${f}`).join('\n')}${total > files.length ? `\n… y ${total - files.length} más` : ''}`);
+  }
+
+  /** Si la misión no llegó a guardar nada (falló o la cancelaron), la carpeta vacía se retira. */
+  function dropEmptyWorkdir(id) {
+    const t = db.getTask(id);
+    if (t?.workdir && existsSync(t.workdir) && !listFiles(t.workdir).total && removeIfEmpty(t.workdir)) db.updateTask(id, { workdir: null });
+  }
+
   /** Una ejecución cancelada puede dejar ediciones a medias: la copia vuelve a su último commit. */
   async function afterCancel(id) {
     const t = db.getTask(id);
+    dropEmptyWorkdir(id);
     if (t?.worktree) await gitwork.reset(t.worktree).catch(() => {});
   }
 
@@ -360,6 +398,12 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
       parts.push('--- Conversación hasta ahora (continúa a partir del último mensaje) ---');
       for (const e of turns) parts.push(e.kind === 'user' ? `Usuario: ${e.text}` : e.kind === 'consult' ? e.text.slice(0, RESULT_CONTEXT_LIMIT * 2) : `Tú (${task.agent}): ${e.text.slice(0, RESULT_CONTEXT_LIMIT)}`);
     }
+    if (isDocsRoot(task.project)) {
+      const dir = db.getTask(task.id)?.workdir;
+      parts.push(dir
+        ? `--- Carpeta de trabajo ---\nEstás dentro de una carpeta nueva creada para este tema (${dir}). Guarda ahí todos los archivos que se te pidan (informes, documentos, tablas…) con nombres claros en español y no salgas de esa carpeta.`
+        : '--- Modo solo lectura ---\nNo puedes guardar archivos: entrega el contenido completo en tu respuesta.');
+    }
     if (canConsult(task)) parts.push(hasConsulted(task.id) ? alreadyConsultedPrompt : protocolPrompt(registry.listAgents().map((a) => a.name), task.agent));
     if (extraPrompt.get(task.id)) parts.push(extraPrompt.get(task.id));
     const files = await promptSection(attachmentsDir, db.attachments(task.id), task.engine);
@@ -371,7 +415,8 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     const repo = task.project ? resolveProject(task.project) : null;
     if (task.project && !repo) throw new Error(`Proyecto no válido: ${task.project}`);
     let cwd = repo ?? process.cwd();
-    if (task.mode === 'edit' && repo) cwd = (await prepareWorktree(task, repo)) ?? cwd; // aislada si el proyecto es un repo git
+    if (isDocsRoot(task.project)) cwd = docsFolder(task);
+    else if (task.mode === 'edit' && repo) cwd = (await prepareWorktree(task, repo)) ?? cwd; // aislada si el proyecto es un repo git
     const orig = task.review_of ? db.getTask(task.review_of) : null;
     if (orig?.worktree && orig.change_state === 'pending' && existsSync(orig.worktree)) cwd = orig.worktree; // el revisor lee el código ya modificado
     if (db.getTask(task.id).status !== 'running') throw new Error('Cancelada'); // cancelada mientras se preparaba la copia

@@ -294,6 +294,7 @@ function drawer(t) {
   $('#drawer').hidden = false;
   $('#d-title').textContent = `#${t.id} ${t.title}`;
   const deps = t.depends_on?.length ? ` · depende de ${t.depends_on.map((d) => '#' + d).join(', ')}` : '';
+  $('#d-meta').title = t.workdir ? `Carpeta: ${t.workdir}` : '';
   $('#d-meta').textContent = `${t.kind === 'objective' ? 'coordinador' : t.agent} · ${t.project || 'sin proyecto'} · ${t.engine}${t.model ? ':' + t.model : ''}/${t.mode} · ${t.status}${deps}${t.error ? ' · ' + t.error : ''}`;
   $('#d-result').textContent = t.result || '';
   const act = $('#d-actions');
@@ -325,6 +326,11 @@ function drawer(t) {
     const ok = el('button', { textContent: 'Aprobar ✓' });
     ok.onclick = guard(() => api(`/api/tasks/${t.id}`, { method: 'PATCH', body: JSON.stringify({ status: 'done' }) }));
     act.append(ok);
+  }
+  if (t.workdir) {
+    const open = el('button', { textContent: '📂 Abrir carpeta', title: t.workdir });
+    open.onclick = guard(async () => { await post(`/api/tasks/${t.id}/open-folder`); toast('Abriendo la carpeta en el Explorador', false); });
+    act.append(open);
   }
   const exportMd = async () => taskToMarkdown(t, await api(`/api/tasks/${t.id}/events`));
   const mdBtn = el('button', { textContent: '⭳ .md', title: 'Descargar esta misión en Markdown' });
@@ -711,7 +717,7 @@ function fillSelects() {
   const keepAgent = f.agent.value;
   f.agent.replaceChildren(el('option', { value: 'auto', textContent: '🤖 Automático — el sistema elige (y crea uno si hace falta)' }), ...state.agents.map((a) => el('option', { value: a.name, textContent: `${a.name} — ${a.description}`.slice(0, 80) })));
   if (keepAgent && [...f.agent.options].some((o) => o.value === keepAgent)) f.agent.value = keepAgent;
-  const projectOptions = () => [el('option', { value: '', textContent: '(sin proyecto)' }), ...state.projects.map((p) => el('option', { value: p.name, textContent: p.name }))];
+  const projectOptions = () => [el('option', { value: '', textContent: '(sin proyecto)' }), ...state.projects.map((p) => el('option', { value: p.name, textContent: p.docs ? '📄 Documentos — carpeta nueva por tema' : p.name }))];
   f.project.replaceChildren(...projectOptions());
   const engines = [['auto', 'Auto (el router decide)'], ['claude', 'Claude (suscripción)'], ['ollama', 'Ollama (local)'], ...state.providers.map((p) => [p.name, `${p.name} · en internet (${p.model})`])];
   const keep = f.engine.value;
@@ -936,6 +942,7 @@ function renderSystem() {
     ['Claude Code', el('span', {}, dot(s.claude.ok), span(s.claude.ok ? s.claude.version : s.claude.error))],
     ['Ollama', el('span', {}, dot(s.ollama.ok), span(s.ollama.ok ? `${s.ollama.models.length} modelos · cargados: ${s.ollama.loaded.map((m) => `${m.name} (${fmtBytes(m.size)})`).join(', ') || 'ninguno'}` : s.ollama.error))],
     ['Proyectos', el('span', {}, dot(s.paths.htdocs.exists), span(`${s.paths.htdocs.path} · ${s.paths.htdocs.projects} proyectos`))],
+    ...(s.paths.docs ? [['Documentos', el('span', {}, dot(s.paths.docs.exists), span(`${s.paths.docs.path} (+Documentos: una carpeta nueva por tema)`))]] : []),
     ...s.paths.extra.map((e) => [`@${e.name.slice(1)}`, el('span', {}, dot(e.exists), span(`${e.path} (solo lectura)`))]),
   ]));
 

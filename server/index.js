@@ -1,5 +1,6 @@
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { extname, resolve, sep } from 'node:path';
 import { WebSocketServer } from 'ws';
 import { config } from './config.js';
@@ -9,6 +10,8 @@ import { createScheduler, validateSpec } from './scheduler.js';
 import { TEMPLATES } from './templates.js';
 import { route } from './router.js';
 import { listAgents, listProjects, resolveProject, isExtraRoot } from './registry.js';
+import { insideBase } from './workspace.js';
+import { spawn as spawnProc } from 'node:child_process';
 import { loadProviders, publicProviders, knownProviders, testProvider, MODEL_RE } from './providers.js';
 import { createLogger } from './logger.js';
 import { setEnvVar, KEY_RE } from './envfile.js';
@@ -23,7 +26,7 @@ const MANUAL_STATUSES = new Set(['backlog', 'review', 'done']); // el resto lo m
 const MODES = new Set(['read', 'edit']);
 const MAX_REVIEWERS = 4;
 
-export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loadProviders(), logger = createLogger(), envFile = config.envFile, probe = createProbe({ config }), attachmentsDir = config.attachmentsDir, dispatcher } = {}) {
+export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loadProviders(), logger = createLogger(), envFile = config.envFile, probe = createProbe({ config }), attachmentsDir = config.attachmentsDir, dispatcher, docsRoot = config.docsRoot, openFolder = (dir) => spawnProc('explorer.exe', [dir], { detached: true, stdio: 'ignore' }).unref() } = {}) {
   const startedAt = new Date();
   const engineSet = () => new Set(['auto', 'claude', 'ollama', ...Object.keys(providers)]);
   /** Recarga los proveedores en el mismo objeto (el runner conserva la referencia). */
@@ -253,6 +256,13 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
         runner.kick();
         return send(res, 200, updated);
       }
+    }
+    // --- carpeta de la misión en Documentos ---
+    if (method === 'POST' && (r = m(/^\/api\/tasks\/(\d+)\/open-folder$/))) {
+      const task = db.getTask(Number(r[1]));
+      if (!task?.workdir || !existsSync(task.workdir) || !insideBase(task.workdir, docsRoot)) return send(res, 404, { error: 'Esta misión no tiene una carpeta en Documentos' });
+      try { openFolder(task.workdir); } catch (e) { return send(res, 500, { error: `No se pudo abrir la carpeta: ${e.message}` }); }
+      return send(res, 200, { ok: true, path: task.workdir });
     }
     // --- adjuntos ---
     if ((r = m(/^\/api\/tasks\/(\d+)\/attachments$/))) {

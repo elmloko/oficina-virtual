@@ -3,10 +3,13 @@ import { join, resolve, sep } from 'node:path';
 import { config } from './config.js';
 
 export const isExtraRoot = (name) => typeof name === 'string' && name.startsWith('@');
+export const DOCS_PROJECT = '+Documentos';
+export const isDocsRoot = (name) => name === DOCS_PROJECT;
 
 /** Proyectos = subcarpetas de htdocs que parecen código (git, artisan o composer.json) + carpetas extra (@Nombre, solo lectura). */
-export function listProjects(root = config.htdocs, extras = config.extraRoots) {
+export function listProjects(root = config.htdocs, extras = config.extraRoots, docs = config.docsRoot) {
   const out = [];
+  if (docs && existsSync(docs)) out.push({ name: DOCS_PROJECT, path: docs, git: false, stack: 'carpeta nueva por tema', docs: true });
   for (const [name, path] of Object.entries(extras)) {
     if (existsSync(path)) out.push({ name, path, git: false, stack: 'solo lectura', extra: true });
   }
@@ -22,12 +25,14 @@ export function listProjects(root = config.htdocs, extras = config.extraRoots) {
       out.push({ name, path: dir, git, stack: laravel ? 'laravel' : 'php/otro' });
     }
   }
-  return out.sort((a, b) => (a.extra === b.extra ? a.name.localeCompare(b.name) : a.extra ? 1 : -1));
+  const rank = (p) => (p.docs ? 1 : p.extra ? 2 : 0);
+  return out.sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
 }
 
 /** Resuelve un proyecto por nombre; rechaza cualquier cosa fuera de htdocs (path traversal). */
-export function resolveProject(name, root = config.htdocs, extras = config.extraRoots) {
+export function resolveProject(name, root = config.htdocs, extras = config.extraRoots, docs = config.docsRoot) {
   if (!name) return null;
+  if (isDocsRoot(name)) return docs && existsSync(docs) && statSync(docs).isDirectory() ? resolve(docs) : null;
   if (isExtraRoot(name)) { // solo nombres exactos configurados; nunca subrutas
     const path = Object.hasOwn(extras, name) ? extras[name] : null;
     return path && existsSync(path) && statSync(path).isDirectory() ? resolve(path) : null;

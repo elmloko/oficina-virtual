@@ -25,6 +25,9 @@ function parseExtraRoots(spec) {
   return out;
 }
 
+// «Documentos» real de Windows (suele estar dentro de OneDrive): la primera ruta que exista.
+const docsCandidates = [join(homedir(), 'OneDrive', 'Documentos'), join(homedir(), 'OneDrive', 'Documents'), join(homedir(), 'Documents'), join(homedir(), 'Documentos')];
+
 export const config = {
   root,
   port: Number(process.env.PORT || 4000),
@@ -32,6 +35,8 @@ export const config = {
   htdocs: process.env.HTDOCS_ROOT || 'C:\\xampp\\htdocs',
   // Carpetas extra fuera de htdocs, SOLO LECTURA. Formato: Nombre=Ruta;Otro=Ruta2 (se exponen como "@Nombre").
   extraRoots: parseExtraRoots(process.env.EXTRA_ROOTS ?? `Descargas=${join(homedir(), 'Downloads')}`),
+  // Espacio «+Documentos»: cada misión que guarda archivos crea ahí una carpeta nueva con el nombre de su tema.
+  docsRoot: process.env.DOCS_ROOT || docsCandidates.find((p) => existsSync(p)) || join(homedir(), 'Documents'),
   agentsDir: process.env.AGENTS_DIR || join(homedir(), '.claude', 'agents'),
   ollamaUrl: process.env.OLLAMA_URL || 'http://127.0.0.1:11434',
   maxClaude: Number(process.env.MAX_CLAUDE_CONCURRENCY || 2),
