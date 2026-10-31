@@ -18,7 +18,7 @@ export const DEFAULT_SETTINGS = {
 const LIMIT_KEYS = new Set(['max_claude', 'max_ollama', 'max_api', 'max_codex']);
 
 const TASK_COLUMNS = ['title', 'description', 'project', 'agent', 'engine', 'mode', 'status', 'result', 'error',
-  'cost_usd', 'started_at', 'finished_at', 'parent_id', 'depends_on', 'kind', 'schedule_id', 'model', 'reply_text', 'branch', 'worktree', 'base_sha', 'change_state', 'chain_fired', 'workdir'];
+  'cost_usd', 'started_at', 'finished_at', 'parent_id', 'depends_on', 'kind', 'schedule_id', 'model', 'reply_text', 'branch', 'worktree', 'base_sha', 'change_state', 'chain_fired', 'workdir', 'used_model'];
 
 function addColumnIfMissing(db, table, column, ddl) {
   const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
@@ -109,6 +109,7 @@ export function openDb(file = config.dbFile) {
   addColumnIfMissing(db, 'tasks', 'chain', "TEXT NOT NULL DEFAULT '[]'"); // agentes que revisan la misión al terminar
   addColumnIfMissing(db, 'tasks', 'chain_fired', 'INTEGER NOT NULL DEFAULT 0');
   addColumnIfMissing(db, 'tasks', 'review_of', 'INTEGER'); // esta misión revisa a la #review_of
+  addColumnIfMissing(db, 'tasks', 'used_model', 'TEXT'); // modelo con el que corrió de verdad la última ejecución
   addColumnIfMissing(db, 'tasks', 'workdir', 'TEXT'); // carpeta nueva creada en Documentos para esta misión
   addColumnIfMissing(db, 'tasks', 'consult_of', 'INTEGER'); // misión creada porque la #consult_of pidió ayuda a este agente
   addColumnIfMissing(db, 'tasks', 'reply_text', 'TEXT'); // respuesta del usuario en vuelo (o cancelada, lista para editar)
@@ -236,6 +237,25 @@ export function openDb(file = config.dbFile) {
     /** Proveedores en internet que el usuario apagó (la clave se conserva en .env). */
     disabledProviders() {
       try { const v = JSON.parse(q.getSetting.get('providers_off')?.value ?? '[]'); return Array.isArray(v) ? v.filter((n) => typeof n === 'string') : []; } catch { return []; }
+    },
+    /** Modelo predeterminado que el usuario eligió por motor ('' = el predeterminado de ese motor): claude, codex, ollama, lmstudio. */
+    engineModels() {
+      let v = {};
+      try { v = JSON.parse(q.getSetting.get('engine_models')?.value ?? '{}'); } catch { /* ajuste dañado: todo predeterminado */ }
+      return { claude: String(v.claude ?? ''), codex: String(v.codex ?? ''), ollama: String(v.ollama ?? ''), lmstudio: String(v.lmstudio ?? '') };
+    },
+    setEngineModel(engine, model) {
+      const cur = this.engineModels();
+      cur[engine] = model;
+      q.setSetting.run('engine_models', JSON.stringify(cur));
+      return cur;
+    },
+    /** Modelo que usó la última ejecución sin elección manual: así se sabe cuál es «el predeterminado» de la sesión. */
+    defaultSeen() {
+      try { const v = JSON.parse(q.getSetting.get('default_seen')?.value ?? '{}'); return { claude: v.claude ?? null, codex: v.codex ?? null }; } catch { return { claude: null, codex: null }; }
+    },
+    setDefaultSeen(engine, model) {
+      q.setSetting.run('default_seen', JSON.stringify({ ...this.defaultSeen(), [engine]: model }));
     },
     /** Motores locales que el usuario apagó: 'claude', 'ollama' y/o 'codex'. */
     disabledEngines() {

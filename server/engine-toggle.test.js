@@ -54,3 +54,49 @@ test('API: apagar Ollama lo quita del selector y de las misiones; reactivarlo lo
     assert.equal((await call('PUT', '/api/system/engines/groq/toggle', { enabled: false })).status, 404);
   } finally { app.server.close(); app.server.closeAllConnections?.(); }
 });
+
+test('API: modelo predeterminado por motor (solo claude y codex) con validación y auditoría', async () => {
+  const db = openDb(':memory:');
+  const app = createApp({ db, probe: { claude: async () => ({ ok: true, version: '1' }), ollama: async () => ({ ok: false }), codex: async () => ({ ok: true, version: 'x' }), codexModels: async () => [{ value: 'gpt-6-sol', label: 'GPT-6-Sol' }] } });
+  await new Promise((r) => app.server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${app.server.address().port}`;
+  const call = async (method, path, body) => { const r = await fetch(base + path, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }); return { status: r.status, body: await r.json() }; };
+  try {
+    const m = (await call('GET', '/api/models')).body;
+    assert.ok(m.claude.some((x) => x.value === 'opus'));
+    assert.deepEqual(m.codex, [{ value: 'gpt-6-sol', label: 'GPT-6-Sol' }]);
+    assert.deepEqual(m.engine_models, { claude: '', codex: '', ollama: '', lmstudio: '' });
+    assert.equal((await call('PUT', '/api/system/engines/claude/model', { model: 'haiku' })).status, 200);
+    assert.equal((await call('GET', '/api/models')).body.engine_models.claude, 'haiku');
+    assert.equal((await call('PUT', '/api/system/engines/claude/model', { model: '' })).status, 200); // vuelve al predeterminado
+    assert.equal((await call('PUT', '/api/system/engines/claude/model', { model: 'mal modelo; rm' })).status, 400);
+    assert.equal((await call('PUT', '/api/system/engines/groq/model', { model: 'x' })).status, 404);
+    assert.ok(db.auditLog(10).some((a) => a.action === 'engine.model' && a.detail === 'claude=haiku'));
+  } finally { app.server.close(); app.server.closeAllConnections?.(); }
+});
+
+test('modelos de Ollama y LM Studio: lista sin embeddings, gemma3:4b recomendado, elección del motor y de la misión', async () => {
+  const { ollamaChatModels } = await import('./system.js');
+  const { OLLAMA_MODELS } = await import('./router.js');
+  const list = ollamaChatModels([{ name: 'gemma3:4b', size: 3.4e9 }, { name: 'nomic-embed-text:latest', size: 3e8 }, { name: 'bge-m3:latest', size: 1e9 }, { name: 'llama3.2:3b', size: 2e9 }]);
+  assert.deepEqual(list.map((m) => m.value), ['gemma3:4b', 'llama3.2:3b']);
+  assert.equal(list[0].recommended, true);
+  assert.equal(OLLAMA_MODELS.light, 'gemma3:4b');
+  assert.equal(route({ agent: 'summarizer' }).model, 'gemma3:4b');
+
+  const db = openDb(':memory:');
+  assert.deepEqual(db.engineModels(), { claude: '', codex: '', ollama: '', lmstudio: '' });
+  const app = createApp({ db, probe: { claude: async () => ({ ok: true }), ollama: async () => ({ ok: true, models: [{ name: 'gemma3:4b', size: 3.4e9 }, { name: 'bge-m3:latest', size: 1e9 }], loaded: [] }), codex: async () => ({ ok: true }) } });
+  await new Promise((r) => app.server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${app.server.address().port}`;
+  const call = async (method, path, body) => { const r = await fetch(base + path, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }); return { status: r.status, body: await r.json() }; };
+  try {
+    const m = (await call('GET', '/api/models')).body;
+    assert.deepEqual(m.ollama.map((x) => x.value), ['gemma3:4b']);
+    assert.equal(m.defaults.ollama, 'gemma3:4b');
+    assert.equal(m.lmstudio_up, false); // LM Studio apagado: lista vacía, sin romper nada
+    assert.equal((await call('PUT', '/api/system/engines/ollama/model', { model: 'llama3.2:3b' })).status, 200);
+    assert.equal((await call('PUT', '/api/system/engines/lmstudio/model', { model: 'qwen2.5-7b' })).status, 200);
+    assert.deepEqual(db.engineModels(), { claude: '', codex: '', ollama: 'llama3.2:3b', lmstudio: 'qwen2.5-7b' });
+  } finally { app.server.close(); app.server.closeAllConnections?.(); }
+});

@@ -11,6 +11,8 @@ import { TEMPLATES } from './templates.js';
 import { route } from './router.js';
 import { listAgents, listProjects, resolveProject, isExtraRoot } from './registry.js';
 import { insideBase } from './workspace.js';
+import { CLAUDE_MODELS, ollamaChatModels } from './system.js';
+import { OLLAMA_MODELS } from './router.js';
 import { spawn as spawnProc } from 'node:child_process';
 import { loadProviders, publicProviders, knownProviders, testProvider, MODEL_RE } from './providers.js';
 import { createLogger } from './logger.js';
@@ -166,6 +168,33 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
       db.audit(`queue.${action}`);
       broadcast({ type: 'queue', paused });
       return send(res, 200, { paused });
+    }
+    if (method === 'GET' && url.pathname === '/api/models') {
+      const ol = await probe.ollama().catch(() => ({ ok: false }));
+      let lm = null; // LM Studio solo responde si su servidor local está encendido
+      const lmp = providers.lmstudio;
+      if (lmp) {
+        try {
+          const j = await (await fetch(`${lmp.baseUrl}/models`, { signal: AbortSignal.timeout(1500) })).json();
+          lm = (j.data ?? []).filter((x) => !/embed/i.test(x.id)).map((x) => ({ value: x.id, label: x.id }));
+        } catch { lm = null; }
+      }
+      return send(res, 200, {
+        claude: CLAUDE_MODELS,
+        codex: await (probe.codexModels?.() ?? Promise.resolve([])).catch(() => []),
+        ollama: ol.ok ? ollamaChatModels(ol.models) : [],
+        lmstudio: lm ?? [], lmstudio_up: lm !== null,
+        engine_models: db.engineModels(), default_seen: db.defaultSeen(),
+        defaults: { claude: db.defaultSeen().claude, ollama: OLLAMA_MODELS.light, codex: null, lmstudio: null },
+      });
+    }
+    if (method === 'PUT' && (r = m(/^\/api\/system\/engines\/(claude|codex|ollama|lmstudio)\/model$/))) {
+      const { model } = await readJson(req);
+      if (typeof model !== 'string' || (model && !MODEL_RE.test(model))) return send(res, 400, { error: 'Modelo inválido' });
+      db.setEngineModel(r[1], model);
+      db.audit('engine.model', null, `${r[1]}=${model || 'predeterminado'}`);
+      logger.info(`Modelo de ${r[1]}: ${model || 'predeterminado de tu sesión'}`);
+      return send(res, 200, { engine: r[1], model });
     }
     if (method === 'PUT' && (r = m(/^\/api\/system\/engines\/(claude|ollama|codex)\/toggle$/))) {
       const { enabled } = await readJson(req);

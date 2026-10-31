@@ -80,3 +80,58 @@ test('runner: un fallo de Codex deja la misión en «fallida» con su mensaje; a
   assert.deepEqual(runner.snapshot().off, ['codex']);
   assert.equal(runner.snapshot().limit.codex, 1);
 });
+
+test('modelo por motor: el predeterminado se elige por motor, la misión manda y se registra el modelo usado', async () => {
+  const db = openDb(':memory:');
+  assert.deepEqual(db.engineModels(), { claude: '', codex: '', ollama: '', lmstudio: '' });
+  db.setEngineModel('codex', 'gpt-6-sol');
+  const { spawnFn, calls } = fakeCodex([{ type: 'item.completed', item: { type: 'agent_message', text: 'ok' } }]);
+  const runner = createRunner(db, () => {}, { spawnFn, registry });
+  const a = db.createTask({ title: 'usa el del motor', agent: 'docs', engine: 'codex' });
+  runner.enqueue(a.id);
+  await waitFor(() => db.getTask(a.id).status === 'review');
+  assert.equal(calls[0].args[calls[0].args.indexOf('-m') + 1], 'gpt-6-sol');
+  assert.equal(db.getTask(a.id).used_model, 'gpt-6-sol');
+  const b = db.createTask({ title: 'elige la misión', agent: 'docs', engine: 'codex', model: 'gpt-6-luna' });
+  runner.enqueue(b.id);
+  await waitFor(() => db.getTask(b.id).status === 'review');
+  assert.equal(calls[1].args[calls[1].args.indexOf('-m') + 1], 'gpt-6-luna');
+  db.setEngineModel('codex', '');
+  const c = db.createTask({ title: 'predeterminado', agent: 'docs', engine: 'codex' });
+  runner.enqueue(c.id);
+  await waitFor(() => db.getTask(c.id).status === 'review');
+  assert.ok(!calls[2].args.includes('-m'), 'sin elección no se pasa -m: manda el de tu sesión');
+});
+
+test('Claude Code: --model solo si hay elección y se guarda el modelo que reporta el init', async () => {
+  const db = openDb(':memory:');
+  const calls = [];
+  const spawnFn = (cmd, args) => {
+    calls.push(args);
+    const child = new EventEmitter();
+    child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.stdin = new PassThrough();
+    child.kill = () => child.emit('close', 143);
+    child.stdin.on('data', () => {});
+    child.stdin.on('end', () => setImmediate(() => {
+      child.stdout.write(`${JSON.stringify({ type: 'system', subtype: 'init', model: 'claude-sonnet-5-5' })}\n${JSON.stringify({ type: 'result', result: 'hecho', total_cost_usd: 0 })}\n`);
+      child.stdout.end(); setImmediate(() => child.emit('close', 0));
+    }));
+    return child;
+  };
+  const runner = createRunner(db, () => {}, { spawnFn, registry });
+  const a = db.createTask({ title: 'sin elegir', agent: 'docs', engine: 'claude' });
+  runner.enqueue(a.id);
+  await waitFor(() => db.getTask(a.id).status === 'review');
+  assert.ok(!calls[0].includes('--model'));
+  assert.equal(db.getTask(a.id).used_model, 'claude-sonnet-5-5');
+  assert.equal(db.defaultSeen().claude, 'claude-sonnet-5-5'); // así la lista puede decir «predeterminado · hoy: …»
+  db.setEngineModel('claude', 'haiku');
+  const b = db.createTask({ title: 'del motor', agent: 'docs', engine: 'claude' });
+  runner.enqueue(b.id);
+  await waitFor(() => db.getTask(b.id).status === 'review');
+  assert.equal(calls[1][calls[1].indexOf('--model') + 1], 'haiku');
+  const c = db.createTask({ title: 'de la misión', agent: 'docs', engine: 'claude', model: 'opus' });
+  runner.enqueue(c.id);
+  await waitFor(() => db.getTask(c.id).status === 'review');
+  assert.equal(calls[2][calls[2].indexOf('--model') + 1], 'opus');
+});

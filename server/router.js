@@ -3,9 +3,10 @@
 const INFRA = new Set(['devops', 'cicd', 'iac', 'k8s', 'cloud', 'sre', 'netsec', 'backup-dr', 'windows-admin']);
 const LIGHT = new Set(['summarizer', 'translator', 'copywriter']);
 
+// Probado en este equipo (CPU, sin GPU): gemma3:4b responde directo y en buen español, sin relleno ni «pensar» largo.
 export const OLLAMA_MODELS = {
-  light: 'llama3.2:3b',
-  writer: 'qwen3:4b',
+  light: 'gemma3:4b',
+  writer: 'gemma3:4b',
 };
 
 const ENGINE_NAME = { claude: 'Claude Code', ollama: 'Ollama', codex: 'Codex' };

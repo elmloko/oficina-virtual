@@ -431,6 +431,8 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
       '--permission-mode', task.mode === 'edit' ? 'acceptEdits' : 'plan'];
     if (task.kind !== 'objective') args.push('--agent', task.agent);
     if (task.kind !== 'objective' && db.attachments(task.id).length) args.push('--add-dir', dirFor(attachmentsDir, task.id)); // para que pueda leer los adjuntos
+    const model = task.model || db.engineModels().claude; // la elección de la misión manda; si no, la del motor; si no, el de tu sesión
+    if (model) args.push('--model', model);
     const { task_budget_usd: cap } = db.settings();
     if (cap > 0) args.push('--max-budget-usd', String(cap));
     return new Promise((resolve, reject) => {
@@ -443,7 +445,10 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
         if (!line.trim()) return;
         let msg;
         try { msg = JSON.parse(line); } catch { return; }
-        if (msg.type === 'assistant') {
+        if (msg.type === 'system' && msg.subtype === 'init' && msg.model) {
+          patch(task.id, { used_model: msg.model });
+          if (!model) db.setDefaultSeen('claude', msg.model);
+        } else if (msg.type === 'assistant') {
           for (const b of msg.message?.content ?? []) {
             if (b.type === 'text' && b.text) log(task.id, 'text', b.text);
             else if (b.type === 'tool_use') log(task.id, 'tool', `${b.name} ${JSON.stringify(b.input).slice(0, 300)}`);
@@ -474,7 +479,9 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     if (isDocsRoot(task.project)) cwd = docsFolder(task); // en solo lectura es una carpeta temporal, nunca todo Documentos
     if (db.getTask(task.id).status !== 'running') throw new Error('Cancelada');
     const args = ['exec', '--json', '--ephemeral', '--skip-git-repo-check', '-s', 'read-only', '-C', cwd];
-    if (task.model) args.push('-m', task.model);
+    const model = task.model || db.engineModels().codex;
+    if (model) args.push('-m', model);
+    patch(task.id, { used_model: model || null });
     args.push('-');
     return new Promise((resolve, reject) => {
       const child = spawnFn(config.codexBin, args, { cwd, env: childEnv(), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
@@ -510,7 +517,9 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     });
   }
 
-  async function runOllama(task, model) {
+  async function runOllama(task, routed) {
+    const model = task.model || db.engineModels().ollama || routed; // misión > elección del motor > predeterminado de la oficina
+    patch(task.id, { used_model: model });
     const ctrl = new AbortController();
     procs.set(task.id, { kill: () => ctrl.abort() });
     const sys = `Eres el agente "${task.agent}". Responde en español, conciso y directo.`;
@@ -543,7 +552,9 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     const ctrl = new AbortController();
     procs.set(task.id, { kill: () => ctrl.abort() });
     const sys = `Eres el agente "${task.agent}". Responde en español, conciso y directo.`;
-    const out = await chat(provider, { model: task.model, system: sys, prompt: await buildPrompt(task), signal: ctrl.signal, fetchFn });
+    const model = task.model || (engine === 'lmstudio' ? db.engineModels().lmstudio : '') || undefined; // sin elección: el modelo por defecto del proveedor
+    patch(task.id, { used_model: model || provider.model });
+    const out = await chat(provider, { model, system: sys, prompt: await buildPrompt(task), signal: ctrl.signal, fetchFn });
     log(task.id, 'text', out.text);
     log(task.id, 'info', `${provider.name}/${out.model}: ${out.usage.input} tokens de entrada, ${out.usage.output} de salida (costo no calculado)`);
     return { result: out.text, cost: 0 };

@@ -265,6 +265,9 @@ label { display: grid; gap: 4px; color: var(--muted); font-size: 12px; }
 em.eng { font-style: normal; font-size: 10px; padding: 1px 6px; border: 1px solid var(--line); margin-right: 4px; text-transform: uppercase; letter-spacing: .5px; }
 em.eng-claude { color: var(--gold); border-color: var(--gold); }
 em.eng-ollama { color: var(--green); border-color: var(--green); }
+.prov-row .model-line { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+.prov-row .model-line select { width: auto; min-width: 280px; font-size: 12px; padding: 2px 6px; }
+#model-row select[name=model_pick] { width: 100%; }
 em.eng-codex { color: var(--violet); border-color: var(--violet); }
 em.eng-api { color: var(--blue); border-color: var(--blue); }
 .gauge .bar { height: 8px; background: #000; border: 1px solid var(--line); margin-top: 3px; }
@@ -397,3 +400,6 @@ header.hd #stats { flex: 0 1 auto; margin: 0 0 8px; padding: 2px 10px; border: 1
 @media (max-width: 900px) { #card-settings { grid-column: 1 / -1; } #card-settings .settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 #sys-providers { grid-template-columns: repeat(auto-fill, minmax(640px, 1fr)); }
 .prov-row > span:nth-child(2) { min-width: 0; }
+.prov-row .model-line { flex-wrap: wrap; }
+.prov-row .model-line > span { white-space: nowrap; }
+.prov-row .model-line > span:last-child:not(:first-child) { white-space: normal; flex-basis: 100%; }

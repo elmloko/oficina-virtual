@@ -3,6 +3,7 @@ import { existsSync, statSync } from 'node:fs';
 import { nextRun } from './scheduler.js';
 import { knownProviders, secretEnvNames } from './providers.js';
 import { listProjects } from './registry.js';
+import { OLLAMA_MODELS } from './router.js';
 
 const cached = (ttlMs, fn) => {
   let at = 0;
@@ -14,6 +15,16 @@ const cached = (ttlMs, fn) => {
     return pending;
   };
 };
+
+/** Modelos que acepta `claude --model` (alias que siempre apuntan al más reciente de su familia). */
+export const CLAUDE_MODELS = [
+  { value: 'sonnet', label: 'Sonnet · equilibrado' },
+  { value: 'opus', label: 'Opus · el más capaz (gasta más cupo)' },
+  { value: 'haiku', label: 'Haiku · rápido y ligero' },
+];
+
+/** Modelos de chat de Ollama: sin los de embeddings (no conversan). */
+export const ollamaChatModels = (models = []) => models.filter((m) => !/embed|bge-|nomic/i.test(m.name)).map((m) => ({ value: m.name, label: `${m.name} · ${(m.size / 1e9).toFixed(1)} GB`, recommended: m.name === OLLAMA_MODELS.light }));
 
 /** Sondas del entorno con caché corta para que el panel pueda refrescarse cada pocos segundos. */
 export function createProbe({ config, fetchFn = fetch, exec = execFile } = {}) {
@@ -43,7 +54,17 @@ export function createProbe({ config, fetchFn = fetch, exec = execFile } = {}) {
     });
   }));
 
-  return { claude, ollama, codex };
+  // Catálogo de modelos de Codex (el mismo que ve la app): solo los visibles en su lista.
+  const codexModels = cached(600_000, () => new Promise((resolve) => {
+    exec(config.codexBin, ['debug', 'models'], { timeout: 15000, windowsHide: true, maxBuffer: 20_000_000 }, (err, stdout) => {
+      try {
+        const list = JSON.parse(String(stdout)).models ?? [];
+        resolve(err ? [] : list.filter((m) => m.visibility === 'list').map((m) => ({ value: m.slug, label: m.display_name || m.slug })));
+      } catch { resolve([]); }
+    });
+  }));
+
+  return { claude, ollama, codex, codexModels };
 }
 
 const fileSize = (f) => { try { return statSync(f).size; } catch { return null; } };

@@ -261,7 +261,7 @@ function card(t) {
   const meta = el('div', { className: 'm' },
     el('span', { textContent: t.kind === 'objective' ? '★ objetivo' : `🤖 ${t.agent}` }),
     el('span', { textContent: t.project ? `📁 ${t.project}` : 'sin proyecto' }),
-    el('span', { className: 'tag', textContent: t.engine }),
+    el('span', { className: 'tag', textContent: t.used_model ? `${t.engine} · ${t.used_model}` : t.engine }),
   );
   if (t.mode === 'edit') meta.append(el('span', { className: 'tag edit', textContent: 'edita' }));
   if (kids.length) meta.append(el('span', { textContent: `pasos ${kids.filter((k) => ['review', 'done'].includes(k.status)).length}/${kids.length}` }));
@@ -297,7 +297,7 @@ function drawer(t) {
   $('#d-title').textContent = `#${t.id} ${t.title}`;
   const deps = t.depends_on?.length ? ` · depende de ${t.depends_on.map((d) => '#' + d).join(', ')}` : '';
   $('#d-meta').title = t.workdir ? `Carpeta: ${t.workdir}` : '';
-  $('#d-meta').textContent = `${t.kind === 'objective' ? 'coordinador' : t.agent} · ${t.project || 'sin proyecto'} · ${t.engine}${t.model ? ':' + t.model : ''}/${t.mode} · ${t.status}${deps}${t.error ? ' · ' + t.error : ''}`;
+  $('#d-meta').textContent = `${t.kind === 'objective' ? 'coordinador' : t.agent} · ${t.project || 'sin proyecto'} · ${t.engine}${t.used_model || t.model ? ':' + (t.used_model || t.model) : ''}/${t.mode} · ${t.status}${deps}${t.error ? ' · ' + t.error : ''}`;
   $('#d-result').textContent = t.result || '';
   const act = $('#d-actions');
   act.replaceChildren();
@@ -691,7 +691,7 @@ async function renderAgent() {
       now.replaceChildren(el('div', { className: 'now-row' },
         el('div', {},
           el('div', { textContent: `${current.status === 'running' ? '▶ En misión' : '⏳ En cola'}: #${current.id} ${current.title}` }),
-          el('div', { className: 'muted', textContent: `${current.engine}${current.model ? ':' + current.model : ''}/${current.mode}${current.project ? ' · 📁 ' + current.project : ''}${since}` }),
+          el('div', { className: 'muted', textContent: `${current.engine}${current.used_model || current.model ? ':' + (current.used_model || current.model) : ''}/${current.mode}${current.project ? ' · 📁 ' + current.project : ''}${since}` }),
           ...(replying ? [el('div', { className: 'reply-sent', textContent: `Tu mensaje: «${current.reply_text.length > 200 ? current.reply_text.slice(0, 200) + '…' : current.reply_text}»` })] : [])),
         x));
     } else {
@@ -762,7 +762,10 @@ function setupForms() {
   $('#new-dialog').addEventListener('close', () => newPicker.clear());
   openTaskDialog = wireDialog('#new-dialog', '#new-form', async (f) => {
     const fd = new FormData(f);
-    const task = await post('/api/tasks', { ...Object.fromEntries(fd), review: fd.getAll('review') });
+    const body = { ...Object.fromEntries(fd), review: fd.getAll('review') };
+    if (PICK_ENGINES.includes(body.engine)) body.model = body.model_pick || ''; // '' = el predeterminado del motor
+    delete body.model_pick;
+    const task = await post('/api/tasks', body);
     if (task.auto) toast(`${task.auto.created ? 'Agente nuevo creado: ' : 'Agente elegido: '}${task.agent} — ${task.auto.reason.length > 110 ? task.auto.reason.slice(0, 110) + '…' : task.auto.reason}`, false);
     const errs = await uploadFiles(task.id, newFiles);
     if (errs.length) toast(`La misión se creó, pero fallaron adjuntos: ${errs.join(' · ')}`);
@@ -786,12 +789,17 @@ function setupForms() {
   const syncHint = () => {
     $('#mode-hint').hidden = taskForm.mode.value !== 'edit';
     const prov = state.providers.find((p) => p.name === taskForm.engine.value);
-    $('#model-row').hidden = !prov;
+    const pick = PICK_ENGINES.includes(taskForm.engine.value) ? taskForm.engine.value : null;
+    $('#model-row').hidden = !prov && !pick;
+    taskForm.model.hidden = !prov || !!pick;
+    taskForm.model_pick.hidden = !pick;
     taskForm.model.placeholder = prov ? `por defecto: ${prov.model}` : '';
+    if (pick) { const keep = taskForm.model_pick.value; taskForm.model_pick.replaceChildren(...modelOptions(pick, '')); taskForm.model_pick.value = [...taskForm.model_pick.options].some((o) => o.value === keep) ? keep : ''; }
     const hint = $('#engine-hint');
     hint.hidden = !prov;
     if (prov) hint.textContent = `☁ El texto de la misión (título, descripción y resultados de pasos previos) se enviará a ${prov.name}. No ve archivos del proyecto y no puede editarlos.`;
   };
+  state.syncHint = syncHint;
   taskForm.mode.onchange = syncHint;
   taskForm.engine.onchange = syncHint;
   taskForm.addEventListener('reset', () => setTimeout(syncHint));
@@ -991,14 +999,33 @@ function renderSystem() {
     : el('p', { className: 'hint', textContent: 'Sin rutinas programadas.' })));
 
   // proveedores (solo se reconstruye si cambian los datos, para no perder lo que escribes)
-  renderIfChanged($('#sys-engines'), [s.claude.enabled, s.claude.ok, s.claude.version, s.ollama.enabled, s.ollama.ok, s.ollama.models.length, s.codex.enabled, s.codex.ok, s.codex.version], () => [
+  renderIfChanged($('#sys-engines'), [state.modelInfo, s.claude.enabled, s.claude.ok, s.claude.version, s.ollama.enabled, s.ollama.ok, s.ollama.models.length, s.codex.enabled, s.codex.ok, s.codex.version], () => [
     engineRow('claude', 'Claude Code', s.claude, s.claude.ok ? `${s.claude.version} · usa tu sesión de suscripción · edita archivos` : s.claude.error),
     engineRow('ollama', 'Ollama', s.ollama, s.ollama.ok ? `${s.ollama.models.length} modelos en este equipo · solo lee` : s.ollama.error),
     engineRow('codex', 'Codex', s.codex, s.codex.ok ? `${s.codex.version} · usa tu sesión de ChatGPT · solo lee (sandbox de solo lectura)` : s.codex.error),
   ]);
-  renderIfChanged($('#sys-local'), s.providers.filter((p) => !p.needsKey), () => s.providers.filter((p) => !p.needsKey).map(providerRow));
+  renderIfChanged($('#sys-local'), [state.modelInfo, s.providers.filter((p) => !p.needsKey)], () => s.providers.filter((p) => !p.needsKey).map(providerRow));
   renderIfChanged($('#sys-providers'), s.providers.filter((p) => p.needsKey), () => s.providers.filter((p) => p.needsKey).map(providerRow));
   fillSettings();
+}
+
+/** Opciones de modelo de un motor: la primera es siempre el predeterminado de tu sesión. */
+const PICK_ENGINES = ['claude', 'codex', 'ollama', 'lmstudio'];
+function modelOptions(engine, current) {
+  const info = state.modelInfo ?? {};
+  const seen = info.defaults?.[engine];
+  const list = [...(info[engine] ?? [])];
+  if (current && !list.some((m) => m.value === current)) list.push({ value: current, label: current });
+  const none = engine === 'lmstudio' ? ' (el que tengas cargado)' : ' (el de tu sesión)';
+  return [el('option', { value: '', textContent: `Predeterminado${seen ? ` · ${engine === 'claude' ? 'hoy: ' : ''}${seen}` : none}` }), ...list.map((m) => el('option', { value: m.value, textContent: `${m.recommended ? '★ ' : ''}${m.label}${m.recommended ? ' · recomendado para el día a día' : ''}` }))];
+}
+
+async function refreshModels() {
+  try {
+    state.modelInfo = await api('/api/models');
+    state.syncHint?.();
+    if (state.view === 'system' && state.system) renderSystem();
+  } catch { /* el servidor puede estar reiniciando */ }
 }
 
 /** Claude Code y Ollama: motores locales con interruptor ⏻ (apagados, las misiones no los usan). */
@@ -1014,7 +1041,24 @@ function engineRow(key, label, info, detail) {
     await refreshState(); await refreshSystem();
   }) }));
   row.append(btns);
+  if (PICK_ENGINES.includes(key)) row.append(modelLine(key, label));
   return row;
+}
+
+/** Fila «Modelo que usa» con el selector de un motor (la primera opción es siempre el predeterminado). */
+function modelLine(key, label) {
+  {
+    const cur = state.modelInfo?.engine_models?.[key] ?? '';
+    const sel = el('select', { className: 'model-pick', 'aria-label': `Modelo de ${label}` }, ...modelOptions(key, cur));
+    sel.value = cur;
+    sel.onchange = guard(async () => {
+      await api(`/api/system/engines/${key}/model`, { method: 'PUT', body: JSON.stringify({ model: sel.value }) });
+      toast(`${label}: ${sel.value ? 'modelo ' + sel.value : 'vuelve al predeterminado de tu sesión'} (aplica a las misiones nuevas)`, false);
+      await refreshModels();
+    });
+    const note = key === 'lmstudio' && state.modelInfo && !state.modelInfo.lmstudio_up ? span('· LM Studio no está encendido: abre su servidor local para ver tus modelos') : null;
+    return el('label', { className: 'model-line' }, span('Modelo que usa:'), sel, ...(note ? [note] : []));
+  }
 }
 
 function providerRow(p) {
@@ -1057,6 +1101,7 @@ function providerRow(p) {
     }
   }
   row.append(btns, keyform, res);
+  if (p.name === 'lmstudio' && p.enabled) row.append(modelLine('lmstudio', 'LM Studio'));
   return row;
 }
 
@@ -1092,6 +1137,7 @@ async function refreshState() {
   state.tasks = new Map(s.tasks.map((t) => [t.id, t]));
   if (state.booted) for (const t of s.tasks) handleTransition(before.get(t.id)?.status, t); // por si el WebSocket se perdió un cambio
   state.booted = true;
+  if (!state.modelInfo) refreshModels();
   if (provChanged && openTaskDialog) { fillSelects(); fillBoardTools(); } // un proveedor nuevo aparece en el selector sin recargar
   render();
 }
