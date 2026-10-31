@@ -8,15 +8,27 @@ export const OLLAMA_MODELS = {
   writer: 'qwen3:4b',
 };
 
-export function route({ agent, engine = 'auto', mode = 'read', project = null }) {
+const ENGINE_NAME = { claude: 'Claude Code', ollama: 'Ollama', codex: 'Codex' };
+
+/** `off`: motores locales apagados por el usuario ('claude', 'ollama'). Si el elegido está apagado, devuelve `blocked`. */
+export function route({ agent, engine = 'auto', mode = 'read', project = null }, off = []) {
   const extra = typeof project === 'string' && project.startsWith('@'); // carpetas extra: solo lectura
   const forcedRead = INFRA.has(agent) || extra;
   const finalMode = forcedRead ? 'read' : mode === 'edit' ? 'edit' : 'read';
   let finalEngine = engine;
-  if (engine === 'auto') finalEngine = LIGHT.has(agent) && finalMode === 'read' ? 'ollama' : 'claude';
+  if (engine === 'auto') {
+    finalEngine = LIGHT.has(agent) && finalMode === 'read' ? 'ollama' : 'claude';
+    // En automático se esquiva el motor apagado si el otro puede hacer el trabajo (Ollama solo lee).
+    if (finalEngine === 'ollama' && off.includes('ollama')) finalEngine = 'claude';
+    else if (finalEngine === 'claude' && off.includes('claude') && finalMode === 'read' && !off.includes('ollama')) finalEngine = 'ollama';
+  }
   // Ollama y los proveedores en internet son solo chat (sin archivos): si piden edición, va a Claude.
   if (finalEngine !== 'claude' && finalMode === 'edit') finalEngine = 'claude';
+  const blocked = off.includes(finalEngine)
+    ? `${ENGINE_NAME[finalEngine]} está desactivado en Sistema${finalEngine === 'claude' && finalMode === 'edit' ? ' (editar archivos solo lo hace Claude Code)' : ''}`
+    : null;
   return {
+    blocked,
     engine: finalEngine,
     mode: finalMode,
     model: finalEngine === 'ollama' ? (agent === 'copywriter' ? OLLAMA_MODELS.writer : OLLAMA_MODELS.light) : null,

@@ -13,8 +13,9 @@ export const DEFAULT_SETTINGS = {
   max_claude: config.maxClaude, // concurrencia por motor (editable desde la web)
   max_ollama: config.maxOllama,
   max_api: config.maxApi,
+  max_codex: 1,
 };
-const LIMIT_KEYS = new Set(['max_claude', 'max_ollama', 'max_api']);
+const LIMIT_KEYS = new Set(['max_claude', 'max_ollama', 'max_api', 'max_codex']);
 
 const TASK_COLUMNS = ['title', 'description', 'project', 'agent', 'engine', 'mode', 'status', 'result', 'error',
   'cost_usd', 'started_at', 'finished_at', 'parent_id', 'depends_on', 'kind', 'schedule_id', 'model', 'reply_text', 'branch', 'worktree', 'base_sha', 'change_state', 'chain_fired', 'workdir'];
@@ -235,6 +236,16 @@ export function openDb(file = config.dbFile) {
     /** Proveedores en internet que el usuario apagó (la clave se conserva en .env). */
     disabledProviders() {
       try { const v = JSON.parse(q.getSetting.get('providers_off')?.value ?? '[]'); return Array.isArray(v) ? v.filter((n) => typeof n === 'string') : []; } catch { return []; }
+    },
+    /** Motores locales que el usuario apagó: 'claude', 'ollama' y/o 'codex'. */
+    disabledEngines() {
+      try { const v = JSON.parse(q.getSetting.get('engines_off')?.value ?? '[]'); return Array.isArray(v) ? v.filter((n) => n === 'claude' || n === 'ollama' || n === 'codex') : []; } catch { return []; }
+    },
+    setEngineEnabled(name, enabled) {
+      const off = new Set(this.disabledEngines());
+      if (enabled) off.delete(name); else off.add(name);
+      q.setSetting.run('engines_off', JSON.stringify([...off].sort()));
+      return [...off];
     },
     setProviderEnabled(name, enabled) {
       const off = new Set(this.disabledProviders());

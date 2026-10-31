@@ -7,8 +7,10 @@ const BUILTIN = [
   { name: 'openrouter', kind: 'openai', baseUrl: 'https://openrouter.ai/api/v1', keyEnv: 'OPENROUTER_API_KEY', modelEnv: 'OPENROUTER_MODEL', model: 'openrouter/auto' },
   { name: 'groq', kind: 'openai', baseUrl: 'https://api.groq.com/openai/v1', keyEnv: 'GROQ_API_KEY', modelEnv: 'GROQ_MODEL', model: 'llama-3.3-70b-versatile' },
   { name: 'deepseek', kind: 'openai', baseUrl: 'https://api.deepseek.com/v1', keyEnv: 'DEEPSEEK_API_KEY', modelEnv: 'DEEPSEEK_MODEL', model: 'deepseek-chat' },
+  // LM Studio corre en este equipo (servidor local de LM Studio, puerto 1234): no usa clave ni sale a internet.
+  { name: 'lmstudio', kind: 'openai', baseUrl: 'http://127.0.0.1:1234/v1', keyEnv: null, modelEnv: 'LMSTUDIO_MODEL', model: 'local-model', local: true },
 ];
-const RESERVED = new Set(['auto', 'claude', 'ollama']);
+const RESERVED = new Set(['auto', 'claude', 'ollama', 'codex']);
 export const MODEL_RE = /^[\w.:/@-]{1,100}$/;
 
 /** CUSTOM_LLM="nombre|https://host/v1|NOMBRE_VAR_CLAVE|modelo;otro|..." (cualquier API compatible con OpenAI). */
@@ -22,10 +24,13 @@ function parseCustom(spec = '') {
   return out;
 }
 
+/** Integrados + personalizados; un personalizado con el mismo nombre reemplaza al integrado (p. ej. LM Studio en otro puerto). */
+const allProviders = (env) => { const m = new Map(); for (const p of [...BUILTIN, ...parseCustom(env.CUSTOM_LLM)]) m.set(p.name, p); return [...m.values()]; };
+
 /** Devuelve { nombre: {name, kind, baseUrl, key, model} } solo de los proveedores con clave configurada. */
 export function loadProviders(env = process.env) {
   const out = {};
-  for (const p of [...BUILTIN, ...parseCustom(env.CUSTOM_LLM)]) {
+  for (const p of allProviders(env)) {
     const key = p.keyEnv ? env[p.keyEnv] : '';
     if (p.keyEnv && !key) continue; // sin clave = proveedor desactivado (los custom sin keyEnv, p. ej. LM Studio local, sí cuentan)
     out[p.name] = { name: p.name, kind: p.kind, baseUrl: p.baseUrl, key: key || '', model: (p.modelEnv && env[p.modelEnv]) || p.model };
@@ -101,12 +106,12 @@ export const maskKey = (key) => (key ? `••••${key.slice(-4)}` : '');
 
 /** Todos los proveedores conocidos (con o sin clave) para administrarlos desde la web. */
 export function knownProviders(env = process.env, off = []) {
-  return [...BUILTIN, ...parseCustom(env.CUSTOM_LLM)].map((p) => {
+  return allProviders(env).map((p) => {
     const key = p.keyEnv ? env[p.keyEnv] : '';
     return {
       enabled: (!p.keyEnv || !!key) && !off.includes(p.name), // con clave y no apagado a mano
       name: p.name, kind: p.kind, baseUrl: p.baseUrl, model: (p.modelEnv && env[p.modelEnv]) || p.model,
-      custom: !!p.custom, keyEnv: p.keyEnv ?? null, needsKey: !!p.keyEnv, configured: !p.keyEnv || !!key, keyHint: maskKey(key),
+      custom: !!p.custom, local: !!p.local || /^https?:\/\/(127\.0\.0\.1|localhost)/.test(p.baseUrl), keyEnv: p.keyEnv ?? null, needsKey: !!p.keyEnv, configured: !p.keyEnv || !!key, keyHint: maskKey(key),
     };
   });
 }

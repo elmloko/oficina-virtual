@@ -34,7 +34,7 @@ export function agentMetrics(tasks) {
 }
 
 /** Resumen corto de un agente para mostrarlo en su panel. */
-export function summarize(row, { fmtDur, money }) {
+export function summarize(row, { fmtDur }) {
   if (!row) return 'Sin misiones terminadas todavía';
-  return [`${row.tasks} misión(es)`, row.rate == null ? null : `${Math.round(row.rate * 100)} % éxito`, row.avgSecs == null ? null : `${fmtDur(row.avgSecs)} de media`, money(row.cost)].filter(Boolean).join(' · ');
+  return [`${row.tasks} misión(es)`, row.rate == null ? null : `${Math.round(row.rate * 100)} % éxito`, row.avgSecs == null ? null : `${fmtDur(row.avgSecs)} de media`].filter(Boolean).join(' · ');
 }

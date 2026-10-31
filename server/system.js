@@ -37,19 +37,26 @@ export function createProbe({ config, fetchFn = fetch, exec = execFile } = {}) {
     } catch { return { ok: false, error: 'Ollama no responde (¿está iniciado?)' }; }
   });
 
-  return { claude, ollama };
+  const codex = cached(60_000, () => new Promise((resolve) => {
+    exec(config.codexBin, ['--version'], { timeout: 8000, windowsHide: true }, (err, stdout) => {
+      resolve(err ? { ok: false, error: 'No se encontró el CLI de Codex (instala la app de Codex o define CODEX_BIN)' } : { ok: true, version: String(stdout).trim() });
+    });
+  }));
+
+  return { claude, ollama, codex };
 }
 
 const fileSize = (f) => { try { return statSync(f).size; } catch { return null; } };
 
 /** Reúne todo lo que muestra la pestaña Sistema. */
 export async function collectSystem({ db, runner, probe, config, startedAt, env = process.env, now = new Date() }) {
-  const [claude, ollama] = await Promise.all([probe.claude(), probe.ollama()]);
+  const [claude, ollama, codex] = await Promise.all([probe.claude(), probe.ollama(), probe.codex?.() ?? { ok: false, error: 'sin sonda' }]);
   return {
     server: { uptime_s: Math.round((now - startedAt) / 1000), started_at: startedAt.toISOString(), node: process.version, pid: process.pid, platform: process.platform, host: config.host, port: config.port },
     db: { file: config.dbFile, size_bytes: fileSize(config.dbFile), tasks: db.countsByStatus() },
-    claude,
-    ollama,
+    claude: { ...claude, enabled: !db.disabledEngines().includes('claude') },
+    ollama: { ...ollama, enabled: !db.disabledEngines().includes('ollama') },
+    codex: { ...codex, enabled: !db.disabledEngines().includes('codex') },
     providers: knownProviders(env, db.disabledProviders()),
     paths: {
       htdocs: { path: config.htdocs, exists: existsSync(config.htdocs), projects: listProjects().filter((p) => !p.extra && !p.docs).length },

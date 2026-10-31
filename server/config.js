@@ -1,4 +1,4 @@
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -28,7 +28,21 @@ function parseExtraRoots(spec) {
 // «Documentos» real de Windows (suele estar dentro de OneDrive): la primera ruta que exista.
 const docsCandidates = [join(homedir(), 'OneDrive', 'Documentos'), join(homedir(), 'OneDrive', 'Documents'), join(homedir(), 'Documents'), join(homedir(), 'Documentos')];
 
+/** Codex CLI: CODEX_BIN, o el que instala la app de Codex/ChatGPT en ~/.codex (la versión más nueva), o «codex» del PATH. */
+function findCodex() {
+  if (process.env.CODEX_BIN) return process.env.CODEX_BIN;
+  const releases = join(homedir(), '.codex', 'packages', 'app-server-daemon', 'releases');
+  try {
+    for (const v of readdirSync(releases).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }))) {
+      const bin = join(releases, v, 'bin', 'codex.exe');
+      if (existsSync(bin)) return bin;
+    }
+  } catch { /* sin app de Codex: se intenta el PATH */ }
+  return 'codex';
+}
+
 export const config = {
+  codexBin: findCodex(),
   root,
   port: Number(process.env.PORT || 4000),
   host: '127.0.0.1', // solo local: la oficina puede ejecutar agentes sobre tus carpetas

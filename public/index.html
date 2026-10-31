@@ -25,7 +25,7 @@
         <button role="tab" data-view="board" aria-selected="false">Tablero</button>
         <button role="tab" data-view="comms" aria-selected="false">Comunicaciones <span id="comms-badge" class="badge live" hidden>0</span></button>
         <button role="tab" data-view="routines" aria-selected="false">Rutinas</button>
-        <button role="tab" data-view="costs" aria-selected="false">Costos</button>
+        <button role="tab" data-view="costs" aria-selected="false">Uso</button>
         <button role="tab" data-view="system" aria-selected="false">Sistema</button>
       </nav>
       <div id="stats" aria-live="polite"></div>
@@ -78,8 +78,8 @@
 
   <section id="view-costs" class="view" hidden>
     <div class="panel">
-      <h2>Costos y límites</h2>
-      <p class="hint">Con suscripción el costo es referencial (equivalente en API), pero sirve para detectar tareas caras. Los límites se editan en la pestaña Sistema.</p>
+      <h2>Uso y auditoría</h2>
+      <p class="hint">Cuántas misiones se hacen y cómo les va a los agentes. Los límites se editan en la pestaña Sistema.</p>
       <div id="costs-summary"></div>
       <h3>Rendimiento por agente</h3><div id="costs-agents"></div>
       <h3>Últimos días</h3><div id="costs-days"></div>
@@ -92,6 +92,7 @@
       <span class="chip" id="chip-queue">cola</span>
       <span class="chip" id="chip-claude">claude</span>
       <span class="chip" id="chip-ollama">ollama</span>
+      <span class="chip" id="chip-codex">codex</span>
       <span class="chip" id="chip-apis">proveedores</span>
       <span class="sys-actions">
         <button id="queue-toggle">Pausar cola</button>
@@ -102,18 +103,23 @@
       <article class="card-sys" id="card-health"><h2>Estado</h2><div id="sys-health"></div></article>
       <article class="card-sys" id="card-queue"><h2>Cola en vivo</h2><div id="sys-queue"></div></article>
       <article class="card-sys" id="card-activity"><h2>Actividad de hoy</h2><div id="sys-activity"></div></article>
-      <article class="card-sys wide" id="card-providers"><h2>Modelos en internet</h2>
-        <p class="hint">Las claves se guardan en el archivo <code>.env</code> de este equipo y nunca se muestran de nuevo. Solo se ve el final para reconocerlas.</p>
+      <article class="card-sys wide" id="card-providers"><h2>Motores y modelos</h2>
+        <p class="hint">Apaga con ⏻ lo que no quieras usar: las misiones no lo tocarán y tus claves se conservan. Las claves viven en el archivo <code>.env</code> de este equipo y solo se ve su final.</p>
+        <div id="sys-engines"></div>
+        <h3 class="sub">En este equipo · sin clave</h3>
+        <div id="sys-local"></div>
+        <h3 class="sub">En internet · con clave</h3>
         <div id="sys-providers"></div></article>
       <article class="card-sys" id="card-schedules"><h2>Próximas rutinas</h2><div id="sys-schedules"></div></article>
       <article class="card-sys" id="card-settings"><h2>Ajustes</h2>
         <form id="settings-form" class="settings-grid">
-          <label>Presupuesto diario USD <small>0 = sin límite</small><input name="daily_budget_usd" type="number" min="0" step="0.5"></label>
+          <label>Tope diario de seguridad (USD) <small>0 = sin tope · solo frena, no cobra</small><input name="daily_budget_usd" type="number" min="0" step="0.5"></label>
           <label>Tope por tarea USD <small>0 = sin tope</small><input name="task_budget_usd" type="number" min="0" step="0.5"></label>
           <label>Timeout por tarea (min)<input name="task_timeout_min" type="number" min="1" step="1"></label>
           <label>Colaboración entre agentes <small>1 = activada · 0 = apagada</small><input name="collab" type="number" min="0" max="1" step="1"></label>
           <label>Claude a la vez<input name="max_claude" type="number" min="1" max="16" step="1"></label>
           <label>Ollama a la vez<input name="max_ollama" type="number" min="1" max="16" step="1"></label>
+          <label>Codex a la vez<input name="max_codex" type="number" min="1" max="16" step="1"></label>
           <label>Internet a la vez<input name="max_api" type="number" min="1" max="16" step="1"></label>
           <button class="primary" type="submit">Guardar ajustes</button>
         </form>

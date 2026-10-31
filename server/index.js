@@ -28,7 +28,7 @@ const MAX_REVIEWERS = 4;
 
 export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loadProviders(), logger = createLogger(), envFile = config.envFile, probe = createProbe({ config }), attachmentsDir = config.attachmentsDir, dispatcher, docsRoot = config.docsRoot, openFolder = (dir) => spawnProc('explorer.exe', [dir], { detached: true, stdio: 'ignore' }).unref() } = {}) {
   const startedAt = new Date();
-  const engineSet = () => new Set(['auto', 'claude', 'ollama', ...Object.keys(providers)]);
+  const engineSet = () => new Set(['auto', ...['claude', 'ollama', 'codex'].filter((e) => !db.disabledEngines().includes(e)), ...Object.keys(providers)]);
   /** Recarga los proveedores en el mismo objeto (el runner conserva la referencia). */
   // Los proveedores apagados a mano se quitan del conjunto activo (su clave sigue guardada en .env).
   const applyOff = () => { for (const n of db.disabledProviders()) delete providers[n]; };
@@ -98,7 +98,7 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
   }
 
   /** Ejecutar con permiso de edición exige confirmación explícita (confirm:true). */
-  const needsConfirm = (task) => route(task).mode === 'edit';
+  const needsConfirm = (task) => route(task, db.disabledEngines()).mode === 'edit';
 
   function costs() {
     const s = db.settings();
@@ -136,6 +136,7 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
     if (method === 'GET' && url.pathname === '/api/state') {
       return send(res, 200, {
         tasks: db.listTasks(), agents: listAgents(), projects: listProjects(), stats: runner.stats(),
+        engines_off: db.disabledEngines(),
         settings: db.settings(), providers: publicProviders(providers), templates: TEMPLATES, schedules: db.schedules(), costs: costs(),
         messages: db.messages(150),
       });
@@ -165,6 +166,15 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
       db.audit(`queue.${action}`);
       broadcast({ type: 'queue', paused });
       return send(res, 200, { paused });
+    }
+    if (method === 'PUT' && (r = m(/^\/api\/system\/engines\/(claude|ollama|codex)\/toggle$/))) {
+      const { enabled } = await readJson(req);
+      if (typeof enabled !== 'boolean') return send(res, 400, { error: 'Falta enabled (true/false)' });
+      db.setEngineEnabled(r[1], enabled);
+      db.audit(enabled ? 'engine.enabled' : 'engine.disabled', null, r[1]);
+      logger.info(`Motor ${r[1]} ${enabled ? 'activado' : 'desactivado'}`);
+      broadcast({ type: 'providers' });
+      return send(res, 200, { name: r[1], enabled });
     }
     if ((r = m(/^\/api\/system\/providers\/([\w-]+)\/(test|key|toggle)$/))) {
       const def = knownProviders(process.env, db.disabledProviders()).find((p) => p.name === r[1]);

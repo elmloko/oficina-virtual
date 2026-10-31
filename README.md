@@ -11,7 +11,7 @@ Oficina 2D pixel-art (tema Star Wars, arte original) para asignar tareas a los a
 - **Objetivos**: el coordinador (Claude) divide un objetivo en pasos con dependencias; revisas el plan y lo lanzas.
 - **Rutinas**: plantillas programadas (siempre solo lectura), incluido el informe operativo sobre los Excel de `@Descargas`. Solo corren con el servidor encendido.
 - **Carpetas extra** (`EXTRA_ROOTS`): fuera de htdocs, siempre solo lectura, visibles como `@Nombre`.
-- **Costos**: costo por agente y por día, auditoría.
+- **Uso**: misiones por agente y por día, auditoría. La interfaz ya no muestra dinero: con suscripción de Claude Code el «costo» era solo una cifra de referencia. Los topes de seguridad (diario y por tarea, en Sistema → Ajustes) siguen frenando por dentro.
 - **Sistema**: salud (servidor, Claude CLI, Ollama, carpetas), cola en vivo con pausa y cancelación total, actividad del día, fallos, próximas rutinas, registro en vivo, ajustes (presupuesto, timeout, concurrencia por motor) y administración de claves de proveedores (se guardan en `.env`, nunca se muestran).
 
 Motores: Claude (`claude -p`, usa tu suscripción, con acceso a archivos), Ollama local y **modelos en internet**
@@ -106,6 +106,10 @@ No implementado a propósito: abrir la propia oficina desde fuera de casa. Exigi
 - En solo lectura no se crea carpeta ni se da acceso a Documentos (si necesita un archivo, adjúntalo a la misión).
 - La ruta se detecta sola (`OneDrive\Documentos`, `Documents`…); se puede fijar con `DOCS_ROOT` en `.env`.
 
-## Activar / desactivar proveedores en internet
+## Activar / desactivar motores y proveedores
 
-En **Sistema → Modelos en internet**, cada proveedor con clave tiene un botón **⏻ Desactivar / Activar**. Desactivarlo deja de ofrecerlo como motor (selector de misiones y rutinas) y rechaza nuevas misiones con él, **sin borrar la clave** del `.env`; al activarlo vuelve al instante, sin reiniciar. La opción se guarda en la base de datos (ajuste `providers_off`) y queda anotada en la auditoría. «Probar» sigue funcionando con un proveedor desactivado, para comprobar su clave.
+En **Sistema → Motores y modelos** puedes apagar con **⏻** también **Claude Code** y **Ollama** (pide confirmación para Claude Code), y verás **LM Studio** (servidor local en `http://127.0.0.1:1234/v1`, sin clave; modelo con `LMSTUDIO_MODEL`, o redefínelo con `CUSTOM_LLM`). Un motor apagado desaparece del selector, el modo automático lo esquiva si el otro puede hacer el trabajo, y las misiones que lo exigen se rechazan con un aviso claro (ajuste `engines_off`). La **Cola en vivo** muestra Claude Code, Ollama y otros modelos con su ocupación y las misiones en curso/espera etiquetadas por motor.
+
+**Codex** (el CLI de OpenAI, `codex exec`) es otro motor con su ⏻, su medidor en la Cola en vivo y su cupo («Codex a la vez», 1 por defecto). Usa tu sesión de ChatGPT ya iniciada en esta PC, trabaja **solo en lectura** (`-s read-only`, sin aprobaciones ni saltos de sandbox) y, para editar archivos, la misión pasa a Claude Code. Se elige a mano en «Motor → Codex» (el modo Auto no lo usa). Lo encuentra solo en `~/.codex/packages/app-server-daemon` o en el PATH; si no, define `CODEX_BIN` en `.env`.
+
+Cada proveedor con clave tiene un botón **⏻ Desactivar / Activar**. Desactivarlo deja de ofrecerlo como motor (selector de misiones y rutinas) y rechaza nuevas misiones con él, **sin borrar la clave** del `.env`; al activarlo vuelve al instante, sin reiniciar. La opción se guarda en la base de datos (ajuste `providers_off`) y queda anotada en la auditoría. «Probar» sigue funcionando con un proveedor desactivado, para comprobar su clave.

@@ -66,7 +66,7 @@ test('agentMetrics: éxito, tiempo medio, costo y orden; ignora objetivos, cance
   assert.equal(new Date(b.lastAt).toISOString(), at(4));
   assert.deepEqual(agentMetrics([]), []);
   const fmt = { fmtDur: (s) => `${s}s`, money: (n) => `$${n.toFixed(2)}` };
-  assert.equal(summarize(b, fmt), '3 misión(es) · 67 % éxito · 140s de media · $0.30');
+  assert.equal(summarize(b, fmt), '3 misión(es) · 67 % éxito · 140s de media');
   assert.match(summarize(undefined, fmt), /Sin misiones/);
 });
 

@@ -50,9 +50,9 @@ const fakeFetch = (body, { ok = true, status = 200, text = '' } = {}) => {
 
 test('loadProviders: solo se activan los que tienen clave; el modelo se puede cambiar por entorno', () => {
   const p = loadProviders({ OPENAI_API_KEY: SECRET, OPENAI_MODEL: 'gpt-4o', GROQ_API_KEY: '' });
-  assert.deepEqual(Object.keys(p), ['openai']);
+  assert.deepEqual(Object.keys(p), ['openai', 'lmstudio']); // LM Studio es local y no pide clave
   assert.equal(p.openai.model, 'gpt-4o');
-  assert.deepEqual(Object.keys(loadProviders({})), []);
+  assert.deepEqual(Object.keys(loadProviders({})), ['lmstudio']);
   assert.equal(loadProviders({ OFICINA_ANTHROPIC_API_KEY: 'k' }).anthropic.model, 'claude-haiku-5-5');
   assert.equal(loadProviders({ ANTHROPIC_API_KEY: 'k' }).anthropic, undefined, 'ANTHROPIC_API_KEY no se usa para no activar facturación por API en `claude`');
 });
@@ -62,14 +62,15 @@ test('loadProviders: proveedores personalizados compatibles con OpenAI y validac
   const p = loadProviders(env);
   assert.deepEqual(Object.keys(p).sort(), ['lmstudio', 'mistral']);
   assert.equal(p.lmstudio.key, '');
+  assert.equal(p.lmstudio.model, 'qwen2.5', 'un personalizado reemplaza al integrado del mismo nombre');
   assert.equal(p.mistral.baseUrl, 'https://api.mistral.ai/v1');
-  assert.deepEqual(Object.keys(loadProviders({ CUSTOM_LLM: 'mistral|https://a/v1|MISTRAL_KEY|m' })), [], 'sin clave configurada queda desactivado');
+  assert.deepEqual(Object.keys(loadProviders({ CUSTOM_LLM: 'mistral|https://a/v1|MISTRAL_KEY|m' })), ['lmstudio'], 'sin clave configurada queda desactivado');
 });
 
 test('publicProviders nunca incluye la clave; secretEnvNames lista las variables a ocultar', () => {
   const pub = publicProviders(loadProviders({ OPENAI_API_KEY: SECRET }));
   assert.equal(JSON.stringify(pub).includes(SECRET), false);
-  assert.deepEqual(pub, [{ name: 'openai', kind: 'openai', model: 'gpt-4o-mini' }]);
+  assert.deepEqual(pub.map((p) => p.name), ['openai', 'lmstudio']);
   const names = secretEnvNames({ CUSTOM_LLM: 'mio|http://h/v1|MI_CLAVE|m' });
   for (const n of ['OPENAI_API_KEY', 'OFICINA_ANTHROPIC_API_KEY', 'GEMINI_API_KEY', 'MI_CLAVE']) assert.ok(names.includes(n), n);
 });
@@ -210,7 +211,7 @@ test('API: acepta motores configurados, rechaza desconocidos y modelos raros, y 
     await waitFor(() => db.getTask(id).status === 'review');
     const state = await call('GET', '/api/state');
     assert.equal(state.text.includes(SECRET), false, 'la clave no debe salir al navegador');
-    assert.deepEqual(JSON.parse(state.text).providers, [{ name: 'openai', kind: 'openai', model: 'gpt-4o-mini' }]);
+    assert.deepEqual(JSON.parse(state.text).providers.map((p) => p.name), ['openai', 'lmstudio']);
     assert.equal((await call('GET', `/api/tasks/${id}/events`)).text.includes(SECRET), false);
   } finally { server.close(); server.closeAllConnections?.(); }
 });

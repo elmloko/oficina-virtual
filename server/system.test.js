@@ -292,7 +292,7 @@ test('API de proveedores: guardar clave, enmascarar, activar el motor, probar y 
     assert.equal(process.env.GROQ_API_KEY, SECRET);
 
     assert.equal((await call('POST', '/api/tasks', { title: 'a', agent: 'backend', engine: 'groq' })).status, 201, 'el motor se activa sin reiniciar');
-    assert.deepEqual(json(await call('GET', '/api/state')).providers.map((p) => p.name), ['groq']);
+    assert.deepEqual(json(await call('GET', '/api/state')).providers.map((p) => p.name), ['groq', 'lmstudio']);
 
     const ok = json(await call('POST', '/api/system/providers/groq/test'));
     assert.equal(ok.ok, true);

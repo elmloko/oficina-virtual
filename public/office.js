@@ -308,10 +308,11 @@ function drawOpsBack(ctx, room, model, t, skin) {
     if (bar != null) { px(ctx, cx0, cy0 + 4, cellW, 4, '#1d2c3c'); px(ctx, cx0, cy0 + 4, Math.round(cellW * Math.min(1, bar)), 4, bar >= 1 ? '#ffd84a' : skin.holo); }
   };
   const ratio = ([a, b]) => (b > 0 ? a / b : 0);
-  cell(0, 0, 'Claude', `${claude[0]}/${claude[1]}`, { bar: ratio(claude) });
-  cell(1, 0, 'Ollama', `${ollama[0]}/${ollama[1]}`, { bar: ratio(ollama) });
+  const offs = stats?.off ?? [];
+  cell(0, 0, 'Claude Code', offs.includes('claude') ? 'apagado' : `${claude[0]}/${claude[1]}`, offs.includes('claude') ? { color: '#ff6a6a' } : { bar: ratio(claude) });
+  cell(1, 0, 'Ollama', offs.includes('ollama') ? 'apagado' : `${ollama[0]}/${ollama[1]}`, offs.includes('ollama') ? { color: '#ff6a6a' } : { bar: ratio(ollama) });
   cell(0, 1, 'En espera', stats?.waiting ?? 0, { color: (stats?.waiting ?? 0) > 0 ? '#ffd84a' : VAL });
-  cell(1, 1, 'Costo hoy', `$${(stats?.costToday ?? 0).toFixed(2)}`, { color: skin.holo });
+  cell(1, 1, 'Codex', offs.includes('codex') ? 'apagado' : `${stats?.active?.codex ?? 0}/${stats?.limit?.codex ?? 1}`, offs.includes('codex') ? { color: '#ff6a6a' } : { bar: ratio([stats?.active?.codex ?? 0, stats?.limit?.codex ?? 1]) });
   cell(0, 2, 'Agentes activos', `${working}/${agents.length || '–'}`);
   cell(1, 2, 'Completadas', count('done'), { color: '#4ade80' });
   cell(0, 3, 'Por revisar', count('review'), { color: count('review') ? STATE_COLOR.review : VAL });

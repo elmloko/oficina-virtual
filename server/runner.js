@@ -25,7 +25,7 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
   const active = { claude: 0, ollama: 0 };
   let paused = false;
   // Límites editables desde la web (se leen en cada ciclo); los proveedores en internet comparten `max_api`.
-  const limits = () => { const s = db.settings(); return { claude: s.max_claude, ollama: s.max_ollama, api: s.max_api }; };
+  const limits = () => { const s = db.settings(); return { claude: s.max_claude, ollama: s.max_ollama, codex: s.max_codex, api: s.max_api }; };
   const limitOf = (engine) => limits()[engine] ?? limits().api;
   const hasRoom = (engine) => (active[engine] ?? 0) < limitOf(engine);
   // El proceso `claude` no debe heredar claves de otros proveedores (ni activar facturación por API sin querer).
@@ -46,7 +46,8 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     const task = db.getTask(id);
     if (!task) throw new Error('Tarea no existe');
     if (['queued', 'running'].includes(task.status)) throw new Error('La tarea ya está en curso');
-    const plan = route(task);
+    const plan = route(task, db.disabledEngines());
+    if (plan.blocked) throw new Error(plan.blocked);
     const { daily_budget_usd: budget } = db.settings();
     if (plan.engine === 'claude' && budget > 0 && db.costToday() >= budget) {
       throw new Error(`Presupuesto diario agotado ($${db.costToday().toFixed(2)} de $${budget})`);
@@ -54,7 +55,7 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     prepare?.(task);
     patch(id, { status: 'queued', engine: plan.engine, mode: plan.mode, error: null, result: null, finished_at: null });
     if (plan.note) log(id, 'info', plan.note);
-    if (plan.engine !== 'claude' && task.project) log(id, 'info', 'Este motor no ve archivos del proyecto: solo recibe el texto de la misión.');
+    if (!['claude', 'codex'].includes(plan.engine) && task.project) log(id, 'info', 'Este motor no ve archivos del proyecto: solo recibe el texto de la misión.');
     waiting.push({ id, engine: plan.engine, model: plan.model });
     db.audit('task.run', id, `${task.agent} ${plan.engine}/${plan.mode} ${task.project ?? ''}`);
     pump();
@@ -123,7 +124,7 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     const timer = setTimeout(() => { timedOut.add(id); procs.get(id)?.kill(); }, db.settings().task_timeout_min * 60_000);
     try {
       if (task.review_of) { const ctx = await reviewContext(task); if (ctx) extraPrompt.set(id, ctx); }
-      const out = engine === 'claude' ? await runClaude(task) : engine === 'ollama' ? await runOllama(task, model) : await runProvider(task, engine);
+      const out = engine === 'claude' ? await runClaude(task) : engine === 'ollama' ? await runOllama(task, model) : engine === 'codex' ? await runCodex(task) : await runProvider(task, engine);
       if (db.getTask(id).status !== 'running') { await afterCancel(id); return; } // cancelada
       if (canConsult(task) && (await beginConsults(task, out))) return; // espera a sus colegas; sigue «en misión» sin ocupar cupo
       out.result = stripConsults(out.result);
@@ -208,8 +209,13 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     const task = db.getTask(id);
     if (!state || !task || task.status !== 'running') return;
     log(id, 'consult', answersPrompt(state.answers));
-    const plan = route(task);
+    const plan = route(task, db.disabledEngines());
     const { daily_budget_usd: budget } = db.settings();
+    if (plan.blocked) {
+      log(id, 'error', plan.blocked); carry.delete(id); replySnaps.delete(id);
+      patch(id, { status: 'failed', error: plan.blocked, finished_at: new Date().toISOString() });
+      return;
+    }
     if (plan.engine === 'claude' && budget > 0 && db.costToday() >= budget) {
       const msg = `Presupuesto diario agotado ($${db.costToday().toFixed(2)} de $${budget})`;
       log(id, 'error', msg); carry.delete(id); replySnaps.delete(id);
@@ -460,6 +466,50 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     });
   }
 
+  /** Codex CLI (`codex exec`) con tu sesión de ChatGPT: siempre en sandbox de solo lectura; editar archivos lo hace Claude Code. */
+  async function runCodex(task) {
+    const repo = task.project ? resolveProject(task.project) : null;
+    if (task.project && !repo) throw new Error(`Proyecto no válido: ${task.project}`);
+    let cwd = repo ?? process.cwd();
+    if (isDocsRoot(task.project)) cwd = docsFolder(task); // en solo lectura es una carpeta temporal, nunca todo Documentos
+    if (db.getTask(task.id).status !== 'running') throw new Error('Cancelada');
+    const args = ['exec', '--json', '--ephemeral', '--skip-git-repo-check', '-s', 'read-only', '-C', cwd];
+    if (task.model) args.push('-m', task.model);
+    args.push('-');
+    return new Promise((resolve, reject) => {
+      const child = spawnFn(config.codexBin, args, { cwd, env: childEnv(), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+      procs.set(task.id, { kill: () => child.kill() });
+      let buf = '';
+      let stderr = '';
+      let failure = '';
+      const messages = [];
+      const onLine = (line) => {
+        if (!line.trim()) return;
+        let msg;
+        try { msg = JSON.parse(line); } catch { return; }
+        const item = msg.item;
+        if (msg.type === 'item.completed' && item?.type === 'agent_message' && item.text) { messages.push(item.text); log(task.id, 'text', item.text); }
+        else if (msg.type === 'item.started' && item?.type === 'command_execution') log(task.id, 'tool', `shell ${String(item.command ?? '').slice(0, 300)}`);
+        else if (msg.type === 'turn.completed' && msg.usage) log(task.id, 'info', `Codex: ${msg.usage.input_tokens ?? 0} tokens de entrada, ${msg.usage.output_tokens ?? 0} de salida`);
+        else if (msg.type === 'turn.failed') failure = msg.error?.message ?? 'Codex falló';
+        else if (msg.type === 'error') failure = msg.message ?? failure;
+      };
+      child.stdout.on('data', (d) => {
+        buf += d;
+        let i;
+        while ((i = buf.indexOf('\n')) >= 0) { onLine(buf.slice(0, i)); buf = buf.slice(i + 1); }
+      });
+      child.stderr.on('data', (d) => { stderr += d; });
+      child.on('error', (e) => reject(new Error(`No se pudo lanzar codex: ${e.message}`)));
+      child.on('close', (code) => {
+        if (buf) onLine(buf);
+        if (!failure && messages.length) resolve({ result: messages[messages.length - 1], cost: 0 });
+        else reject(new Error(failure || stderr.trim().slice(-300) || `codex terminó con código ${code}`));
+      });
+      buildPrompt(task).then((p) => child.stdin.end(p), (e) => { child.kill(); reject(e); });
+    });
+  }
+
   async function runOllama(task, model) {
     const ctrl = new AbortController();
     procs.set(task.id, { kill: () => ctrl.abort() });
@@ -554,6 +604,7 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     };
     return {
       paused,
+      off: db.disabledEngines(),
       active: { ...active },
       limit: lim,
       running: tasks.filter((t) => t.status === 'running').map((t) => ({ id: t.id, title: t.title, agent: t.agent, engine: t.engine, started_at: t.started_at })),
@@ -561,5 +612,5 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     };
   }
 
-  return { enqueue, reply, cancel, changes: changesOf, applyChanges, discardChanges, cancelAll, setPaused, snapshot, kick: pump, stats: () => ({ active: { ...active }, limit: limits(), waiting: waiting.length, paused }) };
+  return { enqueue, reply, cancel, changes: changesOf, applyChanges, discardChanges, cancelAll, setPaused, snapshot, kick: pump, stats: () => ({ active: { ...active }, limit: limits(), waiting: waiting.length, paused, off: db.disabledEngines() }) };
 }

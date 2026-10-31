@@ -105,8 +105,11 @@ if (window.ResizeObserver) new ResizeObserver(fitOffice).observe(document.body);
 
 function render() {
   const s = state.stats;
-  $('#stats').textContent = s ? `Claude ${s.active.claude}/${s.limit?.claude ?? '?'} · Ollama ${s.active.ollama}/${s.limit?.ollama ?? '?'} · ${s.waiting} en espera${s.paused ? ' · COLA EN PAUSA' : ''} · hoy ${money(state.costs?.today)}` : '';
-  office.update({ agents: state.agents, tasks: [...state.tasks.values()], stats: s ? { ...s, costToday: state.costs?.today ?? 0 } : null });
+  const off = s?.off ?? state.enginesOff ?? [];
+  const eng = (name, key) => (off.includes(key) ? `${name} apagado` : `${name} ${s.active[key] ?? 0}/${s.limit?.[key] ?? '?'}`);
+  $('#stats').textContent = s ? `${eng('Claude Code', 'claude')} · ${eng('Ollama', 'ollama')} · ${eng('Codex', 'codex')} · ${s.waiting} en espera${s.paused ? ' · COLA EN PAUSA' : ''}` : '';
+  const apiActive = s ? Object.entries(s.active).filter(([k]) => !['claude', 'ollama', 'codex'].includes(k)).reduce((a, [, v]) => a + v, 0) : 0;
+  office.update({ agents: state.agents, tasks: [...state.tasks.values()], stats: s ? { ...s, off, apiActive, apiLimit: s.limit?.api ?? 1 } : null });
   office.setComms({ links: activeLinks(state.tasks), flights: state.flights });
   paintComms();
   if (state.view === 'comms') renderComms();
@@ -261,7 +264,6 @@ function card(t) {
     el('span', { className: 'tag', textContent: t.engine }),
   );
   if (t.mode === 'edit') meta.append(el('span', { className: 'tag edit', textContent: 'edita' }));
-  if (t.cost_usd) meta.append(el('span', { textContent: money(t.cost_usd) }));
   if (kids.length) meta.append(el('span', { textContent: `pasos ${kids.filter((k) => ['review', 'done'].includes(k.status)).length}/${kids.length}` }));
   if (t.parent_id) meta.append(el('span', { textContent: `↳ #${t.parent_id}` }));
   if (t.review_of) meta.append(el('span', { textContent: `revisa #${t.review_of}` }));
@@ -572,7 +574,7 @@ function historyItem(t) {
   const d = el('details', { className: `h-item ${t.status}` });
   d.append(el('summary', {},
     el('span', { textContent: `#${t.id} ${t.title}` }),
-    el('span', { className: 'muted', textContent: [STATUS_ES[t.status] ?? t.status, t.engine, secs != null && fmtDur(secs), t.cost_usd && money(t.cost_usd)].filter(Boolean).join(' · ') }),
+    el('span', { className: 'muted', textContent: [STATUS_ES[t.status] ?? t.status, t.engine, secs != null && fmtDur(secs)].filter(Boolean).join(' · ') }),
   ));
   const body = el('div', { className: 'h-body' });
   d.append(body);
@@ -625,7 +627,7 @@ function lastSection(t) {
     el('div', { className: `h-item ${t.status} h-last` },
       el('div', { className: 'h-head' },
         el('span', { textContent: `#${t.id} ${t.title}` }),
-        el('span', { className: 'muted', textContent: [STATUS_ES[t.status] ?? t.status, t.engine, secs != null && fmtDur(secs), t.cost_usd && money(t.cost_usd)].filter(Boolean).join(' · ') })),
+        el('span', { className: 'muted', textContent: [STATUS_ES[t.status] ?? t.status, t.engine, secs != null && fmtDur(secs)].filter(Boolean).join(' · ') })),
       el('div', { className: 'h-body' },
         ...(t.error ? [el('div', { className: 'h-err', textContent: `Error: ${t.error}` })] : []),
         el('pre', { className: 'h-result', textContent: t.result || 'Sin resultado.' }),
@@ -634,7 +636,7 @@ function lastSection(t) {
   ];
 }
 
-const agentStats = (name) => summarize(agentMetrics([...state.tasks.values()]).find((r) => r.agent === name), { fmtDur, money });
+const agentStats = (name) => summarize(agentMetrics([...state.tasks.values()]).find((r) => r.agent === name), { fmtDur });
 
 async function renderAgent() {
   const name = state.agentOpen;
@@ -719,7 +721,8 @@ function fillSelects() {
   if (keepAgent && [...f.agent.options].some((o) => o.value === keepAgent)) f.agent.value = keepAgent;
   const projectOptions = () => [el('option', { value: '', textContent: '(sin proyecto)' }), ...state.projects.map((p) => el('option', { value: p.name, textContent: p.docs ? '📄 Documentos — carpeta nueva por tema' : p.name }))];
   f.project.replaceChildren(...projectOptions());
-  const engines = [['auto', 'Auto (el router decide)'], ['claude', 'Claude (suscripción)'], ['ollama', 'Ollama (local)'], ...state.providers.map((p) => [p.name, `${p.name} · en internet (${p.model})`])];
+  const offE = state.enginesOff ?? [];
+  const engines = [['auto', 'Auto (el router decide)'], ...(offE.includes('claude') ? [] : [['claude', 'Claude Code (suscripción)']]), ...(offE.includes('ollama') ? [] : [['ollama', 'Ollama (local)']]), ...(offE.includes('codex') ? [] : [['codex', 'Codex (ChatGPT · solo lectura)']]), ...state.providers.map((p) => [p.name, `${p.name} · ${p.local ? 'en este equipo' : 'en internet'} (${p.model})`])];
   const keep = f.engine.value;
   f.engine.replaceChildren(...engines.map(([v, t]) => el('option', { value: v, textContent: t })));
   if (engines.some(([v]) => v === keep)) f.engine.value = keep;
@@ -860,8 +863,8 @@ function table(container, headers, rows) {
 function renderMetrics() {
   const rows = agentMetrics([...state.tasks.values()]);
   const box = $('#costs-agents');
-  table(box, ['Agente', 'Misiones', 'Éxito', 'Fallidas', 'Aprobadas', 'Tiempo medio', 'USD total', 'USD / misión'], rows.map((r) => [
-    r.agent, r.tasks, r.rate == null ? '—' : `${Math.round(r.rate * 100)} %`, r.failed, r.approved, fmtDur(r.avgSecs), money(r.cost), money(r.avgCost)]));
+  table(box, ['Agente', 'Misiones', 'Éxito', 'Fallidas', 'Aprobadas', 'Tiempo medio'], rows.map((r) => [
+    r.agent, r.tasks, r.rate == null ? '—' : `${Math.round(r.rate * 100)} %`, r.failed, r.approved, fmtDur(r.avgSecs)]));
   for (const tr of box.querySelectorAll('tbody tr')) { // resalta los agentes con mala tasa de éxito
     const r = rows[[...tr.parentNode.children].indexOf(tr)];
     if (r?.rate != null && r.tasks >= 3) tr.children[2].className = r.rate < 0.5 ? 'bad' : r.rate >= 0.9 ? 'good' : '';
@@ -874,10 +877,10 @@ async function refreshCosts() {
   state.costs = costs;
   const f = $('#settings-form');
   fillSettings();
-  const budget = costs.daily_budget_usd;
-  $('#costs-summary').textContent = `Hoy: ${money(costs.today)}${budget ? ` de ${money(budget)} (${Math.round((costs.today / budget) * 100)}%)` : ' (sin límite)'}`;
+  const today = costs.byDay.find((d) => d.day === new Date().toISOString().slice(0, 10));
+  $('#costs-summary').textContent = `Hoy: ${today?.tasks ?? 0} misión(es) terminadas`;
   renderMetrics();
-  table($('#costs-days'), ['Día', 'Tareas', 'USD'], costs.byDay.map((d) => [d.day, d.tasks, money(d.cost_usd)]));
+  table($('#costs-days'), ['Día', 'Misiones'], costs.byDay.map((d) => [d.day, d.tasks]));
   table($('#audit'), ['Hora', 'Acción', 'Tarea', 'Detalle'], audit.slice(0, 40).map((a) => [a.ts, a.action, a.task_id ?? '', a.detail]));
 }
 
@@ -928,10 +931,11 @@ function renderSystem() {
   // chips
   const setChip = (id, text, cls) => { const c = $(id); c.textContent = text; c.className = `chip ${cls}`; };
   setChip('#chip-queue', s.queue.paused ? 'cola en pausa' : `cola activa · ${s.queue.running.length} en curso`, s.queue.paused ? 'warn' : 'ok');
-  setChip('#chip-claude', s.claude.ok ? `claude ${s.claude.version.split(' ')[0]}` : 'claude no disponible', s.claude.ok ? 'ok' : 'bad');
-  setChip('#chip-ollama', s.ollama.ok ? `ollama · ${s.ollama.models.length} modelos` : 'ollama apagado', s.ollama.ok ? 'ok' : 'warn');
-  const on = s.providers.filter((p) => p.configured && p.needsKey || (p.custom && !p.needsKey)).length;
-  setChip('#chip-apis', `${on} proveedor(es) en internet`, on ? 'ok' : 'warn');
+  setChip('#chip-claude', !s.claude.enabled ? 'Claude Code desactivado' : s.claude.ok ? `Claude Code ${s.claude.version.split(' ')[0]}` : 'Claude Code no disponible', !s.claude.enabled ? 'warn' : s.claude.ok ? 'ok' : 'bad');
+  setChip('#chip-ollama', !s.ollama.enabled ? 'Ollama desactivado' : s.ollama.ok ? `Ollama · ${s.ollama.models.length} modelos` : 'Ollama sin servicio', s.ollama.enabled && s.ollama.ok ? 'ok' : 'warn');
+  setChip('#chip-codex', !s.codex.enabled ? 'Codex desactivado' : s.codex.ok ? `Codex ${s.codex.version.replace(/^codex-cli\s*/, '')}` : 'Codex no disponible', s.codex.enabled && s.codex.ok ? 'ok' : 'warn');
+  const on = s.providers.filter((p) => p.enabled).length;
+  setChip('#chip-apis', `${on} modelo(s) extra activos`, on ? 'ok' : 'warn');
   $('#queue-toggle').textContent = s.queue.paused ? 'Reanudar cola' : 'Pausar cola';
   $('#queue-toggle').className = s.queue.paused ? 'primary' : '';
 
@@ -948,18 +952,26 @@ function renderSystem() {
 
   // cola
   const q = s.queue;
-  const gauge = (name, key) => {
-    const used = q.active[key] ?? 0; const lim = q.limit[key] ?? 1;
-    return el('div', { className: 'gauge' }, span(`${name}: ${used}/${lim}`), el('div', { className: 'bar' }, el('i', { className: used >= lim ? 'full' : '', style: `width:${Math.min(100, (used / lim) * 100)}%` })));
-  };
-  const apiUsed = Object.entries(q.active).filter(([k]) => !['claude', 'ollama'].includes(k)).reduce((a, [, v]) => a + v, 0);
-  const rows = [gauge('Claude', 'claude'), gauge('Ollama', 'ollama'),
-    el('div', { className: 'gauge' }, span(`Internet: ${apiUsed}/${q.limit.api}`), el('div', { className: 'bar' }, el('i', { className: apiUsed >= q.limit.api ? 'full' : '', style: `width:${Math.min(100, (apiUsed / q.limit.api) * 100)}%` })))];
+  const isApi = (e) => !['claude', 'ollama', 'codex'].includes(e);
+  const ENG_LABEL = { claude: 'Claude Code', ollama: 'Ollama', codex: 'Codex' };
+  const engLabel = (e) => ENG_LABEL[e] ?? e;
+  const gauge = (name, used, lim, nWait, offNow) => el('div', { className: `gauge${offNow ? ' off' : ''}` },
+    el('div', { className: 'g-head' }, el('strong', { textContent: name }), span(offNow ? 'desactivado' : `${used}/${lim} en curso${nWait ? ` · ${nWait} en espera` : ''}`)),
+    el('div', { className: 'bar' }, el('i', { className: used >= lim ? 'full' : '', style: `width:${offNow ? 0 : Math.min(100, (used / lim) * 100)}%` })));
+  const apiUsed = Object.entries(q.active).filter(([k]) => isApi(k)).reduce((a, [, v]) => a + v, 0);
+  const waitOf = (f) => q.waiting.filter((w) => f(w.engine)).length;
+  const qoff = q.off ?? [];
+  const rows = el('div', { className: 'gauges' },
+    gauge('Claude Code', q.active.claude ?? 0, q.limit.claude, waitOf((e) => e === 'claude'), qoff.includes('claude')),
+    gauge('Ollama', q.active.ollama ?? 0, q.limit.ollama, waitOf((e) => e === 'ollama'), qoff.includes('ollama')),
+    gauge('Codex', q.active.codex ?? 0, q.limit.codex ?? 1, waitOf((e) => e === 'codex'), qoff.includes('codex')),
+    gauge('Otros modelos', apiUsed, q.limit.api, waitOf(isApi), false));
   const list = el('div', { className: 'mini-list' });
-  for (const t of q.running) { const b = el('button', { className: 'mini' }, span(`▶ #${t.id} ${t.title}`), el('span', { className: 'muted', textContent: `${t.agent} · ${t.engine} · ${fmtDur(Math.max(0, (Date.now() - parseTs(t.started_at)) / 1000))}` })); b.onclick = () => openDrawer(t.id); list.append(b); }
-  for (const w of q.waiting) { const b = el('button', { className: 'mini' }, span(`⏳ #${w.id} ${w.title}`), el('span', { className: 'muted', textContent: w.reason })); b.onclick = () => openDrawer(w.id); list.append(b); }
+  const engTag = (e) => el('em', { className: `eng eng-${isApi(e) ? 'api' : e}`, textContent: engLabel(e) });
+  for (const t of q.running) { const b = el('button', { className: 'mini' }, el('span', {}, engTag(t.engine), span(` #${t.id} ${t.title}`)), el('span', { className: 'muted', textContent: `${t.agent} · ${fmtDur(Math.max(0, (Date.now() - parseTs(t.started_at)) / 1000))}` })); b.onclick = () => openDrawer(t.id); list.append(b); }
+  for (const w of q.waiting) { const b = el('button', { className: 'mini' }, el('span', {}, engTag(w.engine), span(` ⏳ #${w.id} ${w.title}`)), el('span', { className: 'muted', textContent: w.reason })); b.onclick = () => openDrawer(w.id); list.append(b); }
   if (!list.children.length) list.append(el('p', { className: 'hint', textContent: 'Nada en curso.' }));
-  $('#sys-queue').replaceChildren(...rows, list);
+  $('#sys-queue').replaceChildren(rows, list);
 
   // actividad
   const a = s.activity;
@@ -967,8 +979,8 @@ function renderSystem() {
     el('div', { className: 'stat' }, el('b', { textContent: String(a.total) }), span('tareas terminadas')),
     el('div', { className: 'stat' }, el('b', { textContent: a.successRate == null ? '—' : `${Math.round(a.successRate * 100)}%` }), span('éxito')),
     el('div', { className: 'stat' }, el('b', { textContent: fmtDur(a.avgSeconds) }), span('duración media')),
-    el('div', { className: 'stat' }, el('b', { textContent: money(a.cost_today) }), span('costo hoy'))));
-  const byEngine = el('div', { className: 'mini-list' }, ...a.byEngine.map((e) => el('div', { className: 'mini' }, span(e.engine), el('span', { className: 'muted', textContent: `${e.ok} ok · ${e.failed} fallos · ${money(e.cost_usd)}` }))));
+    el('div', { className: 'stat' }, el('b', { textContent: String(q.running.length) }), span('en curso'))));
+  const byEngine = el('div', { className: 'mini-list' }, ...a.byEngine.map((e) => el('div', { className: 'mini' }, span(engLabel(e.engine)), el('span', { className: 'muted', textContent: `${e.ok} ok · ${e.failed} fallos` }))));
   const fails = el('div', { className: 'mini-list' }, ...(s.failures.length ? [el('h3', { textContent: 'Fallos recientes' })] : []),
     ...s.failures.map((f) => { const b = el('button', { className: 'mini err' }, span(`#${f.id} ${f.title}`), el('span', { className: 'muted', textContent: (f.error || '').slice(0, 60) })); b.onclick = () => openDrawer(f.id); return b; }));
   $('#sys-activity').replaceChildren(act, byEngine, fails);
@@ -979,14 +991,36 @@ function renderSystem() {
     : el('p', { className: 'hint', textContent: 'Sin rutinas programadas.' })));
 
   // proveedores (solo se reconstruye si cambian los datos, para no perder lo que escribes)
-  renderIfChanged($('#sys-providers'), s.providers, () => s.providers.map(providerRow));
+  renderIfChanged($('#sys-engines'), [s.claude.enabled, s.claude.ok, s.claude.version, s.ollama.enabled, s.ollama.ok, s.ollama.models.length, s.codex.enabled, s.codex.ok, s.codex.version], () => [
+    engineRow('claude', 'Claude Code', s.claude, s.claude.ok ? `${s.claude.version} · usa tu sesión de suscripción · edita archivos` : s.claude.error),
+    engineRow('ollama', 'Ollama', s.ollama, s.ollama.ok ? `${s.ollama.models.length} modelos en este equipo · solo lee` : s.ollama.error),
+    engineRow('codex', 'Codex', s.codex, s.codex.ok ? `${s.codex.version} · usa tu sesión de ChatGPT · solo lee (sandbox de solo lectura)` : s.codex.error),
+  ]);
+  renderIfChanged($('#sys-local'), s.providers.filter((p) => !p.needsKey), () => s.providers.filter((p) => !p.needsKey).map(providerRow));
+  renderIfChanged($('#sys-providers'), s.providers.filter((p) => p.needsKey), () => s.providers.filter((p) => p.needsKey).map(providerRow));
   fillSettings();
+}
+
+/** Claude Code y Ollama: motores locales con interruptor ⏻ (apagados, las misiones no los usan). */
+function engineRow(key, label, info, detail) {
+  const row = el('div', { className: `prov-row${info.enabled ? '' : ' off'}` });
+  row.append(el('strong', { textContent: label }),
+    el('span', {}, el('span', { className: info.enabled && info.ok ? 'dot-ok' : 'dot-off' }), span(info.enabled ? detail ?? '' : `DESACTIVADO · ${detail ?? ''}`)));
+  const btns = el('span', { className: 'btns' });
+  btns.append(el('button', { className: info.enabled ? '' : 'primary', textContent: info.enabled ? '⏻ Desactivar' : '⏻ Activar', title: info.enabled ? `Las misiones dejan de usar ${label}` : `Vuelve a usar ${label}`, onclick: guard(async () => {
+    if (info.enabled && key === 'claude' && !(await confirmDialog('Desactivar Claude Code', 'Sin Claude Code no se pueden editar archivos ni correr agentes de código; solo quedarán Ollama y los modelos extra (que únicamente leen). Puedes reactivarlo cuando quieras.'))) return;
+    await api(`/api/system/engines/${key}/toggle`, { method: 'PUT', body: JSON.stringify({ enabled: !info.enabled }) });
+    toast(`${label} ${info.enabled ? 'desactivado' : 'activado'}`, false);
+    await refreshState(); await refreshSystem();
+  }) }));
+  row.append(btns);
+  return row;
 }
 
 function providerRow(p) {
   const row = el('div', { className: 'prov-row' });
-  const status = !p.needsKey ? 'sin clave (local)' : !p.configured ? 'sin configurar' : p.enabled ? `activo · clave ${p.keyHint}` : `DESACTIVADO · clave ${p.keyHint} guardada`;
-  row.append(el('strong', { textContent: p.name }), el('span', {}, el('span', { className: p.enabled ? 'dot-ok' : 'dot-off' }), span(`${status} · ${p.model}`)));
+  const status = !p.needsKey ? (p.enabled ? 'en este equipo, sin clave' : 'DESACTIVADO') : !p.configured ? 'sin configurar' : p.enabled ? `activo · clave ${p.keyHint}` : `DESACTIVADO · clave ${p.keyHint} guardada`;
+  row.append(el('strong', { textContent: p.name === 'lmstudio' ? 'LM Studio' : p.name }), el('span', {}, el('span', { className: p.enabled ? 'dot-ok' : 'dot-off' }), span(`${status} · ${p.model}`)));
   if (p.configured && !p.enabled) row.classList.add('off');
   const btns = el('span', { className: 'btns' });
   const res = el('div', { className: 'res' });
@@ -1049,8 +1083,9 @@ function setupSystem() {
 let office;
 async function refreshState() {
   const s = await api('/api/state');
-  const provSig = JSON.stringify(s.providers ?? []);
-  const provChanged = provSig !== JSON.stringify(state.providers);
+  const provSig = JSON.stringify([s.providers ?? [], s.engines_off ?? []]);
+  const provChanged = provSig !== JSON.stringify([state.providers, state.enginesOff ?? []]);
+  state.enginesOff = s.engines_off ?? [];
   state.messages = s.messages ?? state.messages;
   Object.assign(state, { agents: s.agents, projects: s.projects, providers: s.providers ?? [], stats: s.stats, settings: s.settings, templates: s.templates, schedules: s.schedules, costs: s.costs });
   const before = state.tasks;
