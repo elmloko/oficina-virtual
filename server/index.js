@@ -13,6 +13,8 @@ import { listAgents, listProjects, resolveProject, isExtraRoot } from './registr
 import { insideBase } from './workspace.js';
 import { CLAUDE_MODELS, ollamaChatModels } from './system.js';
 import { OLLAMA_MODELS } from './router.js';
+import { pickDefault, benchCandidates, runBenchmark, recommend } from './ollama-models.js';
+import { freemem } from 'node:os';
 import { spawn as spawnProc } from 'node:child_process';
 import { loadProviders, publicProviders, knownProviders, testProvider, MODEL_RE } from './providers.js';
 import { createLogger } from './logger.js';
@@ -28,7 +30,7 @@ const MANUAL_STATUSES = new Set(['backlog', 'review', 'done']); // el resto lo m
 const MODES = new Set(['read', 'edit']);
 const MAX_REVIEWERS = 4;
 
-export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loadProviders(), logger = createLogger(), envFile = config.envFile, probe = createProbe({ config }), attachmentsDir = config.attachmentsDir, dispatcher, docsRoot = config.docsRoot, openFolder = (dir) => spawnProc('explorer.exe', [dir], { detached: true, stdio: 'ignore' }).unref() } = {}) {
+export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loadProviders(), logger = createLogger(), envFile = config.envFile, probe = createProbe({ config }), attachmentsDir = config.attachmentsDir, dispatcher, docsRoot = config.docsRoot, openFolder = (dir) => spawnProc('explorer.exe', [dir], { detached: true, stdio: 'ignore' }).unref(), ollamaFetch = fetch } = {}) {
   const startedAt = new Date();
   const engineSet = () => new Set(['auto', ...['claude', 'ollama', 'codex'].filter((e) => !db.disabledEngines().includes(e)), ...Object.keys(providers)]);
   /** Recarga los proveedores en el mismo objeto (el runner conserva la referencia). */
@@ -36,6 +38,15 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
   const applyOff = () => { for (const n of db.disabledProviders()) delete providers[n]; };
   const reloadProviders = () => { for (const k of Object.keys(providers)) delete providers[k]; Object.assign(providers, loadProviders()); applyOff(); };
   applyOff();
+  // Medición de modelos de Ollama: una a la vez; el resultado queda guardado para comparar y elegir.
+  const bench = { running: false, current: null, total: 0, results: [], skipped: [], started_at: null, free_gb: null };
+  let benchAbort = null;
+  const benchView = () => {
+    const last = db.ollamaBench();
+    return bench.running
+      ? { running: true, current: bench.current, total: bench.total, results: bench.results, skipped: bench.skipped, best: null, at: null, free_gb: bench.free_gb }
+      : { running: false, current: null, total: last?.results?.length ?? 0, results: last?.results ?? [], skipped: last?.skipped ?? [], best: last?.best ?? null, at: last?.at ?? null, free_gb: last?.free_gb ?? null };
+  };
   const sockets = new Set();
   const broadcast = (msg) => { const s = JSON.stringify(msg); for (const ws of sockets) if (ws.readyState === 1) ws.send(s); };
   const emit = (id, extra = {}) => { const task = db.getTask(id); if (task) broadcast({ type: 'task', task, ...extra }); };
@@ -171,6 +182,7 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
     }
     if (method === 'GET' && url.pathname === '/api/models') {
       const ol = await probe.ollama().catch(() => ({ ok: false }));
+      const ollamaDefault = (ol.ok && pickDefault(ol.models, db.ollamaBench())) || OLLAMA_MODELS.light; // el mejor instalado EN ESTE equipo
       let lm = null; // LM Studio solo responde si su servidor local está encendido
       const lmp = providers.lmstudio;
       if (lmp) {
@@ -182,11 +194,38 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
       return send(res, 200, {
         claude: CLAUDE_MODELS,
         codex: await (probe.codexModels?.() ?? Promise.resolve([])).catch(() => []),
-        ollama: ol.ok ? ollamaChatModels(ol.models) : [],
+        ollama: ol.ok ? ollamaChatModels(ol.models, ollamaDefault) : [],
         lmstudio: lm ?? [], lmstudio_up: lm !== null,
         engine_models: db.engineModels(), default_seen: db.defaultSeen(),
-        defaults: { claude: db.defaultSeen().claude, ollama: OLLAMA_MODELS.light, codex: null, lmstudio: null },
+        defaults: { claude: db.defaultSeen().claude, ollama: ollamaDefault, codex: null, lmstudio: null },
       });
+    }
+    // --- medir los modelos de Ollama instalados en esta computadora ---
+    if (url.pathname === '/api/system/ollama/benchmark') {
+      if (method === 'GET') return send(res, 200, benchView());
+      if (method === 'POST') {
+        if (bench.running) return send(res, 409, { error: 'Ya hay una medición en curso' });
+        if (runner.stats().active.ollama > 0) return send(res, 409, { error: 'Ollama está ocupado con una misión: espera a que termine para medir' });
+        const ol = await probe.ollama().catch(() => ({ ok: false }));
+        if (!ol.ok) return send(res, 400, { error: ol.error ?? 'Ollama no responde (¿está iniciado?)' });
+        const freeGb = freemem() / 1e9;
+        const { candidates, skipped } = benchCandidates(ol.models, freeGb);
+        if (!candidates.length) return send(res, 400, { error: 'No hay modelos de chat que medir (descarga uno, p. ej. «ollama pull gemma3:4b»)' });
+        Object.assign(bench, { running: true, current: null, total: candidates.length, results: [], skipped, started_at: new Date().toISOString(), free_gb: Math.round(freeGb * 10) / 10 });
+        benchAbort = new AbortController();
+        db.audit('ollama.benchmark', null, `${candidates.length} modelos`);
+        logger.info(`Midiendo ${candidates.length} modelos de Ollama`);
+        runBenchmark(candidates, { url: config.ollamaUrl, fetchFn: ollamaFetch, signal: benchAbort.signal, onProgress: (results, current) => { bench.results = [...results]; bench.current = current; } })
+          .then((results) => {
+            const done = { at: new Date().toISOString(), free_gb: bench.free_gb, skipped, results, best: recommend(results) };
+            db.setOllamaBench(done);
+            logger.info(`Medición terminada. Recomendado: ${done.best ?? 'ninguno'}`);
+          })
+          .catch((e) => logger.warn(`Medición de Ollama falló: ${e.message}`))
+          .finally(() => { bench.running = false; bench.current = null; });
+        return send(res, 202, benchView());
+      }
+      if (method === 'DELETE') { benchAbort?.abort(); return send(res, 200, benchView()); }
     }
     if (method === 'PUT' && (r = m(/^\/api\/system\/engines\/(claude|codex|ollama|lmstudio)\/model$/))) {
       const { model } = await readJson(req);

@@ -4,6 +4,7 @@ import { nextRun } from './scheduler.js';
 import { knownProviders, secretEnvNames } from './providers.js';
 import { listProjects } from './registry.js';
 import { OLLAMA_MODELS } from './router.js';
+import { chatModels } from './ollama-models.js';
 
 const cached = (ttlMs, fn) => {
   let at = 0;
@@ -24,7 +25,7 @@ export const CLAUDE_MODELS = [
 ];
 
 /** Modelos de chat de Ollama: sin los de embeddings (no conversan). */
-export const ollamaChatModels = (models = []) => models.filter((m) => !/embed|bge-|nomic/i.test(m.name)).map((m) => ({ value: m.name, label: `${m.name} · ${(m.size / 1e9).toFixed(1)} GB`, recommended: m.name === OLLAMA_MODELS.light }));
+export const ollamaChatModels = (models = [], recommended = OLLAMA_MODELS.light) => chatModels(models).map((m) => ({ value: m.name, label: `${m.name} · ${(m.size / 1e9).toFixed(1)} GB`, recommended: m.name === recommended }));
 
 /** Sondas del entorno con caché corta para que el panel pueda refrescarse cada pocos segundos. */
 export function createProbe({ config, fetchFn = fetch, exec = execFile } = {}) {

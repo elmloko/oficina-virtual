@@ -476,3 +476,12 @@ em.kind.k-net { color: var(--blue); border-color: var(--blue); }
 #card-providers > .hint { margin: 0 0 6px; }
 .eng-line { padding: 3px 6px; }
 .sys-tabs { margin-bottom: 8px; }
+.bench { border: 1px solid var(--line); background: #0a1220; padding: 8px 10px; margin: 2px 0 6px; font-size: 12px; }
+.bench-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; color: var(--muted); }
+.bench table { width: 100%; border-collapse: collapse; }
+.bench th { text-align: left; font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); padding: 2px 6px; }
+.bench td { padding: 3px 6px; border-top: 1px solid var(--line); vertical-align: top; }
+.bench tr.best td { color: var(--gold); }
+.bench td.good { color: var(--green); } .bench td.bad { color: var(--red); }
+.bench td.snip { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.bench button { padding: 2px 8px; font-size: 11px; }

@@ -250,6 +250,11 @@ export function openDb(file = config.dbFile) {
       q.setSetting.run('engine_models', JSON.stringify(cur));
       return cur;
     },
+    /** Última medición de modelos de Ollama en ESTA computadora: { at, results, best, free_gb } o null. */
+    ollamaBench() {
+      try { return JSON.parse(q.getSetting.get('ollama_bench')?.value ?? 'null'); } catch { return null; }
+    },
+    setOllamaBench(bench) { q.setSetting.run('ollama_bench', JSON.stringify(bench)); },
     /** Modelo que usó la última ejecución sin elección manual: así se sabe cuál es «el predeterminado» de la sesión. */
     defaultSeen() {
       try { const v = JSON.parse(q.getSetting.get('default_seen')?.value ?? '{}'); return { claude: v.claude ?? null, codex: v.codex ?? null }; } catch { return { claude: null, codex: null }; }

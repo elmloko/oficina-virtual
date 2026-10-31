@@ -5,6 +5,7 @@ import { resolveProject, listAgents, listProjects, isDocsRoot } from './registry
 import { createTopicFolder, insideBase, listFiles, removeIfEmpty } from './workspace.js';
 import { tmpdir } from 'node:os';
 import { route } from './router.js';
+import { chatModels, hasModel, pickDefault } from './ollama-models.js';
 import { buildPlanPrompt, parsePlan } from './coordinator.js';
 import { chat, secretEnvNames } from './providers.js';
 import { noopLogger } from './logger.js';
@@ -517,8 +518,22 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     });
   }
 
+  /**
+   * El modelo pedido puede no existir en ESTA computadora (el proyecto se lleva de una PC a otra):
+   * en ese caso se usa el mejor instalado (el recomendado por la medición, o el preferido) y se avisa.
+   */
+  async function ollamaModel(wanted, taskId) {
+    let installed;
+    try { installed = chatModels((await (await fetchFn(`${config.ollamaUrl}/api/tags`, { signal: AbortSignal.timeout(3000) })).json()).models ?? []); } catch { return wanted; } // sin lista: que Ollama responda con su propio error
+    if (wanted && hasModel(installed, wanted)) return wanted;
+    const fallback = pickDefault(installed, db.ollamaBench());
+    if (!fallback) throw new Error('Ollama no tiene modelos de chat instalados. Descarga uno (por ejemplo «ollama pull gemma3:4b») y prueba de nuevo.');
+    if (wanted) log(taskId, 'info', `El modelo «${wanted}» no está instalado en este equipo: se usó «${fallback}». Puedes elegir otro en Sistema → Motores y modelos.`);
+    return fallback;
+  }
+
   async function runOllama(task, routed) {
-    const model = task.model || db.engineModels().ollama || routed; // misión > elección del motor > predeterminado de la oficina
+    const model = await ollamaModel(task.model || db.engineModels().ollama || routed, task.id); // misión > elección del motor > predeterminado
     patch(task.id, { used_model: model });
     const ctrl = new AbortController();
     procs.set(task.id, { kill: () => ctrl.abort() });
