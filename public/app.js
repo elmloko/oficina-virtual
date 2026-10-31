@@ -998,14 +998,8 @@ function renderSystem() {
     ? el('div', { className: 'mini' }, span(`${r.enabled ? '' : '⏸ '}${r.name}`), el('span', { className: 'muted', textContent: r.next_run ? `próxima ${new Date(r.next_run).toLocaleString()}` : 'pausada' }))
     : el('p', { className: 'hint', textContent: 'Sin rutinas programadas.' })));
 
-  // proveedores (solo se reconstruye si cambian los datos, para no perder lo que escribes)
-  renderIfChanged($('#sys-engines'), [state.modelInfo, s.claude.enabled, s.claude.ok, s.claude.version, s.ollama.enabled, s.ollama.ok, s.ollama.models.length, s.codex.enabled, s.codex.ok, s.codex.version], () => [
-    engineRow('claude', 'Claude Code', s.claude, s.claude.ok ? `${s.claude.version} · usa tu sesión de suscripción · edita archivos` : s.claude.error),
-    engineRow('ollama', 'Ollama', s.ollama, s.ollama.ok ? `${s.ollama.models.length} modelos en este equipo · solo lee` : s.ollama.error),
-    engineRow('codex', 'Codex', s.codex, s.codex.ok ? `${s.codex.version} · usa tu sesión de ChatGPT · solo lee (sandbox de solo lectura)` : s.codex.error),
-  ]);
-  renderIfChanged($('#sys-local'), [state.modelInfo, s.providers.filter((p) => !p.needsKey)], () => s.providers.filter((p) => !p.needsKey).map(providerRow));
-  renderIfChanged($('#sys-providers'), s.providers.filter((p) => p.needsKey), () => s.providers.filter((p) => p.needsKey).map(providerRow));
+  // motores y modelos (solo se reconstruye si cambian los datos, para no perder lo que escribes)
+  renderIfChanged($('#sys-engines'), { m: state.modelInfo, c: [s.claude.enabled, s.claude.ok, s.claude.version], o: [s.ollama.enabled, s.ollama.ok, s.ollama.models.length], x: [s.codex.enabled, s.codex.ok, s.codex.version], p: s.providers }, () => enginesView(s));
   fillSettings();
 }
 
@@ -1028,49 +1022,61 @@ async function refreshModels() {
   } catch { /* el servidor puede estar reiniciando */ }
 }
 
-/** Claude Code y Ollama: motores locales con interruptor ⏻ (apagados, las misiones no los usan). */
-function engineRow(key, label, info, detail) {
-  const row = el('div', { className: `prov-row${info.enabled ? '' : ' off'}` });
-  row.append(el('strong', { textContent: label }),
-    el('span', {}, el('span', { className: info.enabled && info.ok ? 'dot-ok' : 'dot-off' }), span(info.enabled ? detail ?? '' : `DESACTIVADO · ${detail ?? ''}`)));
-  const btns = el('span', { className: 'btns' });
-  btns.append(el('button', { className: info.enabled ? '' : 'primary', textContent: info.enabled ? '⏻ Desactivar' : '⏻ Activar', title: info.enabled ? `Las misiones dejan de usar ${label}` : `Vuelve a usar ${label}`, onclick: guard(async () => {
-    if (info.enabled && key === 'claude' && !(await confirmDialog('Desactivar Claude Code', 'Sin Claude Code no se pueden editar archivos ni correr agentes de código; solo quedarán Ollama y los modelos extra (que únicamente leen). Puedes reactivarlo cuando quieras.'))) return;
-    await api(`/api/system/engines/${key}/toggle`, { method: 'PUT', body: JSON.stringify({ enabled: !info.enabled }) });
-    toast(`${label} ${info.enabled ? 'desactivado' : 'activado'}`, false);
-    await refreshState(); await refreshSystem();
-  }) }));
-  row.append(btns);
-  if (PICK_ENGINES.includes(key)) row.append(modelLine(key, label));
-  return row;
+/** Interruptor tipo «switch» (encendido/apagado) para un motor o proveedor. */
+const switchBtn = (on, title, fn) => el('button', { className: `switch${on ? ' on' : ''}`, role: 'switch', 'aria-checked': String(on), title, onclick: guard(fn) }, el('i'));
+
+/** Selector de modelo de un motor (la primera opción es siempre el predeterminado). */
+function modelSelect(key, label) {
+  const cur = state.modelInfo?.engine_models?.[key] ?? '';
+  const sel = el('select', { className: 'model-pick', 'aria-label': `Modelo de ${label}` }, ...modelOptions(key, cur));
+  sel.value = cur;
+  sel.onchange = guard(async () => {
+    await api(`/api/system/engines/${key}/model`, { method: 'PUT', body: JSON.stringify({ model: sel.value }) });
+    toast(`${label}: ${sel.value ? 'modelo ' + sel.value : 'vuelve al predeterminado'} (aplica a las misiones nuevas)`, false);
+    await refreshModels();
+  });
+  return sel;
 }
 
-/** Fila «Modelo que usa» con el selector de un motor (la primera opción es siempre el predeterminado). */
-function modelLine(key, label) {
-  {
-    const cur = state.modelInfo?.engine_models?.[key] ?? '';
-    const sel = el('select', { className: 'model-pick', 'aria-label': `Modelo de ${label}` }, ...modelOptions(key, cur));
-    sel.value = cur;
-    sel.onchange = guard(async () => {
-      await api(`/api/system/engines/${key}/model`, { method: 'PUT', body: JSON.stringify({ model: sel.value }) });
-      toast(`${label}: ${sel.value ? 'modelo ' + sel.value : 'vuelve al predeterminado de tu sesión'} (aplica a las misiones nuevas)`, false);
-      await refreshModels();
-    });
-    const note = key === 'lmstudio' && state.modelInfo && !state.modelInfo.lmstudio_up ? span('· LM Studio no está encendido: abre su servidor local para ver tus modelos') : null;
-    return el('label', { className: 'model-line' }, span('Modelo que usa:'), sel, ...(note ? [note] : []));
-  }
+/** Una fila: nombre y tipo | estado | modelo | acciones. `more` = zona desplegable (clave, resultado de «Probar»). */
+function engineItem({ name, kind, kindClass, on, ok, detail, model, actions, more = [] }) {
+  const line = el('div', { className: `eng-line${on ? '' : ' off'}` },
+    el('div', { className: 'c-name' }, el('strong', { textContent: name }), el('em', { className: `kind ${kindClass}`, textContent: kind })),
+    el('div', { className: 'c-state' }, el('span', { className: on && ok ? 'dot-ok' : on ? 'dot-bad' : 'dot-off' }), span(detail)),
+    el('div', { className: 'c-model' }, model),
+    el('div', { className: 'c-act' }, ...actions));
+  return el('div', { className: 'eng-item' }, line, el('div', { className: 'eng-more' }, ...more));
 }
 
-function providerRow(p) {
-  const row = el('div', { className: 'prov-row' });
-  const status = !p.needsKey ? (p.enabled ? 'en este equipo, sin clave' : 'DESACTIVADO') : !p.configured ? 'sin configurar' : p.enabled ? `activo · clave ${p.keyHint}` : `DESACTIVADO · clave ${p.keyHint} guardada`;
-  row.append(el('strong', { textContent: p.name === 'lmstudio' ? 'LM Studio' : p.name }), el('span', {}, el('span', { className: p.enabled ? 'dot-ok' : 'dot-off' }), span(`${status} · ${p.model}`)));
-  if (p.configured && !p.enabled) row.classList.add('off');
-  const btns = el('span', { className: 'btns' });
+/** Claude Code, Codex y Ollama: motores locales que se encienden y apagan sin tocar nada más. */
+function localEngineItem(key, label, info, detail, kind, kindClass) {
+  return engineItem({
+    name: label, kind, kindClass, on: info.enabled, ok: info.ok,
+    detail: info.enabled ? (detail ?? '') : `apagado · ${detail ?? ''}`,
+    model: modelSelect(key, label),
+    actions: [switchBtn(info.enabled, info.enabled ? `Apagar ${label}: las misiones dejan de usarlo` : `Encender ${label}`, async () => {
+      if (info.enabled && key === 'claude' && !(await confirmDialog('Apagar Claude Code', 'Sin Claude Code no se pueden editar archivos ni correr agentes de código; solo quedarán Ollama, Codex y los modelos extra (que únicamente leen). Puedes encenderlo cuando quieras.'))) return;
+      await api(`/api/system/engines/${key}/toggle`, { method: 'PUT', body: JSON.stringify({ enabled: !info.enabled }) });
+      toast(`${label} ${info.enabled ? 'apagado' : 'encendido'}`, false);
+      await refreshState(); await refreshSystem();
+    })],
+  });
+}
+
+/** Proveedores con API (internet o LM Studio local): clave, prueba y encendido. */
+function providerItem(p) {
+  const lm = p.name === 'lmstudio';
+  const lmUp = state.modelInfo?.lmstudio_up;
   const res = el('div', { className: 'res' });
   const keyform = el('form', { className: 'keyform', hidden: true });
   const input = el('input', { type: 'password', placeholder: `Pega la clave de ${p.name}`, autocomplete: 'off', spellcheck: false });
-  keyform.append(input, el('button', { className: 'primary', type: 'submit', textContent: 'Guardar' }), el('button', { type: 'button', textContent: 'Cancelar', onclick: () => { keyform.hidden = true; input.value = ''; } }));
+  keyform.append(input, el('button', { className: 'primary', type: 'submit', textContent: 'Guardar' }),
+    ...(p.configured ? [el('button', { type: 'button', className: 'danger', textContent: 'Quitar clave', onclick: guard(async () => {
+      if (!(await confirmDialog('Quitar clave', `Se borrará la clave de ${p.name} del archivo .env.`))) return;
+      await api(`/api/system/providers/${p.name}/key`, { method: 'DELETE' });
+      await refreshState(); await refreshSystem();
+    }) })] : []),
+    el('button', { type: 'button', textContent: 'Cancelar', onclick: () => { keyform.hidden = true; input.value = ''; } }));
   keyform.onsubmit = guard(async (e) => {
     e.preventDefault();
     await api(`/api/system/providers/${p.name}/key`, { method: 'PUT', body: JSON.stringify({ key: input.value.trim() }) });
@@ -1078,31 +1084,45 @@ function providerRow(p) {
     toast(`Clave de ${p.name} guardada`, false);
     await refreshState(); await refreshSystem();
   });
+  const actions = [];
   if (p.configured) {
-    btns.append(el('button', { className: p.enabled ? '' : 'primary', textContent: p.enabled ? '⏻ Desactivar' : '⏻ Activar', title: p.enabled ? 'Deja de usar este proveedor sin borrar su clave' : 'Vuelve a usar este proveedor', onclick: guard(async () => {
-      await api(`/api/system/providers/${p.name}/toggle`, { method: 'PUT', body: JSON.stringify({ enabled: !p.enabled }) });
-      toast(`${p.name} ${p.enabled ? 'desactivado: no se usará hasta que lo actives' : 'activado'}`, false);
-      await refreshState(); await refreshSystem();
-    }) }));
-    btns.append(el('button', { textContent: 'Probar', onclick: guard(async () => {
+    actions.push(el('button', { textContent: 'Probar', onclick: guard(async () => {
       res.className = 'res'; res.textContent = 'Probando…';
       const r = await post(`/api/system/providers/${p.name}/test`);
       res.className = `res ${r.ok ? 'ok' : 'bad'}`; res.textContent = r.ok ? `✓ Conexión correcta (${r.ms} ms)` : `✕ ${r.error}`;
     }) }));
   }
-  if (p.needsKey) {
-    btns.append(el('button', { textContent: p.configured ? 'Cambiar clave' : 'Poner clave', onclick: () => { keyform.hidden = false; input.focus(); } }));
-    if (p.configured) {
-      btns.append(el('button', { className: 'danger', textContent: 'Quitar', onclick: guard(async () => {
-        if (!(await confirmDialog('Quitar clave', `Se borrará la clave de ${p.name} del archivo .env.`))) return;
-        await api(`/api/system/providers/${p.name}/key`, { method: 'DELETE' });
-        await refreshState(); await refreshSystem();
-      }) }));
-    }
-  }
-  row.append(btns, keyform, res);
-  if (p.name === 'lmstudio' && p.enabled) row.append(modelLine('lmstudio', 'LM Studio'));
-  return row;
+  if (p.needsKey) actions.push(el('button', { className: p.configured ? '' : 'primary', textContent: p.configured ? 'Clave' : 'Poner clave', onclick: () => { keyform.hidden = !keyform.hidden; if (!keyform.hidden) input.focus(); } }));
+  if (p.configured) actions.push(switchBtn(p.enabled, p.enabled ? `Apagar ${p.name} (la clave se conserva)` : `Encender ${p.name}`, async () => {
+    await api(`/api/system/providers/${p.name}/toggle`, { method: 'PUT', body: JSON.stringify({ enabled: !p.enabled }) });
+    toast(`${p.name} ${p.enabled ? 'apagado: no se usará hasta que lo enciendas' : 'encendido'}`, false);
+    await refreshState(); await refreshSystem();
+  }));
+  const detail = lm ? (!p.enabled ? 'apagado' : lmUp === false ? 'servidor local apagado: abre LM Studio y activa su servidor' : 'servidor local encendido · sin clave')
+    : !p.configured ? 'sin clave' : p.enabled ? `activo · clave ${p.keyHint}` : `apagado · clave ${p.keyHint} guardada`;
+  return engineItem({
+    name: lm ? 'LM Studio' : p.name, kind: lm ? 'Local' : 'Internet', kindClass: lm ? 'k-local' : 'k-net',
+    on: p.enabled, ok: lm ? lmUp !== false : true, detail,
+    model: lm && p.enabled ? modelSelect('lmstudio', 'LM Studio') : el('span', { className: 'muted', textContent: p.configured || lm ? p.model : `modelo: ${p.model}` }),
+    actions, more: [res, keyform],
+  });
+}
+
+/** Vista completa de «Motores y modelos»: tres grupos con la misma estructura de fila. */
+function enginesView(s) {
+  const group = (title, hint) => el('div', { className: 'eng-group' }, el('h3', { className: 'sub', textContent: title }), ...(hint ? [el('span', { className: 'muted', textContent: hint })] : []));
+  const head = el('div', { className: 'eng-head' }, ...['Motor', 'Estado', 'Modelo que usa', 'Acciones'].map((t) => el('span', { textContent: t })));
+  return [
+    head,
+    group('Con tu suscripción', 'usan tu sesión iniciada en esta PC'),
+    localEngineItem('claude', 'Claude Code', s.claude, s.claude.ok ? `${s.claude.version} · edita archivos` : s.claude.error, 'Suscripción', 'k-sub'),
+    localEngineItem('codex', 'Codex', s.codex, s.codex.ok ? `${s.codex.version.replace(/^codex-cli\s*/, '')} · solo lee` : s.codex.error, 'Suscripción', 'k-sub'),
+    group('En este equipo', 'gratis y privados; solo leen'),
+    localEngineItem('ollama', 'Ollama', s.ollama, s.ollama.ok ? `${s.ollama.models.length} modelos instalados` : s.ollama.error, 'Local', 'k-local'),
+    ...s.providers.filter((p) => !p.needsKey).map(providerItem),
+    group('En internet', 'con tu clave; el texto de la misión sale de este equipo'),
+    ...s.providers.filter((p) => p.needsKey).map(providerItem),
+  ];
 }
 
 async function refreshSystem() {
@@ -1113,7 +1133,21 @@ async function refreshSystem() {
   } catch (e) { /* el servidor puede estar reiniciando */ }
 }
 
+const SYS_TAB_KEY = 'oficina.systab';
+function setSysTab(tab) {
+  const tabs = ['resumen', 'motores', 'ajustes', 'registro'];
+  if (!tabs.includes(tab)) tab = 'resumen';
+  $('#view-system').dataset.tab = tab;
+  for (const b of document.querySelectorAll('.sys-tabs button')) b.setAttribute('aria-selected', String(b.dataset.tab === tab));
+  try { localStorage.setItem(SYS_TAB_KEY, tab); } catch { /* sin almacenamiento: vale solo esta sesión */ }
+  if (tab === 'registro') renderLogs();
+}
+
 function setupSystem() {
+  for (const b of document.querySelectorAll('.sys-tabs button')) b.onclick = () => setSysTab(b.dataset.tab);
+  let saved = null;
+  try { saved = localStorage.getItem(SYS_TAB_KEY); } catch { /* sin almacenamiento */ }
+  setSysTab(saved);
   $('#queue-toggle').onclick = guard(async () => { await post(`/api/queue/${state.system?.queue.paused ? 'resume' : 'pause'}`); await refreshSystem(); });
   $('#cancel-all').onclick = guard(async () => {
     if (!(await confirmDialog('Cancelar todo', 'Se detendrán todas las tareas en curso y en espera.'))) return;

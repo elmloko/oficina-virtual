@@ -400,6 +400,79 @@ header.hd #stats { flex: 0 1 auto; margin: 0 0 8px; padding: 2px 10px; border: 1
 @media (max-width: 900px) { #card-settings { grid-column: 1 / -1; } #card-settings .settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 #sys-providers { grid-template-columns: repeat(auto-fill, minmax(640px, 1fr)); }
 .prov-row > span:nth-child(2) { min-width: 0; }
+/* ---- Sistema por secciones: cada una cabe en pantalla ---- */
+.sys-tabs { max-width: 1200px; margin: 0 auto 12px; display: flex; gap: 4px; border-bottom: 2px solid var(--line); }
+.sys-tabs button { border: 0; border-bottom: 3px solid transparent; background: transparent; padding: 6px 14px; font-size: 12px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); margin-bottom: -2px; box-shadow: none; }
+.sys-tabs button:hover { color: var(--text); }
+.sys-tabs button[aria-selected=true] { color: var(--gold); border-bottom-color: var(--gold); }
+#view-system .card-sys { display: none; }
+#view-system[data-tab=resumen] .card-sys[data-g=resumen],
+#view-system[data-tab=motores] .card-sys[data-g=motores],
+#view-system[data-tab=ajustes] .card-sys[data-g=ajustes],
+#view-system[data-tab=registro] .card-sys[data-g=registro] { display: block; }
+#view-system[data-tab=resumen] .sys-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+#view-system[data-tab=ajustes] .sys-grid { grid-template-columns: 1fr 2fr; align-items: start; }
+#view-system[data-tab=ajustes] #card-settings { grid-column: auto; }
+#view-system[data-tab=registro] #sys-log { height: calc(100vh - 290px); min-height: 220px; }
+.eng-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 0 28px; align-items: start; }
+.eng-cols h3.sub:first-child { margin-top: 4px; }
+#sys-engines, #sys-local, #sys-providers { display: block; }
+@media (max-width: 900px) {
+  #view-system[data-tab=resumen] .sys-grid, #view-system[data-tab=ajustes] .sys-grid, .eng-cols { grid-template-columns: 1fr; }
+  .sys-tabs { overflow-x: auto; }
+}
+#sys-providers .prov-row.has-key { grid-template-columns: 96px 1fr; }
+#sys-providers .prov-row.has-key .btns { grid-column: 1 / -1; justify-content: flex-start; }
+.prov-row .model-line select { min-width: 340px; }
 .prov-row .model-line { flex-wrap: wrap; }
 .prov-row .model-line > span { white-space: nowrap; }
 .prov-row .model-line > span:last-child:not(:first-child) { white-space: normal; flex-basis: 100%; }
+.kv dd .dot-ok, .kv dd .dot-bad, .kv dd .dot-off { float: left; margin-top: 4px; }
+.kv dd > span > span:last-child { display: block; overflow: hidden; }
+
+/* ---- Motores y modelos: una sola tabla con la misma fila para todo ---- */
+#sys-engines { display: block; }
+.eng-head, .eng-line { display: grid; grid-template-columns: 150px minmax(0, 1fr) 310px 210px; gap: 14px; align-items: center; }
+.eng-head { padding: 0 6px 6px; border-bottom: 2px solid var(--line); font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); }
+.eng-head span:last-child { text-align: right; }
+.eng-group { display: flex; align-items: baseline; gap: 10px; margin: 14px 0 4px; }
+.eng-group h3.sub { margin: 0; color: var(--gold); }
+.eng-group .muted { font-size: 11px; }
+.eng-item { border-bottom: 1px solid var(--line); }
+.eng-line { padding: 8px 6px; font-size: 12px; }
+.eng-line.off .c-name, .eng-line.off .c-state, .eng-line.off .c-model { opacity: .5; }
+.c-name strong { display: block; font-size: 13px; }
+em.kind { font-style: normal; font-size: 10px; letter-spacing: .5px; text-transform: uppercase; padding: 0 5px; border: 1px solid var(--line); color: var(--muted); }
+em.kind.k-sub { color: var(--gold); border-color: var(--gold); }
+em.kind.k-local { color: var(--green); border-color: var(--green); }
+em.kind.k-net { color: var(--blue); border-color: var(--blue); }
+.c-state { display: flex; gap: 0; align-items: flex-start; min-width: 0; overflow-wrap: anywhere; }
+.c-state .dot-ok, .c-state .dot-bad, .c-state .dot-off { flex: none; margin-top: 4px; }
+.c-model select { width: 100%; font-size: 12px; padding: 3px 6px; min-width: 0; }
+.c-model .muted { font-size: 12px; }
+.c-act { display: flex; gap: 6px; justify-content: flex-end; align-items: center; }
+.c-act button:not(.switch) { padding: 3px 9px; font-size: 12px; }
+.switch { width: 40px; height: 22px; padding: 0; position: relative; background: #000; border: 2px solid var(--line); box-shadow: none; flex: none; }
+.switch i { position: absolute; top: 3px; left: 3px; width: 12px; height: 12px; background: var(--muted); transition: left .12s; }
+.switch.on { border-color: var(--green); }
+.switch.on i { left: 21px; background: var(--green); }
+.eng-more:empty { display: none; }
+.eng-more { padding: 0 6px 8px; }
+.eng-more .res { font-size: 11px; }
+.eng-more .res:empty { display: none; }
+.eng-more .keyform { display: flex; gap: 6px; margin-top: 4px; }
+.eng-more .keyform[hidden] { display: none; }
+.eng-more .keyform input { flex: 1; }
+.eng-more .keyform button { padding: 3px 9px; font-size: 12px; }
+@media (max-width: 1000px) {
+  .eng-head { display: none; }
+  .eng-line { grid-template-columns: 1fr auto; }
+  .c-state, .c-model { grid-column: 1 / -1; }
+  .c-act { grid-column: 2; grid-row: 1; }
+}
+.eng-line { padding: 4px 6px; }
+.eng-group { margin: 9px 0 2px; }
+.eng-line.off .c-name, .eng-line.off .c-state, .eng-line.off .c-model { opacity: .62; }
+#card-providers > .hint { margin: 0 0 6px; }
+.eng-line { padding: 3px 6px; }
+.sys-tabs { margin-bottom: 8px; }
