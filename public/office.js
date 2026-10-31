@@ -4,10 +4,11 @@ import { CANVAS, CHAR, DEPARTMENTS, OPS_ROOM, DESK, GAP, layoutOffice, stepTowar
 import { getSprite } from './sprites.js';
 import { SCENES, EMBLEMS } from './scenes.js';
 import { DEFAULT_SKIN, deptView } from './skins.js';
+import { arc, progress, prune, FLIGHT_MS } from './comms.js';
 
 const FONT = '"Cascadia Mono", Consolas, monospace';
 const STATE_COLOR = { working: '#4aa3ff', queued: '#9aa6cc', review: '#b18cff', failed: '#ff5a5a' };
-const WIN = { x: 6, y: 18, h: 34 }; // ventanal dentro de cada sala
+const WIN = { x: 6, y: 22, h: 30 }; // ventanal dentro de cada sala
 const WALK_DESK = 90; // px/s al ir a trabajar
 const WALK_IDLE = 34; // px/s al deambular
 
@@ -40,21 +41,30 @@ function buildRoomLayer(dept, w, h, ops = false, skin = DEFAULT_SKIN) {
   if (!ops) {
     ctx.fillStyle = dept.color + '12'; ctx.fillRect(6, 214, w - 12, h - 220);
     ctx.strokeStyle = dept.color + '55'; ctx.lineWidth = 1; ctx.setLineDash([4, 4]); ctx.strokeRect(6.5, 214.5, w - 13, h - 221); ctx.setLineDash([]);
-    ctx.fillStyle = dept.color + '99'; ctx.font = `9px ${FONT}`; ctx.fillText('DESCANSO', 12, 226 - 4 + 0);
+    ctx.fillStyle = dept.color + '99'; ctx.font = `bold 10px ${FONT}`; ctx.fillText('DESCANSO', 12, 226 - 4 + 0);
     // alfombrillas bajo escritorios y línea guía
     for (const [dx, dy] of [[18, 66], [160, 66], [18, 150], [160, 150]]) px(ctx, dx - 4, dy + 8, DESK.w + 8, DESK.h + 14, '#00000030');
     ctx.fillStyle = dept.color + '33';
     for (let x = 10; x < w - 10; x += 12) ctx.fillRect(x, 207, 6, 2);
   }
-  // rótulo
-  px(ctx, 2, 2, w - 4, 14, '#000c');
-  ctx.fillStyle = dept.color; ctx.font = `bold 11px ${FONT}`;
-  ctx.fillText(dept.label.toUpperCase(), 18, 13);
-  (EMBLEMS[skin.emblem] ?? EMBLEMS.diamond)(ctx, 6, 4, dept.color); // emblema del skin
   // borde
   ctx.strokeStyle = dept.color; ctx.lineWidth = 2; ctx.strokeRect(1, 1, w - 2, h - 2);
   ctx.strokeStyle = dept.color + '33'; ctx.lineWidth = 1; ctx.strokeRect(4.5, 4.5, w - 9, h - 9);
   return c;
+}
+
+/** Rótulo de la sala: barra oscura con emblema y nombre. `k` (1–1.25) lo agranda cuando el mapa se ve reducido en pantallas pequeñas. */
+function drawRoomTitle(ctx, room, label, color, k, skin) {
+  const { x, y, w } = room.rect;
+  const H = Math.round(18 * k); const size = Math.round(13 * k);
+  px(ctx, x + 2, y + 2, w - 4, H, '#000d'); px(ctx, x + 2, y + 2 + H, w - 4, 1, color + '88');
+  (EMBLEMS[skin.emblem] ?? EMBLEMS.diamond)(ctx, x + 6, y + 2 + Math.round((H - 8) / 2), color); // emblema del skin
+  ctx.font = `bold ${size}px ${FONT}`; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+  const text = clip(ctx, label.toUpperCase(), w - 36);
+  const ty = y + 2 + H / 2 + 1; const tx = x + 20 + Math.round((k - 1) * 8);
+  ctx.fillStyle = '#000'; ctx.fillText(text, tx + 1, ty + 1); // sombra para que se lea sobre cualquier fondo
+  ctx.fillStyle = color; ctx.fillText(text, tx, ty);
+  ctx.textBaseline = 'alphabetic';
 }
 
 // ---------- ventanal animado ----------
@@ -162,31 +172,150 @@ function drawDeskFront(ctx, d, state, t, skin) {
   if (state === 'working') { const s = Math.sin(t * 3); px(ctx, d.x + 56 + s, d.y + 19, 1, 3, '#ffffff55'); }
 }
 
+// ---------- comunicación entre agentes ----------
+function drawBubble(ctx, x, y, text, color) {
+  ctx.font = `bold 12px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  const w = Math.max(18, ctx.measureText(text).width + 10);
+  px(ctx, x - w / 2, y - 9, w, 17, '#000d'); ctx.strokeStyle = color; ctx.lineWidth = 1; ctx.strokeRect(x - w / 2 + 0.5, y - 8.5, w - 1, 16);
+  px(ctx, x - 2, y + 8, 4, 3, color); // cola del globo
+  ctx.fillStyle = color; ctx.fillText(text, x, y); ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+}
+
+function drawEnvelope(ctx, x, y, color, check) {
+  px(ctx, x - 8, y - 6, 16, 12, '#000'); px(ctx, x - 7, y - 5, 14, 10, '#f4f1de'); // sobre
+  ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.strokeRect(x - 7.5, y - 5.5, 15, 11);
+  ctx.strokeStyle = '#8a8472'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x - 7, y - 5); ctx.lineTo(x, y + 1); ctx.lineTo(x + 7, y - 5); ctx.stroke(); // solapa
+  if (check) { ctx.fillStyle = '#4ade80'; ctx.beginPath(); ctx.arc(x + 8, y + 6, 5, 0, Math.PI * 2); ctx.fill(); ctx.strokeStyle = '#05140a'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(x + 5.5, y + 6); ctx.lineTo(x + 7.5, y + 8); ctx.lineTo(x + 10.5, y + 4); ctx.stroke(); }
+  else { ctx.fillStyle = color; ctx.beginPath(); ctx.arc(x + 8, y + 6, 5, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = '#000'; ctx.font = `bold 9px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('?', x + 8, y + 6.5); ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic'; }
+}
+
+/** Enlaces de las consultas en curso (arco punteado con puntos que viajan) y sobres que vuelan entre agentes. */
+function drawComms(ctx, actors, comms, t, skin, reduced) {
+  if (!comms) return;
+  const now = Date.now();
+  const pos = (n) => { const a = actors.get(n); return a ? { x: a.x, y: a.y - CHAR.h / 2 } : null; };
+  const gold = skin.ui.gold;
+  (comms.links ?? []).forEach((l, n) => {
+    const a = pos(l.from); const b = pos(l.to);
+    if (!a || !b) return;
+    const lift = 46 + n * 24; // cada consulta en curso vuela en su propio arco para que no se encimen
+    const cx = (a.x + b.x) / 2; const cy = Math.min(a.y, b.y) - lift;
+    ctx.save();
+    ctx.strokeStyle = gold; ctx.globalAlpha = 0.9; ctx.lineWidth = 3; ctx.setLineDash([7, 5]); ctx.lineDashOffset = -((t * 22) % 12);
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.quadraticCurveTo(cx, cy, b.x, b.y); ctx.stroke();
+    ctx.restore();
+    if (!reduced) for (let i = 0; i < 3; i++) { const p = arc(a, b, (t * 0.3 + i / 3) % 1, lift); px(ctx, p.x - 3, p.y - 3, 6, 6, gold); }
+    const mid = arc(a, b, 0.5, lift);
+    ctx.font = `bold 12px ${FONT}`; const label = `${l.from} ⇄ ${l.to}`; const w = ctx.measureText(label).width + 12;
+    px(ctx, mid.x - w / 2, mid.y - 20, w, 17, '#000e'); ctx.strokeStyle = gold; ctx.lineWidth = 1; ctx.strokeRect(mid.x - w / 2 + 0.5, mid.y - 19.5, w - 1, 16);
+    ctx.fillStyle = gold; ctx.textAlign = 'center'; ctx.fillText(label, mid.x, mid.y - 7); ctx.textAlign = 'left';
+    drawBubble(ctx, a.x, a.y - CHAR.h / 2 - 12, '¿?', gold); // quien pregunta espera
+    drawBubble(ctx, b.x, b.y - CHAR.h / 2 - 12, l.state === 'running' ? '.'.repeat(1 + (Math.floor(t * 3) % 3)) : 'z', skin.holo); // quien responde, escribiendo
+  });
+  for (const f of prune(comms.flights ?? [], now)) {
+    const a = pos(f.from); const b = pos(f.to);
+    if (!a || !b) continue;
+    const p = progress(f, now);
+    const color = f.kind === 'answer' ? '#4ade80' : gold;
+    for (let i = 1; i <= 4; i++) { const q = arc(a, b, Math.max(0, p - i * 0.04), 60); ctx.globalAlpha = 0.5 - i * 0.1; px(ctx, q.x - 2, q.y - 2, 4, 4, color); }
+    ctx.globalAlpha = 1;
+    const pt = arc(a, b, p, 60);
+    drawEnvelope(ctx, pt.x, pt.y, color, f.kind === 'answer');
+    if (p >= 1) { // destello al llegar
+      const k = Math.min(1, (now - f.t0 - FLIGHT_MS * 0.8) / (FLIGHT_MS * 0.2));
+      ctx.globalAlpha = 1 - k; ellipse(ctx, b.x, b.y, 8 + k * 22, 8 + k * 22, color, 2); ctx.globalAlpha = 1;
+    }
+  }
+}
+
 // ---------- sala de operaciones ----------
-function drawOpsBack(ctx, room, stats, t, skin) {
-  const { x, y, w } = room.rect;
-  const cx = x + w / 2; const cy = y + 150;
-  const g = ctx.createRadialGradient(cx, cy, 4, cx, cy, 96); g.addColorStop(0, skin.holo + '44'); g.addColorStop(1, skin.holo + '00'); ctx.fillStyle = g; ctx.fillRect(cx - 100, cy - 100, 200, 200);
-  px(ctx, cx - 56, cy + 22, 112, 14, skin.metalDark); px(ctx, cx - 50, cy + 18, 100, 6, skin.metal); // base de la holomesa
-  // galaxia espiral giratoria
-  for (let i = 0; i < 90; i++) {
-    const arm = i % 3; const k = i / 90; const ang = t * 0.5 + k * 9 + arm * 2.09; const rad = 4 + k * 48;
-    ctx.globalAlpha = 0.9 - k * 0.6; ctx.fillStyle = skin.holo; ctx.fillRect(Math.round(cx + Math.cos(ang) * rad), Math.round(cy + Math.sin(ang) * rad * 0.38), 2, 2);
+// Cada skin tiene su propia galaxia: brazos, giro, núcleo y extras distintos (anillos, cinturón, nieve, brasas…).
+const GALAXY = {
+  clasico: { arms: 3, turns: 9, spin: 0.5, rx: 66, tilt: 0.36, alt: '#ffffff', orb: '#ffd84a', core: 'plain' },
+  imperio: { arms: 2, turns: 7, spin: 0.35, rx: 62, tilt: 0.34, alt: '#ff9a8a', orb: '#cfd3dc', core: 'sphere' },
+  rebelion: { arms: 4, turns: 8, spin: 0.55, rx: 66, tilt: 0.36, alt: '#c9ff8a', orb: '#8ae04a', core: 'plain', moon: true },
+  tatooine: { arms: 3, turns: 6, spin: 0.4, rx: 64, tilt: 0.34, alt: '#ffe9b0', orb: '#ff9a3c', core: 'binary' },
+  jedi: { arms: 5, turns: 10, spin: 0.45, rx: 68, tilt: 0.36, alt: '#fff3c8', orb: '#e8c870', core: 'plain', ring: true },
+  hoth: { arms: 3, turns: 8, spin: 0.3, rx: 64, tilt: 0.36, alt: '#ffffff', orb: '#bfefff', core: 'plain', snow: true },
+  mandaloriano: { arms: 3, turns: 7, spin: 0.4, rx: 56, tilt: 0.36, alt: '#d8b878', orb: '#cfd6e0', core: 'plain', belt: true },
+  sith: { arms: 2, turns: 9, spin: 0.6, rx: 66, tilt: 0.34, alt: '#ffb04a', orb: '#ff3a3a', core: 'pulse', embers: true },
+  rogue: { arms: 3, turns: 9, spin: 0.5, rx: 66, tilt: 0.36, alt: '#d8fff6', orb: '#4ad8c8', core: 'shield' },
+};
+const ellipse = (ctx, cx, cy, rx, ry, color, w = 1) => { ctx.strokeStyle = color; ctx.lineWidth = w; ctx.beginPath(); ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2); ctx.stroke(); };
+
+function drawGalaxy(ctx, cx, cy, t, skin) {
+  const G = GALAXY[skin.id] ?? GALAXY.clasico;
+  const g = ctx.createRadialGradient(cx, cy, 4, cx, cy, 90); g.addColorStop(0, skin.holo + '44'); g.addColorStop(1, skin.holo + '00');
+  ctx.fillStyle = g; ctx.fillRect(cx - 95, cy - 60, 190, 120);
+  px(ctx, cx - 56, cy + 26, 112, 12, skin.metalDark); px(ctx, cx - 50, cy + 22, 100, 5, skin.metal); // base de la holomesa
+  if (G.ring) { ctx.globalAlpha = 0.5; ellipse(ctx, cx, cy, 78, 28, G.orb); ctx.globalAlpha = 1; }
+  if (G.belt) for (let i = 0; i < 30; i++) { const a = t * 0.25 + i * 0.21 + rand01(7, i) * 0.2; const r = 70 + rand01(3, i) * 5; ctx.globalAlpha = 0.75; px(ctx, cx + Math.cos(a) * r, cy + Math.sin(a) * r * 0.36, i % 4 ? 1 : 2, i % 4 ? 1 : 2, '#9a8a78'); }
+  for (let i = 0; i < 100; i++) {
+    const arm = i % G.arms; const k = i / 100;
+    const ang = t * G.spin + k * G.turns + arm * ((Math.PI * 2) / G.arms); const rad = 5 + k * G.rx;
+    ctx.globalAlpha = 0.95 - k * 0.65;
+    px(ctx, cx + Math.cos(ang) * rad, cy + Math.sin(ang) * rad * G.tilt, 2, 2, i % 3 ? skin.holo : G.alt);
   }
   ctx.globalAlpha = 1;
-  px(ctx, cx - 3, cy - 2, 6, 4, '#fff6c8');
-  const a = t * 1.1; px(ctx, cx + Math.cos(a) * 62 - 2, cy + Math.sin(a) * 24 - 2, 5, 5, '#ffd84a');
-  // panel de datos
-  px(ctx, x + 14, y + 214, w - 28, 80, '#06101a'); ctx.strokeStyle = skin.holo + '88'; ctx.lineWidth = 1; ctx.strokeRect(x + 14.5, y + 214.5, w - 29, 79);
-  ctx.fillStyle = skin.holo; ctx.font = `11px ${FONT}`; ctx.textAlign = 'left';
-  const lines = [
-    `Claude   ${stats?.active.claude ?? 0}/${stats?.limit?.claude ?? 2} activos`,
-    `Ollama   ${stats?.active.ollama ?? 0}/${stats?.limit?.ollama ?? 1} activos`,
-    `En espera ${stats?.waiting ?? 0}`,
-    `Costo hoy $${(stats?.costToday ?? 0).toFixed(2)}`,
-  ];
-  lines.forEach((l, i) => ctx.fillText(l, x + 24, y + 234 + i * 17));
-  if (Math.floor(t * 2) % 2) px(ctx, x + w - 30, y + 224, 6, 6, '#4ade80');
+  if (G.core === 'sphere') { // Estrella de la Muerte
+    ctx.fillStyle = '#9096a4'; ctx.beginPath(); ctx.arc(cx, cy, 8, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#c9ced8'; ctx.beginPath(); ctx.arc(cx - 2, cy - 2, 5, 0, Math.PI * 2); ctx.fill();
+    px(ctx, cx + 2, cy - 4, 3, 3, '#3a3d48'); px(ctx, cx - 8, cy, 16, 1, '#5a5e6a');
+  } else if (G.core === 'binary') { // dos soles
+    const a = t * 1.6; px(ctx, cx + Math.cos(a) * 6 - 2, cy + Math.sin(a) * 3 - 2, 5, 5, '#ffe9b0'); px(ctx, cx - Math.cos(a) * 6 - 2, cy - Math.sin(a) * 3 - 2, 4, 4, '#ff9a3c');
+  } else if (G.core === 'pulse') { // núcleo en brasa
+    const r = 3 + Math.abs(Math.sin(t * 2.4)) * 3; ctx.fillStyle = '#ffd0a0'; ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 0.4; ellipse(ctx, cx, cy, r + 5, (r + 5) * 0.5, '#ff3a3a'); ctx.globalAlpha = 1;
+  } else if (G.core === 'shield') { // escudo planetario de Scarif
+    px(ctx, cx - 3, cy - 2, 6, 4, '#e8fffa'); ctx.globalAlpha = 0.6 + Math.sin(t * 3) * 0.3; ellipse(ctx, cx, cy, 18, 8, '#8afff0', 2); ctx.globalAlpha = 1;
+  } else px(ctx, cx - 3, cy - 2, 6, 4, '#fff6c8');
+  if (G.snow) for (let i = 0; i < 16; i++) { const x = cx - 80 + mod(rand01(5, i) * 160 + Math.sin(t + i) * 4, 160); const y = cy - 34 + mod(rand01(9, i) * 76 + t * (10 + (i % 4) * 5), 76); px(ctx, x, y, i % 3 ? 1 : 2, i % 3 ? 1 : 2, '#ffffffcc'); }
+  if (G.embers) for (let i = 0; i < 12; i++) { const x = cx - 70 + rand01(4, i) * 140; const y = cy + 34 - mod(rand01(8, i) * 70 + t * (12 + (i % 3) * 6), 70); ctx.globalAlpha = 0.4 + rand01(2, i) * 0.5; px(ctx, x + Math.sin(t * 2 + i) * 3, y, 2, 2, i % 2 ? '#ff6a3a' : '#ffb04a'); ctx.globalAlpha = 1; }
+  const a = t * 1.1; px(ctx, cx + Math.cos(a) * 74 - 2, cy + Math.sin(a) * 27 - 2, 5, 5, G.orb); // satélite
+  if (G.moon) { const b = -t * 1.7 + 1; px(ctx, cx + Math.cos(b) * 40 - 1, cy + Math.sin(b) * 15 - 1, 3, 3, '#e6f0da'); }
+}
+
+const clip = (ctx, s, maxW) => { let r = s; while (r.length > 1 && ctx.measureText(r).width > maxW) r = r.slice(0, -2) + '…'; return r; };
+
+function drawOpsBack(ctx, room, model, t, skin) {
+  const { x, y, w } = room.rect;
+  const { stats, tasks = [], agents = [] } = model;
+  drawGalaxy(ctx, x + w / 2, y + 112, t, skin);
+
+  // datos reales de la oficina
+  const count = (s) => tasks.filter((k) => k.status === s && k.kind !== 'objective').length;
+  const working = new Set(tasks.filter((k) => k.status === 'running').map((k) => k.agent)).size;
+  const claude = [stats?.active?.claude ?? 0, stats?.limit?.claude ?? 2];
+  const ollama = [stats?.active?.ollama ?? 0, stats?.limit?.ollama ?? 1];
+
+  // panel de datos (más alto y con letra más grande y clara)
+  const px0 = x + 8; const py0 = y + 164; const pw = w - 16; const ph = 130;
+  px(ctx, px0, py0, pw, ph, '#050d16'); ctx.strokeStyle = skin.holo + 'aa'; ctx.lineWidth = 1; ctx.strokeRect(px0 + 0.5, py0 + 0.5, pw - 1, ph - 1);
+  ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+  ctx.font = `bold 13px ${FONT}`; ctx.fillStyle = skin.holo; ctx.fillText('ESTADO DE LA FLOTA', px0 + 10, py0 + 18);
+  const paused = !!stats?.paused;
+  const live = paused ? 'EN PAUSA' : stats ? 'EN LÍNEA' : 'SIN DATOS';
+  ctx.textAlign = 'right'; ctx.fillStyle = paused ? '#ffd84a' : stats ? '#4ade80' : '#9aa6cc'; ctx.fillText(live, px0 + pw - 10, py0 + 18);
+  const lw = ctx.measureText(live).width;
+  if (stats && (paused || Math.floor(t * 2) % 2)) px(ctx, px0 + pw - 10 - lw - 12, py0 + 9, 7, 7, paused ? '#ffd84a' : '#4ade80');
+  px(ctx, px0 + 8, py0 + 23, pw - 16, 1, skin.holo + '44');
+
+  const cellW = (pw - 30) / 2; const LABEL = '#c4d4e6'; const VAL = '#ffffff';
+  const cell = (col, row, label, value, { bar, color = VAL } = {}) => {
+    const cx0 = px0 + 10 + col * (cellW + 10); const cy0 = py0 + 45 + row * 25;
+    ctx.font = `13px ${FONT}`; ctx.textAlign = 'left'; ctx.fillStyle = LABEL; ctx.fillText(label, cx0, cy0);
+    ctx.font = `bold 14px ${FONT}`; ctx.textAlign = 'right'; ctx.fillStyle = color; ctx.fillText(clip(ctx, String(value), cellW - 92), cx0 + cellW, cy0);
+    if (bar != null) { px(ctx, cx0, cy0 + 4, cellW, 4, '#1d2c3c'); px(ctx, cx0, cy0 + 4, Math.round(cellW * Math.min(1, bar)), 4, bar >= 1 ? '#ffd84a' : skin.holo); }
+  };
+  const ratio = ([a, b]) => (b > 0 ? a / b : 0);
+  cell(0, 0, 'Claude', `${claude[0]}/${claude[1]}`, { bar: ratio(claude) });
+  cell(1, 0, 'Ollama', `${ollama[0]}/${ollama[1]}`, { bar: ratio(ollama) });
+  cell(0, 1, 'En espera', stats?.waiting ?? 0, { color: (stats?.waiting ?? 0) > 0 ? '#ffd84a' : VAL });
+  cell(1, 1, 'Costo hoy', `$${(stats?.costToday ?? 0).toFixed(2)}`, { color: skin.holo });
+  cell(0, 2, 'Agentes activos', `${working}/${agents.length || '–'}`);
+  cell(1, 2, 'Completadas', count('done'), { color: '#4ade80' });
+  cell(0, 3, 'Por revisar', count('review'), { color: count('review') ? STATE_COLOR.review : VAL });
+  cell(1, 3, 'Fallidas', count('failed'), { color: count('failed') ? '#ff6a6a' : VAL });
 }
 
 // ---------- personajes ----------
@@ -248,6 +377,7 @@ export function createOffice(canvas, { onSelect, onSelectAgent } = {}) {
   ctx.imageSmoothingEnabled = false;
   const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
   let model = { agents: [], tasks: [], stats: null };
+  let comms = null;
   let layout = layoutOffice([], []);
   const actors = new Map();
   const layers = new Map();
@@ -298,14 +428,16 @@ export function createOffice(canvas, { onSelect, onSelectAgent } = {}) {
     last = now;
     if (!reduced) update(dt);
 
+    const textScale = Math.min(1.25, Math.max(1, Number(canvas.dataset.textScale) || 1)); // lo fija fitOffice() según cuánto se reduce el mapa
     ctx.fillStyle = skin.void; ctx.fillRect(0, 0, CANVAS.w, CANVAS.h);
     const drawables = [];
     for (const room of layout.rooms) {
       const base = DEPARTMENTS.find((d) => d.id === room.id);
       const dept = base && deptView(base, skin);
       ctx.drawImage(layerFor(room, base), room.rect.x, room.rect.y);
-      if (!dept) { drawWindow(ctx, room, { ...OPS_ROOM, color: skin.holo }, t, skin); drawOpsBack(ctx, room, model.stats, t, skin); continue; }
+      if (!dept) { drawWindow(ctx, room, { ...OPS_ROOM, color: skin.holo }, t, skin); drawOpsBack(ctx, room, model, t, skin); drawRoomTitle(ctx, room, OPS_ROOM.label, skin.holo, textScale, skin); continue; }
       drawWindow(ctx, room, dept, t, skin);
+      drawRoomTitle(ctx, room, dept.label, dept.color, textScale, skin);
       drawProp(ctx, room.id, room, t, skin);
       // estado de cada escritorio según quién lo ocupa
       const sitting = [...actors.values()].filter((a) => a.dept === room.id && a.seat === 'desk');
@@ -320,6 +452,7 @@ export function createOffice(canvas, { onSelect, onSelectAgent } = {}) {
     drawables.sort((p, q) => p.y - q.y);
     for (const d of drawables) d.draw();
     for (const d of drawables) d.fx?.();
+    drawComms(ctx, actors, comms, t, skin, reduced);
 
     if (hover) {
       const a = actors.get(hover);
@@ -352,6 +485,7 @@ export function createOffice(canvas, { onSelect, onSelectAgent } = {}) {
   return {
     setSkin(next) { skin = next; layers.clear(); if (reduced) draw(); },
     update(next) { model = { ...model, ...next }; layout = layoutOffice(model.agents, model.tasks); sync(); if (reduced) draw(); },
+    setComms(next) { comms = next; if (reduced) draw(); },
     start() { cancelAnimationFrame(raf); last = 0; raf = requestAnimationFrame(draw); if (reduced) draw(); },
     stop() { cancelAnimationFrame(raf); },
     get layout() { return layout; },

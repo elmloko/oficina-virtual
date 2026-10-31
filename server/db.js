@@ -9,6 +9,7 @@ export const DEFAULT_SETTINGS = {
   daily_budget_usd: 10, // 0 = sin límite. Con suscripción el costo es referencial, pero sirve de freno.
   task_budget_usd: 2, // tope por tarea (--max-budget-usd)
   task_timeout_min: 20,
+  collab: 1, // 1 = los agentes pueden pedirse ayuda entre sí (cada consulta es una misión de solo lectura que gasta)
   max_claude: config.maxClaude, // concurrencia por motor (editable desde la web)
   max_ollama: config.maxOllama,
   max_api: config.maxApi,
@@ -61,6 +62,17 @@ export function openDb(file = config.dbFile) {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_att_task ON attachments(task_id, id);
+    CREATE TABLE IF NOT EXISTS messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id INTEGER NOT NULL,
+      child_id INTEGER,
+      from_agent TEXT NOT NULL,
+      to_agent TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      text TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_msg_task ON messages(task_id, id);
     CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS audit (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -96,6 +108,7 @@ export function openDb(file = config.dbFile) {
   addColumnIfMissing(db, 'tasks', 'chain', "TEXT NOT NULL DEFAULT '[]'"); // agentes que revisan la misión al terminar
   addColumnIfMissing(db, 'tasks', 'chain_fired', 'INTEGER NOT NULL DEFAULT 0');
   addColumnIfMissing(db, 'tasks', 'review_of', 'INTEGER'); // esta misión revisa a la #review_of
+  addColumnIfMissing(db, 'tasks', 'consult_of', 'INTEGER'); // misión creada porque la #consult_of pidió ayuda a este agente
   addColumnIfMissing(db, 'tasks', 'reply_text', 'TEXT'); // respuesta del usuario en vuelo (o cancelada, lista para editar)
 
   // Una tarea que quedó "running"/"queued" en un reinicio ya no tiene proceso: se marca fallida.
@@ -107,6 +120,11 @@ export function openDb(file = config.dbFile) {
     list: db.prepare('SELECT * FROM tasks ORDER BY id DESC'),
     children: db.prepare('SELECT * FROM tasks WHERE parent_id = ? ORDER BY id'),
     del: db.prepare('DELETE FROM tasks WHERE id = ?'),
+    addMsg: db.prepare('INSERT INTO messages (task_id, child_id, from_agent, to_agent, kind, text) VALUES (?, ?, ?, ?, ?, ?) RETURNING *'),
+    msgs: db.prepare('SELECT * FROM (SELECT * FROM messages ORDER BY id DESC LIMIT ?) ORDER BY id'),
+    taskMsgs: db.prepare('SELECT * FROM messages WHERE task_id = ? OR child_id = ? ORDER BY id'),
+    linkMsg: db.prepare('UPDATE messages SET child_id = ? WHERE id = ? RETURNING *'),
+    delMsgs: db.prepare('DELETE FROM messages WHERE task_id = ? OR child_id = ?'),
     atts: db.prepare('SELECT * FROM attachments WHERE task_id = ? ORDER BY id'),
     att: db.prepare('SELECT * FROM attachments WHERE id = ?'),
     addAtt: db.prepare('INSERT INTO attachments (task_id, name, mime, size) VALUES (?, ?, ?, ?) RETURNING *'),
@@ -139,17 +157,22 @@ export function openDb(file = config.dbFile) {
   return {
     raw: db,
     createTask(t) {
-      const row = db.prepare(`INSERT INTO tasks (title, description, project, agent, engine, mode, parent_id, depends_on, kind, schedule_id, model, chain, review_of)
-                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`)
+      const row = db.prepare(`INSERT INTO tasks (title, description, project, agent, engine, mode, parent_id, depends_on, kind, schedule_id, model, chain, review_of, consult_of)
+                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`)
         .get(t.title, t.description ?? '', t.project ?? null, t.agent, t.engine ?? 'auto', t.mode ?? 'read',
           t.parent_id ?? null, JSON.stringify(t.depends_on ?? []), t.kind ?? 'task', t.schedule_id ?? null, t.model ?? null,
-          JSON.stringify(t.chain ?? []), t.review_of ?? null);
+          JSON.stringify(t.chain ?? []), t.review_of ?? null, t.consult_of ?? null);
       return parseTask(row);
     },
     getTask: (id) => parseTask(q.get.get(id)),
     listTasks: () => q.list.all().map(parseTask),
     children: (id) => q.children.all(id).map(parseTask),
-    deleteTask: (id) => q.del.run(id).changes > 0,
+    deleteTask: (id) => { q.delMsgs.run(id, id); return q.del.run(id).changes > 0; },
+    /** Mensajes entre agentes (consultas y respuestas). */
+    addMessage: (m) => q.addMsg.get(m.task_id, m.child_id ?? null, m.from_agent, m.to_agent, m.kind, String(m.text ?? '').slice(0, 6000)),
+    linkMessage: (id, childId) => q.linkMsg.get(childId, id),
+    messages: (limit = 100) => q.msgs.all(limit),
+    taskMessages: (id) => q.taskMsgs.all(id, id),
     attachments: (taskId) => q.atts.all(taskId),
     getAttachment: (id) => q.att.get(id),
     addAttachment: (taskId, name, mime, size) => q.addAtt.get(taskId, name, mime, size),

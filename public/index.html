@@ -8,25 +8,33 @@
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <header>
-    <h1>⟡ <span id="brand">BASE REBELDE</span> <small>oficina virtual</small></h1>
-    <nav id="tabs" role="tablist" aria-label="Vistas">
-      <button role="tab" data-view="office" aria-selected="true">Oficina</button>
-      <button role="tab" data-view="attention" aria-selected="false">Atención <span id="attn-badge" class="badge" hidden>0</span></button>
-      <button role="tab" data-view="board" aria-selected="false">Tablero</button>
-      <button role="tab" data-view="routines" aria-selected="false">Rutinas</button>
-      <button role="tab" data-view="costs" aria-selected="false">Costos</button>
-      <button role="tab" data-view="system" aria-selected="false">Sistema</button>
-    </nav>
-    <div id="stats" aria-live="polite"></div>
-    <button id="alerts-btn" type="button" aria-pressed="false" title="Sonido y notificaciones cuando un agente termine, falle o pregunte">🔕 Avisos: no</button>
-    <button id="obj-btn">★ Nuevo objetivo</button>
-    <button id="new-btn" class="primary">+ Nueva misión</button>
+  <header class="hd">
+    <div class="hd-top">
+      <h1>⟡ <span id="brand">BASE REBELDE</span> <small>oficina virtual</small></h1>
+      <div class="hd-actions">
+        <button id="sound-test" type="button" title="Escuchar los 4 sonidos de los avisos (suenen o no los avisos)">🔊 Probar</button>
+        <button id="alerts-btn" type="button" aria-pressed="false" title="Sonido y notificaciones cuando un agente termine, falle o pregunte">🔕 Avisos: no</button>
+        <button id="obj-btn">★ Nuevo objetivo</button>
+        <button id="new-btn" class="primary">+ Nueva misión</button>
+      </div>
+    </div>
+    <div class="hd-bar">
+      <nav id="tabs" role="tablist" aria-label="Vistas">
+        <button role="tab" data-view="office" aria-selected="true">Oficina</button>
+        <button role="tab" data-view="attention" aria-selected="false">Atención <span id="attn-badge" class="badge" hidden>0</span></button>
+        <button role="tab" data-view="board" aria-selected="false">Tablero</button>
+        <button role="tab" data-view="comms" aria-selected="false">Comunicaciones <span id="comms-badge" class="badge live" hidden>0</span></button>
+        <button role="tab" data-view="routines" aria-selected="false">Rutinas</button>
+        <button role="tab" data-view="costs" aria-selected="false">Costos</button>
+        <button role="tab" data-view="system" aria-selected="false">Sistema</button>
+      </nav>
+      <div id="stats" aria-live="polite"></div>
+    </div>
   </header>
 
   <section id="view-office" class="view">
     <div class="stage"><canvas id="office" aria-label="Oficina virtual: agentes en sus puestos" role="img"></canvas></div>
-    <p class="legend"><span class="dot work"></span>trabajando <span class="dot queued"></span>en cola <span class="dot review"></span>por revisar <span class="dot fail"></span>falló · clic en un agente para ver su misión o asignarle una</p>
+    <p class="legend"><span class="dot work"></span>trabajando <span class="dot queued"></span>en cola <span class="dot review"></span>por revisar <span class="dot fail"></span>falló · clic en un agente para ver su misión o asignarle una<span id="comms-ticker" hidden></span></p>
   </section>
 
   <section id="view-attention" class="view" hidden>
@@ -39,15 +47,25 @@
 
   <section id="view-board" class="view" hidden>
     <form id="board-tools" class="board-tools" role="search" aria-label="Buscar y filtrar misiones" onsubmit="return false">
-      <input id="f-q" type="search" placeholder="Buscar en títulos, resultados, errores… (o #12)" aria-label="Buscar misiones">
-      <select id="f-agent" aria-label="Filtrar por agente"></select>
-      <select id="f-project" aria-label="Filtrar por proyecto"></select>
-      <select id="f-status" aria-label="Filtrar por estado"></select>
-      <button type="button" id="f-clear">Limpiar</button>
-      <span id="f-count" class="muted" aria-live="polite"></span>
-      <button type="button" id="f-export" title="Descargar las misiones filtradas en Markdown">⭳ Exportar .md</button>
+      <label class="bt-search">Buscar<input id="f-q" type="search" placeholder="Títulos, resultados, errores… (o #12)" aria-label="Buscar misiones"></label>
+      <label>Agente<select id="f-agent" aria-label="Filtrar por agente"></select></label>
+      <label>Proyecto<select id="f-project" aria-label="Filtrar por proyecto"></select></label>
+      <label>Estado<select id="f-status" aria-label="Filtrar por estado"></select></label>
+      <div class="bt-actions">
+        <span id="f-count" class="muted" aria-live="polite"></span>
+        <button type="button" id="f-clear">Limpiar</button>
+        <button type="button" id="f-export" title="Descargar las misiones filtradas en Markdown">⭳ Exportar .md</button>
+      </div>
     </form>
     <main id="board" aria-label="Tablero de misiones"></main>
+  </section>
+
+  <section id="view-comms" class="view" hidden>
+    <div class="panel wide-panel">
+      <div class="panel-head"><h2>Comunicaciones entre agentes</h2><button id="collab-toggle" type="button"></button></div>
+      <p class="hint">Cuando un agente necesita la opinión de otro especialista, se la pide aquí: el colega recibe una misión de solo lectura, responde, y el agente original continúa con esa respuesta. En la Oficina se ve el sobre volar entre ambos.</p>
+      <div id="comms-list"></div>
+    </div>
   </section>
 
   <section id="view-routines" class="view" hidden>
@@ -93,6 +111,7 @@
           <label>Presupuesto diario USD <small>0 = sin límite</small><input name="daily_budget_usd" type="number" min="0" step="0.5"></label>
           <label>Tope por tarea USD <small>0 = sin tope</small><input name="task_budget_usd" type="number" min="0" step="0.5"></label>
           <label>Timeout por tarea (min)<input name="task_timeout_min" type="number" min="1" step="1"></label>
+          <label>Colaboración entre agentes <small>1 = activada · 0 = apagada</small><input name="collab" type="number" min="0" max="1" step="1"></label>
           <label>Claude a la vez<input name="max_claude" type="number" min="1" max="16" step="1"></label>
           <label>Ollama a la vez<input name="max_ollama" type="number" min="1" max="16" step="1"></label>
           <label>Internet a la vez<input name="max_api" type="number" min="1" max="16" step="1"></label>
@@ -203,9 +222,11 @@
     </div>
     <div id="d-meta"></div>
     <div id="d-actions"></div>
+    <div id="d-reply"></div>
     <div id="d-steps"></div>
     <div id="d-atts"></div>
     <div id="d-changes"></div>
+    <div id="d-comms"></div>
     <h3>Registro</h3>
     <div id="d-log"></div>
     <h3>Resultado</h3>

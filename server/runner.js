@@ -8,6 +8,7 @@ import { chat, secretEnvNames } from './providers.js';
 import { noopLogger } from './logger.js';
 import * as gitworkDefault from './gitwork.js';
 import { promptSection, dirFor } from './attachments.js';
+import { parseConsults, stripConsults, protocolPrompt, alreadyConsultedPrompt, consultBrief, answersPrompt } from './collab.js';
 
 const DONE_STATES = new Set(['review', 'done']);
 const RESULT_CONTEXT_LIMIT = 6000;
@@ -32,6 +33,8 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
   const timedOut = new Set();
   const extraPrompt = new Map(); // id -> contexto adicional calculado antes de ejecutar (p. ej. el diff a revisar)
   const replySnaps = new Map(); // id -> estado previo a una respuesta en vuelo, para poder deshacerla al cancelar
+  const consults = new Map(); // id -> { pending:Set<childId>, answers:[] } mientras la misión espera a sus colegas
+  const carry = new Map(); // id -> costo ya gastado en fases anteriores de la misma ejecución (antes de consultar)
 
   const log = (id, kind, text) => { db.addEvent(id, kind, text); emit(id, { event: { kind, text } }); };
   const patch = (id, p) => { const t = db.updateTask(id, p); emit(id); return t; };
@@ -106,7 +109,7 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
       if (dep === 'wait' || !hasRoom(w.engine)) continue;
       waiting.splice(i--, 1);
       active[w.engine] = (active[w.engine] ?? 0) + 1;
-      start(w).finally(() => { active[w.engine]--; procs.delete(w.id); timedOut.delete(w.id); pump(); });
+      start(w).finally(() => { active[w.engine]--; procs.delete(w.id); timedOut.delete(w.id); consultEnded(w.id); pump(); });
     }
   }
 
@@ -120,21 +123,98 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
       if (task.review_of) { const ctx = await reviewContext(task); if (ctx) extraPrompt.set(id, ctx); }
       const out = engine === 'claude' ? await runClaude(task) : engine === 'ollama' ? await runOllama(task, model) : await runProvider(task, engine);
       if (db.getTask(id).status !== 'running') { await afterCancel(id); return; } // cancelada
+      if (canConsult(task) && (await beginConsults(task, out))) return; // espera a sus colegas; sigue «en misión» sin ocupar cupo
+      out.result = stripConsults(out.result);
       if (task.kind === 'objective') createPlan(task, out.result);
       await finalizeWorktree(id);
-      const base = replySnaps.get(id)?.cost_usd ?? 0; // una respuesta suma al costo de lo ya gastado en la misión
-      replySnaps.delete(id);
-      patch(id, { status: 'review', result: out.result, cost_usd: base + (out.cost ?? 0), reply_text: null, finished_at: new Date().toISOString() });
+      const base = (replySnaps.get(id)?.cost_usd ?? 0) + (carry.get(id) ?? 0); // una respuesta suma al costo de lo ya gastado en la misión
+      replySnaps.delete(id); carry.delete(id);
+      patch(id, { status: task.consult_of ? 'done' : 'review', result: out.result, cost_usd: base + (out.cost ?? 0), reply_text: null, finished_at: new Date().toISOString() });
       logger.info(`#${id} terminó (${engine}${out.cost ? ` · $${out.cost.toFixed(3)}` : ''})`);
       try { spawnReviews(id); } catch (e) { log(id, 'error', `No se pudo lanzar la revisión automática: ${e.message}`); } // nunca debe fallar la misión original
     } catch (err) {
       if (db.getTask(id).status !== 'running') { await afterCancel(id); return; }
       const msg = timedOut.has(id) ? `Tiempo agotado (${db.settings().task_timeout_min} min)` : err.message;
       log(id, 'error', msg);
-      replySnaps.delete(id);
+      replySnaps.delete(id); carry.delete(id);
       patch(id, { status: 'failed', error: msg, reply_text: null, finished_at: new Date().toISOString() });
       logger.error(`#${id} falló: ${msg.slice(0, 200)}`);
     } finally { clearTimeout(timer); extraPrompt.delete(id); }
+  }
+
+  // ---------- colaboración: un agente le pide ayuda a otro ----------
+  const messageOut = (m) => { emit(m.task_id, { message: m }); return m; };
+  const canConsult = (t) => t.kind === 'task' && !t.consult_of && !t.review_of && !t.schedule_id && db.settings().collab > 0;
+  const hasConsulted = (id) => db.events(id).some((e) => e.kind === 'consult');
+
+  /** Si el agente pidió ayuda: crea una misión de solo lectura por colega y deja la misión original en espera. Devuelve true si quedó esperando. */
+  async function beginConsults(task, out) {
+    if (hasConsulted(task.id)) return false; // una sola ronda
+    const { asks, unknown } = parseConsults(out.result, new Set(registry.listAgents().map((a) => a.name)), task.agent);
+    if (unknown.length) log(task.id, 'info', `Pidió ayuda a agentes que no existen (se ignoran): ${unknown.join(', ')}`);
+    if (!asks.length) return false;
+    const id = task.id;
+    const before = stripConsults(out.result);
+    db.addEvent(id, 'answer', before || '(pidió ayuda a otros agentes antes de seguir)'); // forma parte de la conversación que verá al continuar
+    carry.set(id, (carry.get(id) ?? 0) + (out.cost ?? 0));
+    const state = { pending: new Set(), answers: [] };
+    consults.set(id, state);
+    for (const ask of asks) {
+      const request = db.addMessage({ task_id: id, from_agent: task.agent, to_agent: ask.agent, kind: 'request', text: ask.question });
+      log(id, 'info', `🤝 Pide ayuda a ${ask.agent}: ${ask.question.slice(0, 300)}`);
+      let child = null;
+      try {
+        child = db.createTask({ title: `🤝 ${task.agent} consulta a ${ask.agent}: ${ask.question}`.slice(0, 200), description: consultBrief(task, ask.question), project: task.project, agent: ask.agent, engine: 'auto', mode: 'read', consult_of: id });
+        db.audit('consult.create', id, `${task.agent} → ${ask.agent} (#${child.id})`);
+        messageOut(db.linkMessage(request.id, child.id)); // la petición queda enlazada a la misión del colega
+        emit(child.id);
+        state.pending.add(child.id);
+        enqueue(child.id);
+      } catch (e) {
+        if (!child) messageOut(request);
+        if (child) state.pending.delete(child.id);
+        state.answers.push({ agent: ask.agent, error: e.message });
+        messageOut(db.addMessage({ task_id: id, child_id: child?.id ?? null, from_agent: ask.agent, to_agent: task.agent, kind: 'answer', text: `No pudo responder: ${e.message}` }));
+      }
+    }
+    if (state.pending.size) log(id, 'info', `Esperando la respuesta de: ${[...state.pending].map((c) => db.getTask(c)?.agent).filter(Boolean).join(', ')}.`);
+    if (!state.pending.size) setImmediate(() => resumeAfterConsults(id));
+    return true;
+  }
+
+  /** Una misión de consulta terminó (bien, mal o cancelada): anota la respuesta y, si ya no falta nadie, reanuda al agente original. */
+  function consultEnded(childId) {
+    const child = db.getTask(childId);
+    const parentId = child?.consult_of;
+    const state = parentId && consults.get(parentId);
+    if (!state || !state.pending.delete(childId)) return;
+    const parent = db.getTask(parentId);
+    const ok = ['done', 'review'].includes(child.status);
+    const error = ok ? null : (child.error || 'la consulta se canceló');
+    state.answers.push({ agent: child.agent, text: ok ? child.result ?? '' : null, error });
+    messageOut(db.addMessage({ task_id: parentId, child_id: childId, from_agent: child.agent, to_agent: parent?.agent ?? '', kind: 'answer', text: ok ? (child.result ?? '(sin texto)') : `No pudo responder: ${error}` }));
+    log(parentId, 'info', ok ? `🤝 ${child.agent} respondió.` : `🤝 ${child.agent} no pudo responder: ${error}`);
+    if (!state.pending.size) resumeAfterConsults(parentId);
+  }
+
+  /** Entrega las respuestas de los colegas al agente original y vuelve a ponerlo en cola. */
+  function resumeAfterConsults(id) {
+    const state = consults.get(id);
+    consults.delete(id);
+    const task = db.getTask(id);
+    if (!state || !task || task.status !== 'running') return;
+    log(id, 'consult', answersPrompt(state.answers));
+    const plan = route(task);
+    const { daily_budget_usd: budget } = db.settings();
+    if (plan.engine === 'claude' && budget > 0 && db.costToday() >= budget) {
+      const msg = `Presupuesto diario agotado ($${db.costToday().toFixed(2)} de $${budget})`;
+      log(id, 'error', msg); carry.delete(id); replySnaps.delete(id);
+      patch(id, { status: 'failed', error: msg, finished_at: new Date().toISOString() });
+      return;
+    }
+    patch(id, { status: 'queued', engine: plan.engine, mode: plan.mode });
+    waiting.push({ id, engine: plan.engine, model: plan.model });
+    pump();
   }
 
   // ---------- revisión cruzada: otros agentes revisan el trabajo al terminar ----------
@@ -275,11 +355,12 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
       const dep = db.getTask(depId);
       if (dep?.result) parts.push(`--- Resultado del paso previo #${dep.id} (${dep.title}) ---\n${dep.result.slice(0, RESULT_CONTEXT_LIMIT)}`);
     }
-    const turns = db.events(task.id).filter((e) => e.kind === 'answer' || e.kind === 'user').slice(-CONVERSATION_TURNS);
+    const turns = db.events(task.id).filter((e) => e.kind === 'answer' || e.kind === 'user' || e.kind === 'consult').slice(-CONVERSATION_TURNS);
     if (turns.length) {
-      parts.push('--- Conversación hasta ahora (continúa a partir del último mensaje del usuario) ---');
-      for (const e of turns) parts.push(e.kind === 'user' ? `Usuario: ${e.text}` : `Tú (${task.agent}): ${e.text.slice(0, RESULT_CONTEXT_LIMIT)}`);
+      parts.push('--- Conversación hasta ahora (continúa a partir del último mensaje) ---');
+      for (const e of turns) parts.push(e.kind === 'user' ? `Usuario: ${e.text}` : e.kind === 'consult' ? e.text.slice(0, RESULT_CONTEXT_LIMIT * 2) : `Tú (${task.agent}): ${e.text.slice(0, RESULT_CONTEXT_LIMIT)}`);
     }
+    if (canConsult(task)) parts.push(hasConsulted(task.id) ? alreadyConsultedPrompt : protocolPrompt(registry.listAgents().map((a) => a.name), task.agent));
     if (extraPrompt.get(task.id)) parts.push(extraPrompt.get(task.id));
     const files = await promptSection(attachmentsDir, db.attachments(task.id), task.engine);
     if (files) parts.push(files);
@@ -378,6 +459,8 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     if (!task) return false;
     const wi = waiting.findIndex((w) => w.id === id);
     if (wi >= 0) waiting.splice(wi, 1);
+    const waitingOn = consults.get(id);
+    if (waitingOn) { consults.delete(id); carry.delete(id); for (const k of waitingOn.pending) cancel(k); } // cancelar al agente cancela las consultas que esperaba
     if (['queued', 'running'].includes(task.status)) {
       const snap = replySnaps.get(id);
       if (snap) { // cancelar una respuesta la deshace: la misión vuelve a su estado anterior y el mensaje queda para editarlo
@@ -393,6 +476,7 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
       logger.warn(`#${id} cancelada`);
     }
     procs.get(id)?.kill();
+    consultEnded(id); // si era una consulta que aún no había empezado, no hay proceso que avise al terminar
     pump(); // los dependientes de una tarea cancelada deben fallar
     return true;
   }

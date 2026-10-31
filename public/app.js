@@ -3,7 +3,8 @@ import { createOffice, drawSkinPreview } from './office.js';
 import { SKIN_LIST, AUTO, skinById, resolveSkin, deptView } from './skins.js';
 import { DEPARTMENTS } from './office-layout.js';
 import { attentionItems, transition, KIND_LABEL } from './attention.js';
-import { createAlerts } from './alerts.js';
+import { createAlerts, SOUNDS } from './alerts.js';
+import { threads, activeLinks, ticker as tickerText, prune } from './comms.js';
 import { filterTasks, isFiltering, NO_PROJECT } from './filters.js';
 import { agentMetrics, summarize, parseTs } from './metrics.js';
 import { taskToMarkdown, tasksToMarkdown, printableHtml } from './exporter.js';
@@ -28,7 +29,7 @@ const el = (tag, props = {}, ...kids) => {
 };
 
 const state = {
-  tasks: new Map(), agents: [], projects: [], providers: [], system: null, logs: [], stats: null, settings: {}, templates: [], schedules: [], costs: null,
+  tasks: new Map(), agents: [], projects: [], providers: [], system: null, logs: [], stats: null, settings: {}, templates: [], schedules: [], costs: null, messages: [], flights: [], lastMsg: null,
   open: null, view: 'office', agentOpen: null, agentLive: null, booted: false,
 };
 
@@ -97,6 +98,7 @@ function fitOffice() {
   const scale = Math.min(w / canvas.width, h / canvas.height);
   canvas.style.width = `${Math.floor(canvas.width * scale)}px`;
   canvas.style.height = `${Math.floor(canvas.height * scale)}px`;
+  canvas.dataset.textScale = (Math.round(Math.min(1.25, Math.max(1, 0.9 / scale)) * 20) / 20).toFixed(2); // los rótulos crecen cuando el mapa se ve pequeño
 }
 window.addEventListener('resize', fitOffice);
 if (window.ResizeObserver) new ResizeObserver(fitOffice).observe(document.body);
@@ -105,6 +107,9 @@ function render() {
   const s = state.stats;
   $('#stats').textContent = s ? `Claude ${s.active.claude}/${s.limit?.claude ?? '?'} · Ollama ${s.active.ollama}/${s.limit?.ollama ?? '?'} · ${s.waiting} en espera${s.paused ? ' · COLA EN PAUSA' : ''} · hoy ${money(state.costs?.today)}` : '';
   office.update({ agents: state.agents, tasks: [...state.tasks.values()], stats: s ? { ...s, costToday: state.costs?.today ?? 0 } : null });
+  office.setComms({ links: activeLinks(state.tasks), flights: state.flights });
+  paintComms();
+  if (state.view === 'comms') renderComms();
   const attn = attentionItems([...state.tasks.values()]);
   paintBadge(attn.length);
   if (state.view === 'attention') renderAttention(attn);
@@ -114,6 +119,60 @@ function render() {
   if (state.view === 'system' && state.system) renderSystem();
   if (state.open) drawer(state.tasks.get(state.open));
   if (state.agentOpen) renderAgent();
+}
+
+// ---------- comunicación entre agentes ----------
+/** Llega un mensaje entre agentes (por WebSocket): se anota, se anima el sobre en la oficina y se avisa. */
+function onMessage(msg) {
+  const i = state.messages.findIndex((x) => x.id === msg.id);
+  if (i >= 0) { state.messages[i] = msg; return; } // la petición se reenvía al enlazarla con la misión del colega
+  state.messages.push(msg);
+  if (state.messages.length > 400) state.messages.shift();
+  state.flights = [...prune(state.flights, Date.now()), { from: msg.from_agent, to: msg.to_agent, kind: msg.kind, t0: Date.now() }];
+  state.lastMsg = { text: tickerText(msg), at: Date.now() };
+  if (!document.hidden) toast(`🤝 ${tickerText(msg)}`, false);
+}
+
+/** Pestaña (contador de consultas en curso) y rótulo bajo el mapa con el último mensaje. */
+function paintComms() {
+  const n = activeLinks(state.tasks).length;
+  const b = $('#comms-badge');
+  b.hidden = !n; b.textContent = String(n);
+  const t = $('#comms-ticker');
+  const fresh = state.lastMsg && Date.now() - state.lastMsg.at < 30_000;
+  t.hidden = !fresh;
+  if (fresh) t.textContent = ` · 💬 ${state.lastMsg.text}`;
+}
+setInterval(paintComms, 2000);
+
+const when = (ts) => { try { return parseTs(ts).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' }); } catch { return ''; } };
+
+function bubble(m) {
+  const long = m.text.length > 500;
+  const body = long ? el('details', {}, el('summary', { textContent: `${m.text.slice(0, 220)}…` }), el('div', { className: 'b-full', textContent: m.text })) : el('div', { className: 'b-text', textContent: m.text });
+  return el('div', { className: `bubble ${m.kind}` },
+    el('div', { className: 'b-head' }, el('strong', { textContent: m.from_agent }), el('span', { className: 'muted', textContent: `→ ${m.to_agent} · ${when(m.created_at)}` })),
+    body);
+}
+
+function renderComms() {
+  const list = $('#comms-list');
+  const th = threads(state.messages, state.tasks);
+  const on = state.settings.collab > 0;
+  const tg = $('#collab-toggle');
+  tg.textContent = on ? '🤝 Colaboración: activada' : '🚫 Colaboración: apagada';
+  tg.className = on ? '' : 'danger';
+  renderIfChanged(list, [th.map((x) => [x.taskId, x.items.map((m) => m.id + ':' + m.child_id), x.waiting, x.task?.status]), on], () => {
+    if (!th.length) return [el('div', { className: 'empty', textContent: on ? 'Todavía no hubo comunicaciones. Cuando un agente necesite ayuda de otro especialista, la conversación aparecerá aquí.' : 'La colaboración está apagada: los agentes no pueden pedirse ayuda entre sí.' })];
+    return th.map((x) => {
+      const head = el('button', { type: 'button', className: 'thread-head', title: 'Abrir la misión' },
+        el('span', { className: 'th-title', textContent: `#${x.taskId} ${x.task?.title ?? '(misión eliminada)'}` }),
+        el('span', { className: 'th-who', textContent: `${x.asker} ⇄ ${x.helpers.join(', ')}` }),
+        el('span', { className: `th-state ${x.waiting.length ? 'wait' : 'ok'}`, textContent: x.waiting.length ? `⏳ esperando a ${x.waiting.join(', ')}` : '✓ respondieron todos' }));
+      if (x.task) head.onclick = () => openDrawer(x.taskId);
+      return el('article', { className: 'thread' }, head, ...x.items.map(bubble));
+    });
+  });
 }
 
 // ---------- tablero ----------
@@ -206,6 +265,9 @@ function card(t) {
   if (kids.length) meta.append(el('span', { textContent: `pasos ${kids.filter((k) => ['review', 'done'].includes(k.status)).length}/${kids.length}` }));
   if (t.parent_id) meta.append(el('span', { textContent: `↳ #${t.parent_id}` }));
   if (t.review_of) meta.append(el('span', { textContent: `revisa #${t.review_of}` }));
+  if (t.consult_of) meta.append(el('span', { className: 'tag collab', textContent: `🤝 consulta de #${t.consult_of}` }));
+  const asked = activeLinks(state.tasks).filter((l) => l.parentId === t.id);
+  if (asked.length) meta.append(el('span', { className: 'tag collab', textContent: `🤝 esperando a ${asked.map((l) => l.to).join(', ')}` }));
   if (t.chain?.length) meta.append(el('span', { textContent: `revisan: ${t.chain.join(', ')}` }));
   if (t.depends_on?.length) meta.append(el('span', { textContent: `espera ${t.depends_on.map((d) => '#' + d).join(' ')}` }));
   c.append(el('div', { className: 't', textContent: `#${t.id} ${t.title}` }), meta);
@@ -273,6 +335,18 @@ function drawer(t) {
   const del = el('button', { className: 'danger', textContent: 'Eliminar' });
   del.onclick = guard(async () => { if (await confirmDialog('Eliminar misión', isObj && kids.length ? 'Se eliminarán también sus pasos.' : '¿Eliminar esta misión?')) await api(`/api/tasks/${t.id}`, { method: 'DELETE' }); });
   act.append(del);
+
+  // responder al agente (también cuando pregunta): el formulario solo se rehace si cambia la misión o su estado, para no perder el foco al escribir
+  const reply = $('#d-reply');
+  const canReply = FINISHED.has(t.status) && t.kind !== 'objective';
+  const replySig = canReply ? JSON.stringify([t.id, t.status, t.reply_text]) : '';
+  if (reply.dataset.sig !== replySig) {
+    reply.dataset.sig = replySig;
+    reply.replaceChildren(...(canReply ? [el('h3', { textContent: t.status === 'review' ? 'Responder / dar otra indicación' : 'Continuar la conversación' }), replyForm(t)] : []));
+  }
+
+  const talk = state.messages.filter((m) => m.task_id === t.id || m.child_id === t.id);
+  renderIfChanged($('#d-comms'), talk.map((m) => [m.id, m.child_id]), () => (talk.length ? [el('h3', { textContent: `Conversación entre agentes (${talk.length})` }), ...talk.map((m) => el('div', { className: `talk ${m.kind}` }, el('strong', { textContent: `${m.from_agent} → ${m.to_agent}` }), el('span', { textContent: ` ${m.text.length > 260 ? m.text.slice(0, 260) + '…' : m.text}` })))] : []));
 
   renderAtts(t);
   const chg = $('#d-changes');
@@ -453,7 +527,7 @@ const taskSecs = (t) => (t.started_at && t.finished_at ? (parseTs(t.finished_at)
 
 function appendLine(box, ev) {
   if (ev.kind === 'answer') return; // copia interna de la respuesta anterior; ya se ve como resultado
-  box.append(el('div', { className: ev.kind, textContent: ev.kind === 'tool' ? `⚙ ${ev.text}` : ev.kind === 'user' ? `Tú: ${ev.text}` : ev.text }));
+  box.append(el('div', { className: ev.kind, textContent: ev.kind === 'tool' ? `⚙ ${ev.text}` : ev.kind === 'user' ? `Tú: ${ev.text}` : ev.kind === 'consult' ? `🤝 ${ev.text}` : ev.text }));
   box.scrollTop = box.scrollHeight;
 }
 
@@ -731,6 +805,11 @@ function setupForms() {
   $('#d-close').onclick = () => { state.open = null; $('#drawer').hidden = true; };
   $('#a-close').onclick = closeAgent;
   for (const b of document.querySelectorAll('#tabs button')) b.onclick = () => showView(b.dataset.view);
+  $('#collab-toggle').onclick = guard(async () => {
+    state.settings = await api('/api/settings', { method: 'PUT', body: JSON.stringify({ collab: state.settings.collab > 0 ? 0 : 1 }) });
+    toast(state.settings.collab > 0 ? 'Colaboración entre agentes activada' : 'Colaboración apagada: los agentes ya no se piden ayuda', false);
+    renderComms();
+  });
   $('#settings-form').onsubmit = guard(async (e) => {
     e.preventDefault();
     state.settings = await api('/api/settings', { method: 'PUT', body: JSON.stringify(Object.fromEntries(new FormData(e.target))) });
@@ -959,6 +1038,7 @@ async function refreshState() {
   const s = await api('/api/state');
   const provSig = JSON.stringify(s.providers ?? []);
   const provChanged = provSig !== JSON.stringify(state.providers);
+  state.messages = s.messages ?? state.messages;
   Object.assign(state, { agents: s.agents, projects: s.projects, providers: s.providers ?? [], stats: s.stats, settings: s.settings, templates: s.templates, schedules: s.schedules, costs: s.costs });
   const before = state.tasks;
   state.tasks = new Map(s.tasks.map((t) => [t.id, t]));
@@ -976,6 +1056,7 @@ function connect() {
       const prevStatus = state.tasks.get(m.task.id)?.status;
       state.tasks.set(m.task.id, m.task);
       handleTransition(prevStatus, m.task);
+      if (m.message) onMessage(m.message);
       if (m.event && state.open === m.task.id) logLine(m.event);
       if (m.event && state.agentLive === m.task.id) appendLine($('#a-log'), m.event);
       render();
@@ -1082,6 +1163,19 @@ function setupAlerts() {
     else if (perm !== 'default') toast('Las notificaciones del navegador no están permitidas: solo sonará (puedes habilitarlas en el candado de la barra de direcciones)', false);
   };
   paint();
+  document.addEventListener('pointerdown', () => { if (alerts.enabled) alerts.unlock(); }, { once: true }); // el audio necesita un gesto antes de poder sonar
+  let testing = false;
+  $('#sound-test').onclick = async () => {
+    if (testing) return;
+    testing = true;
+    try {
+      for (const [kind, what] of Object.entries(SOUNDS)) {
+        toast(`🔊 ${KIND_LABEL[kind] ?? kind}: ${what}`, false);
+        alerts.preview(kind);
+        await new Promise((r) => setTimeout(r, 1400));
+      }
+    } finally { testing = false; }
+  };
 }
 
 const attn = { selected: new Set(), dirty: false };

@@ -22,6 +22,7 @@ export function attentionItems(tasks) {
   const pendingSteps = (id) => all.some((k) => k.parent_id === id && ['backlog', 'failed'].includes(k.status));
   const items = [];
   for (const t of all) {
+    if (t.consult_of) continue; // las consultas entre agentes no piden nada al usuario
     if (t.kind === 'objective') {
       if (t.status === 'review' && pendingSteps(t.id)) items.push({ kind: 'plan', task: t });
     } else if (t.status === 'failed') items.push({ kind: 'failed', task: t });
@@ -35,7 +36,7 @@ export function attentionItems(tasks) {
  * Una misión que aparece por primera vez (prevStatus undefined) o que ya estaba terminada no avisa.
  */
 export function transition(prevStatus, task) {
-  if (!['queued', 'running'].includes(prevStatus)) return null;
+  if (!['queued', 'running'].includes(prevStatus) || task.consult_of) return null;
   if (task.kind === 'objective') return task.status === 'review' ? { kind: 'plan', task } : task.status === 'failed' ? { kind: 'failed', task } : null;
   if (task.status === 'failed') return { kind: 'failed', task };
   if (task.status === 'review' || task.status === 'done') return { kind: isQuestion(task.result) ? 'question' : 'done', task };

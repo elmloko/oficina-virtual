@@ -131,8 +131,10 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
       return send(res, 200, {
         tasks: db.listTasks(), agents: listAgents(), projects: listProjects(), stats: runner.stats(),
         settings: db.settings(), providers: publicProviders(providers), templates: TEMPLATES, schedules: db.schedules(), costs: costs(),
+        messages: db.messages(150),
       });
     }
+    if (method === 'GET' && url.pathname === '/api/messages') return send(res, 200, db.messages(Math.min(500, Number(url.searchParams.get('limit')) || 150)));
     if (method === 'GET' && url.pathname === '/api/costs') return send(res, 200, costs());
     if (method === 'GET' && url.pathname === '/api/audit') return send(res, 200, db.auditLog(200));
     if (url.pathname === '/api/settings') {
