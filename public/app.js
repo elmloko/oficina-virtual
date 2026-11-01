@@ -999,8 +999,9 @@ function renderSystem() {
     : el('p', { className: 'hint', textContent: 'Sin rutinas programadas.' })));
 
   // motores y modelos (solo se reconstruye si cambian los datos, para no perder lo que escribes)
-  if (!state.bench) refreshBench();
-  renderIfChanged($('#sys-engines'), { b: state.bench, m: state.modelInfo, c: [s.claude.enabled, s.claude.ok, s.claude.version], o: [s.ollama.enabled, s.ollama.ok, s.ollama.models.length], x: [s.codex.enabled, s.codex.ok, s.codex.version], p: s.providers }, () => enginesView(s));
+  state.benches ??= {};
+  for (const e of ['ollama', 'lmstudio']) if (!state.benches[e]) refreshBench(e);
+  renderIfChanged($('#sys-engines'), { b: state.benches, m: state.modelInfo, c: [s.claude.enabled, s.claude.ok, s.claude.version], o: [s.ollama.enabled, s.ollama.ok, s.ollama.models.length], x: [s.codex.enabled, s.codex.ok, s.codex.version], p: s.providers }, () => enginesView(s));
   fillSettings();
 }
 
@@ -1039,43 +1040,51 @@ function modelSelect(key, label) {
   return sel;
 }
 
-let benchTimer = null;
-async function refreshBench() {
+const BENCH_LABEL = { ollama: 'Ollama', lmstudio: 'LM Studio' };
+const benchTimers = {};
+async function refreshBench(engine) {
   try {
-    state.bench = await api('/api/system/ollama/benchmark');
-    clearTimeout(benchTimer);
-    if (state.bench.running) benchTimer = setTimeout(refreshBench, 2000);
-    else if (state.bench.best) await refreshModels(); // la recomendación cambia el «predeterminado» y la ★
+    state.benches ??= {};
+    state.benches[engine] = await api(`/api/system/${engine}/benchmark`);
+    clearTimeout(benchTimers[engine]);
+    if (state.benches[engine].running) benchTimers[engine] = setTimeout(() => refreshBench(engine), 2000);
+    else if (state.benches[engine].best) await refreshModels(); // la recomendación cambia el «predeterminado» y la ★
     if (state.system) renderSystem();
   } catch { /* el servidor puede estar reiniciando */ }
 }
-async function startBench() {
-  state.bench = await post('/api/system/ollama/benchmark');
-  toast('Midiendo tus modelos de Ollama, de uno en uno. Tarda unos minutos y no hace falta que esperes aquí.', false);
-  clearTimeout(benchTimer); benchTimer = setTimeout(refreshBench, 2000);
+async function startBench(engine) {
+  state.benches ??= {};
+  state.benches[engine] = await post(`/api/system/${engine}/benchmark`);
+  toast(`Midiendo tus modelos de ${BENCH_LABEL[engine]}, de uno en uno. Tarda unos minutos y no hace falta que esperes aquí.`, false);
+  clearTimeout(benchTimers[engine]); benchTimers[engine] = setTimeout(() => refreshBench(engine), 2000);
   renderSystem();
 }
+const benchButton = (engine) => el('button', { textContent: state.benches?.[engine]?.running ? 'Midiendo…' : 'Medir modelos', disabled: !!state.benches?.[engine]?.running, title: 'Prueba cada modelo instalado y te dice cuál rinde mejor en esta computadora', onclick: guard(() => startBench(engine)) });
 
 /** Tabla de la última medición (o de la que está corriendo) con «Usar este». */
-function benchPanel() {
-  const b = state.bench;
-  if (!b || (!b.running && !b.results.length)) return el('p', { className: 'hint', textContent: 'Tip: «Medir modelos» prueba cada modelo instalado con la misma consigna y te recomienda el mejor para esta computadora.' });
-  const cur = state.modelInfo?.engine_models?.ollama ?? '';
+function benchPanel(engine) {
+  const b = state.benches?.[engine];
+  if (!b || (!b.running && !b.results.length)) {
+    const off = engine === 'lmstudio' && state.modelInfo?.lmstudio_up === false;
+    return el('p', { className: 'hint', textContent: off ? 'Para medir tus modelos de LM Studio, abre la app y enciende su servidor local (pestaña Developer → Start Server).' : 'Tip: «Medir modelos» prueba cada modelo instalado con la misma consigna y te recomienda el mejor para esta computadora.' });
+  }
+  const cur = state.modelInfo?.engine_models?.[engine] ?? '';
+  const approx = b.results.some((r) => r.approx);
   const head = b.running ? `Midiendo… ${b.results.length}/${b.total}${b.current ? ` · ahora: ${b.current}` : ''}` : `Medición del ${new Date(b.at).toLocaleString()} · RAM libre ${b.free_gb} GB`;
   const rows = b.results.map((r) => el('tr', { className: r.name === b.best ? 'best' : '' },
     el('td', { textContent: `${r.name === b.best ? '★ ' : ''}${r.name}` }),
-    el('td', { textContent: `${(r.size / 1e9).toFixed(1)} GB` }),
-    el('td', { className: r.ok ? (r.tps >= 4 ? 'good' : 'bad') : 'bad', textContent: r.ok ? `${r.tps} tok/s` : '—' }),
+    el('td', { textContent: r.size ? `${r.size_est ? '~' : ''}${(r.size / 1e9).toFixed(1)} GB` : '—' }),
+    el('td', { className: r.ok ? (r.tps >= 4 ? 'good' : 'bad') : 'bad', textContent: r.ok ? `${r.approx ? '~' : ''}${r.tps} tok/s` : '—' }),
     el('td', { textContent: `${r.seconds} s` }),
     el('td', { className: 'snip', title: r.text, textContent: r.ok ? r.text : `✕ ${r.error}` }),
     el('td', {}, r.ok ? el('button', { textContent: cur === r.name ? '✓ en uso' : 'Usar este', disabled: cur === r.name, onclick: guard(async () => {
-      await api('/api/system/engines/ollama/model', { method: 'PUT', body: JSON.stringify({ model: r.name }) });
-      toast(`Ollama usará ${r.name} (aplica a las misiones nuevas)`, false);
+      await api(`/api/system/engines/${engine}/model`, { method: 'PUT', body: JSON.stringify({ model: r.name }) });
+      toast(`${BENCH_LABEL[engine]} usará ${r.name} (aplica a las misiones nuevas)`, false);
       await refreshModels();
     }) }) : '')));
   const skipped = b.skipped.length ? el('p', { className: 'hint', textContent: `No medidos: ${b.skipped.map((s) => `${s.name} (${s.reason})`).join(' · ')}` }) : null;
-  const note = !b.running && b.best ? el('p', { className: 'hint', textContent: '★ = el más grande (mejor calidad) que responde a 4 tokens/s o más. Juzga tú la calidad leyendo la respuesta de cada uno.' }) : null;
-  const stop = b.running ? el('button', { className: 'danger', textContent: 'Detener', onclick: guard(async () => { await api('/api/system/ollama/benchmark', { method: 'DELETE' }); }) }) : null;
+  const note = !b.running && b.best ? el('p', { className: 'hint', textContent: `★ = el más grande (mejor calidad) que responde a 4 tokens/s o más. Juzga tú la calidad leyendo la respuesta de cada uno.${engine === 'lmstudio' ? ' En LM Studio el tamaño se estima por el nombre del modelo (~)' : ''}${approx ? ' y la velocidad con ~ es aproximada (incluye cargar el modelo).' : '.'}` }) : null;
+  const stop = b.running ? el('button', { className: 'danger', textContent: 'Detener', onclick: guard(async () => { await api(`/api/system/${engine}/benchmark`, { method: 'DELETE' }); }) }) : null;
   return el('div', { className: 'bench' }, el('div', { className: 'bench-head' }, span(head), ...(stop ? [stop] : [])),
     el('table', {}, el('thead', {}, el('tr', {}, ...['Modelo', 'Tamaño', 'Velocidad', 'Tiempo', 'Respuesta', ''].map((t) => el('th', { textContent: t })))), el('tbody', {}, ...rows)),
     ...(skipped ? [skipped] : []), ...(note ? [note] : []));
@@ -1097,8 +1106,8 @@ function localEngineItem(key, label, info, detail, kind, kindClass) {
     name: label, kind, kindClass, on: info.enabled, ok: info.ok,
     detail: info.enabled ? (detail ?? '') : `apagado · ${detail ?? ''}`,
     model: modelSelect(key, label),
-    more: key === 'ollama' ? [benchPanel()] : [],
-    actions: [...(key === 'ollama' && info.ok ? [el('button', { textContent: state.bench?.running ? 'Midiendo…' : 'Medir modelos', disabled: !!state.bench?.running, title: 'Prueba cada modelo instalado y te dice cuál rinde mejor en esta computadora', onclick: guard(startBench) })] : []), switchBtn(info.enabled, info.enabled ? `Apagar ${label}: las misiones dejan de usarlo` : `Encender ${label}`, async () => {
+    more: key === 'ollama' ? [benchPanel('ollama')] : [],
+    actions: [...(key === 'ollama' && info.ok ? [benchButton('ollama')] : []), switchBtn(info.enabled, info.enabled ? `Apagar ${label}: las misiones dejan de usarlo` : `Encender ${label}`, async () => {
       if (info.enabled && key === 'claude' && !(await confirmDialog('Apagar Claude Code', 'Sin Claude Code no se pueden editar archivos ni correr agentes de código; solo quedarán Ollama, Codex y los modelos extra (que únicamente leen). Puedes encenderlo cuando quieras.'))) return;
       await api(`/api/system/engines/${key}/toggle`, { method: 'PUT', body: JSON.stringify({ enabled: !info.enabled }) });
       toast(`${label} ${info.enabled ? 'apagado' : 'encendido'}`, false);
@@ -1129,6 +1138,7 @@ function providerItem(p) {
     await refreshState(); await refreshSystem();
   });
   const actions = [];
+  if (lm && p.enabled && lmUp) actions.push(benchButton('lmstudio'));
   if (p.configured) {
     actions.push(el('button', { textContent: 'Probar', onclick: guard(async () => {
       res.className = 'res'; res.textContent = 'Probando…';
@@ -1148,7 +1158,7 @@ function providerItem(p) {
     name: lm ? 'LM Studio' : p.name, kind: lm ? 'Local' : 'Internet', kindClass: lm ? 'k-local' : 'k-net',
     on: p.enabled, ok: lm ? lmUp !== false : true, detail,
     model: lm && p.enabled ? modelSelect('lmstudio', 'LM Studio') : el('span', { className: 'muted', textContent: p.configured || lm ? p.model : `modelo: ${p.model}` }),
-    actions, more: [res, keyform],
+    actions, more: [...(lm && p.enabled ? [benchPanel('lmstudio')] : []), res, keyform],
   });
 }
 
@@ -1174,6 +1184,7 @@ async function refreshSystem() {
     state.system = await api('/api/system');
     if (!state.logs.length) { state.logs = await api('/api/logs?limit=200'); renderLogs(); }
     renderSystem();
+    if (state.modelInfo?.lmstudio_up === false && state.system.providers.some((p) => p.name === 'lmstudio' && p.enabled)) refreshModels(); // detecta cuándo enciendes el servidor de LM Studio
   } catch (e) { /* el servidor puede estar reiniciando */ }
 }
 

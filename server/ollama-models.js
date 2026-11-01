@@ -77,13 +77,54 @@ export async function measure(model, { url, fetchFn = fetch, signal, timeoutMs =
   }
 }
 
+// ---------- LM Studio (servidor local compatible con OpenAI) ----------
+/** Parámetros en miles de millones según el nombre («qwen2.5-7b-instruct» → 7); LM Studio no informa el tamaño en disco. */
+export const paramsB = (name) => { const m = /(\d+(?:\.\d+)?)\s*b(?![a-z])/i.exec(String(name)); return m ? Number(m[1]) : 0; };
+const lmNative = (url) => url.replace(/\/v1\/?$/, '');
+
+/** Modelos de chat que LM Studio ofrece: [{name, size(estimado), state}]. Sin servidor encendido lanza error. */
+export async function listLmStudio({ url, fetchFn = fetch }) {
+  let list;
+  try { list = (await (await fetchFn(`${lmNative(url)}/api/v0/models`, { signal: AbortSignal.timeout(2500) })).json()).data; } catch { list = null; }
+  if (!Array.isArray(list)) list = (await (await fetchFn(`${url}/models`, { signal: AbortSignal.timeout(2500) })).json()).data ?? []; // versiones sin la API nativa
+  return list
+    .filter((m) => !/embed/i.test(m.id) && !['embeddings', 'embedding'].includes(m.type))
+    .map((m) => ({ name: m.id, size: Math.round(paramsB(m.id) * 0.55e9), size_est: true, state: m.state ?? null }));
+}
+
+/** Igual que measure() pero contra LM Studio: usa sus estadísticas nativas si las trae; si no, mide el reloj (aproximado). */
+export async function measureLmStudio(model, { url, fetchFn = fetch, signal, timeoutMs = 240_000 }) {
+  const t0 = Date.now();
+  const body = JSON.stringify({ model: model.name, stream: false, max_tokens: 200, temperature: 0, messages: [{ role: 'user', content: BENCH_PROMPT }] });
+  const sig = signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs);
+  try {
+    let res = await fetchFn(`${lmNative(url)}/api/v0/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal: sig });
+    if (res.status === 404) res = await fetchFn(`${url}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal: sig });
+    if (!res.ok) throw new Error(`LM Studio respondió ${res.status}`);
+    const j = await res.json();
+    const text = String(j.choices?.[0]?.message?.content ?? '').trim();
+    const tokens = j.usage?.completion_tokens ?? 0;
+    const seconds = Math.round(((Date.now() - t0) / 1000) * 10) / 10;
+    const native = j.stats?.tokens_per_second;
+    const tps = native ?? (tokens && seconds ? tokens / seconds : 0);
+    const ok = text.length >= 30;
+    return {
+      name: model.name, size: model.size, size_est: true, ok, tps: Math.round(tps * 10) / 10, tokens, seconds, load_seconds: 0, approx: native == null,
+      text: text.slice(0, 220), error: ok ? null : 'respuesta vacía o demasiado corta',
+    };
+  } catch (e) {
+    const aborted = e.name === 'AbortError' || signal?.aborted;
+    return { name: model.name, size: model.size, size_est: true, ok: false, tps: 0, tokens: 0, seconds: Math.round((Date.now() - t0) / 100) / 10, load_seconds: 0, text: '', error: aborted ? 'cancelado o demasiado lento (más de 4 min)' : e.message };
+  }
+}
+
 /** Mide uno tras otro (no a la vez: se falsearía la velocidad). `onProgress(resultsHastaAhora, actual)`. */
-export async function runBenchmark(models, { url, fetchFn, signal, onProgress = () => {} }) {
+export async function runBenchmark(models, { url, fetchFn, signal, onProgress = () => {}, measureFn = measure }) {
   const results = [];
   for (const m of models) {
     if (signal?.aborted) break;
     onProgress(results, m.name);
-    results.push(await measure(m, { url, fetchFn, signal }));
+    results.push(await measureFn(m, { url, fetchFn, signal }));
   }
   onProgress(results, null);
   return results;

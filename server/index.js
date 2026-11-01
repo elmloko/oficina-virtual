@@ -13,7 +13,7 @@ import { listAgents, listProjects, resolveProject, isExtraRoot } from './registr
 import { insideBase } from './workspace.js';
 import { CLAUDE_MODELS, ollamaChatModels } from './system.js';
 import { OLLAMA_MODELS } from './router.js';
-import { pickDefault, benchCandidates, runBenchmark, recommend } from './ollama-models.js';
+import { pickDefault, benchCandidates, runBenchmark, recommend, listLmStudio, measureLmStudio } from './ollama-models.js';
 import { freemem } from 'node:os';
 import { spawn as spawnProc } from 'node:child_process';
 import { loadProviders, publicProviders, knownProviders, testProvider, MODEL_RE } from './providers.js';
@@ -38,14 +38,15 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
   const applyOff = () => { for (const n of db.disabledProviders()) delete providers[n]; };
   const reloadProviders = () => { for (const k of Object.keys(providers)) delete providers[k]; Object.assign(providers, loadProviders()); applyOff(); };
   applyOff();
-  // Medición de modelos de Ollama: una a la vez; el resultado queda guardado para comparar y elegir.
-  const bench = { running: false, current: null, total: 0, results: [], skipped: [], started_at: null, free_gb: null };
-  let benchAbort = null;
-  const benchView = () => {
-    const last = db.ollamaBench();
+  // Medición de modelos (Ollama y LM Studio): una a la vez; el resultado queda guardado para comparar y elegir.
+  const benches = {};
+  const benchOf = (engine) => (benches[engine] ??= { running: false, current: null, total: 0, results: [], skipped: [], free_gb: null, abort: null });
+  const benchView = (engine) => {
+    const bench = benchOf(engine);
+    const last = db.engineBench(engine);
     return bench.running
-      ? { running: true, current: bench.current, total: bench.total, results: bench.results, skipped: bench.skipped, best: null, at: null, free_gb: bench.free_gb }
-      : { running: false, current: null, total: last?.results?.length ?? 0, results: last?.results ?? [], skipped: last?.skipped ?? [], best: last?.best ?? null, at: last?.at ?? null, free_gb: last?.free_gb ?? null };
+      ? { engine, running: true, current: bench.current, total: bench.total, results: bench.results, skipped: bench.skipped, best: null, at: null, free_gb: bench.free_gb }
+      : { engine, running: false, current: null, total: last?.results?.length ?? 0, results: last?.results ?? [], skipped: last?.skipped ?? [], best: last?.best ?? null, at: last?.at ?? null, free_gb: last?.free_gb ?? null };
   };
   const sockets = new Set();
   const broadcast = (msg) => { const s = JSON.stringify(msg); for (const ws of sockets) if (ws.readyState === 1) ws.send(s); };
@@ -188,7 +189,8 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
       if (lmp) {
         try {
           const j = await (await fetch(`${lmp.baseUrl}/models`, { signal: AbortSignal.timeout(1500) })).json();
-          lm = (j.data ?? []).filter((x) => !/embed/i.test(x.id)).map((x) => ({ value: x.id, label: x.id }));
+          const best = db.engineBench('lmstudio')?.best;
+          lm = (j.data ?? []).filter((x) => !/embed/i.test(x.id)).map((x) => ({ value: x.id, label: x.id, recommended: x.id === best }));
         } catch { lm = null; }
       }
       return send(res, 200, {
@@ -200,32 +202,43 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
         defaults: { claude: db.defaultSeen().claude, ollama: ollamaDefault, codex: null, lmstudio: null },
       });
     }
-    // --- medir los modelos de Ollama instalados en esta computadora ---
-    if (url.pathname === '/api/system/ollama/benchmark') {
-      if (method === 'GET') return send(res, 200, benchView());
+    // --- medir los modelos instalados en esta computadora (Ollama o LM Studio) ---
+    if ((r = m(/^\/api\/system\/(ollama|lmstudio)\/benchmark$/))) {
+      const engine = r[1];
+      const label = engine === 'ollama' ? 'Ollama' : 'LM Studio';
+      const bench = benchOf(engine);
+      if (method === 'GET') return send(res, 200, benchView(engine));
       if (method === 'POST') {
         if (bench.running) return send(res, 409, { error: 'Ya hay una medición en curso' });
-        if (runner.stats().active.ollama > 0) return send(res, 409, { error: 'Ollama está ocupado con una misión: espera a que termine para medir' });
-        const ol = await probe.ollama().catch(() => ({ ok: false }));
-        if (!ol.ok) return send(res, 400, { error: ol.error ?? 'Ollama no responde (¿está iniciado?)' });
+        if (runner.stats().active[engine] > 0) return send(res, 409, { error: `${label} está ocupado con una misión: espera a que termine para medir` });
+        let models; let baseUrl; let fetchFn; let measureFn;
+        if (engine === 'ollama') {
+          const ol = await probe.ollama().catch(() => ({ ok: false }));
+          if (!ol.ok) return send(res, 400, { error: ol.error ?? 'Ollama no responde (¿está iniciado?)' });
+          models = ol.models; baseUrl = config.ollamaUrl; fetchFn = ollamaFetch;
+        } else {
+          const lm = providers.lmstudio;
+          if (!lm) return send(res, 400, { error: 'LM Studio está apagado en Sistema: enciéndelo primero' });
+          try { models = await listLmStudio({ url: lm.baseUrl, fetchFn: ollamaFetch }); } catch { return send(res, 400, { error: 'LM Studio no responde: abre la app y activa su servidor local (pestaña Developer)' }); }
+          baseUrl = lm.baseUrl; fetchFn = ollamaFetch; measureFn = measureLmStudio;
+        }
         const freeGb = freemem() / 1e9;
-        const { candidates, skipped } = benchCandidates(ol.models, freeGb);
-        if (!candidates.length) return send(res, 400, { error: 'No hay modelos de chat que medir (descarga uno, p. ej. «ollama pull gemma3:4b»)' });
-        Object.assign(bench, { running: true, current: null, total: candidates.length, results: [], skipped, started_at: new Date().toISOString(), free_gb: Math.round(freeGb * 10) / 10 });
-        benchAbort = new AbortController();
-        db.audit('ollama.benchmark', null, `${candidates.length} modelos`);
-        logger.info(`Midiendo ${candidates.length} modelos de Ollama`);
-        runBenchmark(candidates, { url: config.ollamaUrl, fetchFn: ollamaFetch, signal: benchAbort.signal, onProgress: (results, current) => { bench.results = [...results]; bench.current = current; } })
+        const { candidates, skipped } = benchCandidates(models, freeGb);
+        if (!candidates.length) return send(res, 400, { error: engine === 'ollama' ? 'No hay modelos de chat que medir (descarga uno, p. ej. «ollama pull gemma3:4b»)' : 'LM Studio no tiene modelos de chat descargados' });
+        Object.assign(bench, { running: true, current: null, total: candidates.length, results: [], skipped, free_gb: Math.round(freeGb * 10) / 10, abort: new AbortController() });
+        db.audit(`${engine}.benchmark`, null, `${candidates.length} modelos`);
+        logger.info(`Midiendo ${candidates.length} modelos de ${label}`);
+        runBenchmark(candidates, { url: baseUrl, fetchFn, measureFn, signal: bench.abort.signal, onProgress: (results, current) => { bench.results = [...results]; bench.current = current; } })
           .then((results) => {
             const done = { at: new Date().toISOString(), free_gb: bench.free_gb, skipped, results, best: recommend(results) };
-            db.setOllamaBench(done);
-            logger.info(`Medición terminada. Recomendado: ${done.best ?? 'ninguno'}`);
+            db.setEngineBench(engine, done);
+            logger.info(`Medición de ${label} terminada. Recomendado: ${done.best ?? 'ninguno'}`);
           })
-          .catch((e) => logger.warn(`Medición de Ollama falló: ${e.message}`))
+          .catch((e) => logger.warn(`Medición de ${label} falló: ${e.message}`))
           .finally(() => { bench.running = false; bench.current = null; });
-        return send(res, 202, benchView());
+        return send(res, 202, benchView(engine));
       }
-      if (method === 'DELETE') { benchAbort?.abort(); return send(res, 200, benchView()); }
+      if (method === 'DELETE') { bench.abort?.abort(); return send(res, 200, benchView(engine)); }
     }
     if (method === 'PUT' && (r = m(/^\/api\/system\/engines\/(claude|codex|ollama|lmstudio)\/model$/))) {
       const { model } = await readJson(req);

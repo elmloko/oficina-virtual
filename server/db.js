@@ -251,10 +251,13 @@ export function openDb(file = config.dbFile) {
       return cur;
     },
     /** Última medición de modelos de Ollama en ESTA computadora: { at, results, best, free_gb } o null. */
-    ollamaBench() {
-      try { return JSON.parse(q.getSetting.get('ollama_bench')?.value ?? 'null'); } catch { return null; }
+    ollamaBench() { return this.engineBench('ollama'); },
+    setOllamaBench(bench) { this.setEngineBench('ollama', bench); },
+    /** Última medición de un motor local con lista de modelos: 'ollama' o 'lmstudio'. */
+    engineBench(engine) {
+      try { return JSON.parse(q.getSetting.get(`${engine}_bench`)?.value ?? 'null'); } catch { return null; }
     },
-    setOllamaBench(bench) { q.setSetting.run('ollama_bench', JSON.stringify(bench)); },
+    setEngineBench(engine, bench) { q.setSetting.run(`${engine}_bench`, JSON.stringify(bench)); },
     /** Modelo que usó la última ejecución sin elección manual: así se sabe cuál es «el predeterminado» de la sesión. */
     defaultSeen() {
       try { const v = JSON.parse(q.getSetting.get('default_seen')?.value ?? '{}'); return { claude: v.claude ?? null, codex: v.codex ?? null }; } catch { return { claude: null, codex: null }; }

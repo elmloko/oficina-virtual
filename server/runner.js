@@ -5,7 +5,7 @@ import { resolveProject, listAgents, listProjects, isDocsRoot } from './registry
 import { createTopicFolder, insideBase, listFiles, removeIfEmpty } from './workspace.js';
 import { tmpdir } from 'node:os';
 import { route } from './router.js';
-import { chatModels, hasModel, pickDefault } from './ollama-models.js';
+import { chatModels, hasModel, pickDefault, listLmStudio } from './ollama-models.js';
 import { buildPlanPrompt, parsePlan } from './coordinator.js';
 import { chat, secretEnvNames } from './providers.js';
 import { noopLogger } from './logger.js';
@@ -561,13 +561,26 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     return { result: text, cost: 0 };
   }
 
+  /** LM Studio: el modelo debe existir en ESTA computadora; si no, se usa el recomendado por la medición, uno ya cargado o el primero. */
+  async function lmstudioModel(wanted, provider, taskId) {
+    let list;
+    try { list = await listLmStudio({ url: provider.baseUrl, fetchFn }); } catch { return wanted; } // sin lista: que LM Studio responda con su propio error
+    if (!list.length) return wanted;
+    if (wanted && hasModel(list, wanted)) return wanted;
+    const best = db.engineBench('lmstudio')?.best;
+    const pick = (best && hasModel(list, best) ? list.find((m) => m.name === best) : null) ?? list.find((m) => m.state === 'loaded') ?? list[0];
+    if (wanted) log(taskId, 'info', `El modelo «${wanted}» no está en LM Studio: se usó «${pick.name}».`);
+    return pick.name;
+  }
+
   async function runProvider(task, engine) {
     const provider = providers[engine];
     if (!provider) throw new Error(`Proveedor "${engine}" no está activo (falta su clave en .env o está desactivado en Sistema)`);
     const ctrl = new AbortController();
     procs.set(task.id, { kill: () => ctrl.abort() });
     const sys = `Eres el agente "${task.agent}". Responde en español, conciso y directo.`;
-    const model = task.model || (engine === 'lmstudio' ? db.engineModels().lmstudio : '') || undefined; // sin elección: el modelo por defecto del proveedor
+    let model = task.model || (engine === 'lmstudio' ? db.engineModels().lmstudio : '') || undefined; // sin elección: el modelo por defecto del proveedor
+    if (engine === 'lmstudio') model = await lmstudioModel(model, provider, task.id);
     patch(task.id, { used_model: model || provider.model });
     const out = await chat(provider, { model, system: sys, prompt: await buildPrompt(task), signal: ctrl.signal, fetchFn });
     log(task.id, 'text', out.text);
