@@ -269,6 +269,7 @@ em.eng-ollama { color: var(--green); border-color: var(--green); }
 .prov-row .model-line select { width: auto; min-width: 280px; font-size: 12px; padding: 2px 6px; }
 #model-row select[name=model_pick] { width: 100%; }
 em.eng-codex { color: var(--violet); border-color: var(--violet); }
+em.eng-lmstudio { color: var(--green, #4ade80); border-color: var(--green, #4ade80); }
 em.eng-api { color: var(--blue); border-color: var(--blue); }
 .gauge .bar { height: 8px; background: #000; border: 1px solid var(--line); margin-top: 3px; }
 .gauge .bar i { display: block; height: 100%; background: var(--blue); }

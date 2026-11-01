@@ -103,12 +103,20 @@ function fitOffice() {
 window.addEventListener('resize', fitOffice);
 if (window.ResizeObserver) new ResizeObserver(fitOffice).observe(document.body);
 
+/** Estado de LM Studio para la cabecera: "apagado" (desactivado en Sistema), "activo" (servidor encendido) o "sin servidor"; null si aún no se sabe. */
+function lmStatus() {
+  const known = state.system ? state.system.providers.some((p) => p.name === 'lmstudio' && p.enabled) : state.providers.some((p) => p.name === 'lmstudio');
+  if (!known) return state.system || state.modelInfo ? 'apagado' : null;
+  if (!state.modelInfo) return null;
+  return state.modelInfo.lmstudio_up ? 'activo' : 'sin servidor';
+}
+
 function render() {
   const s = state.stats;
   const off = s?.off ?? state.enginesOff ?? [];
   const eng = (name, key) => (off.includes(key) ? `${name} apagado` : `${name} ${s.active[key] ?? 0}/${s.limit?.[key] ?? '?'}`);
-  $('#stats').textContent = s ? `${eng('Claude Code', 'claude')} · ${eng('Ollama', 'ollama')} · ${eng('Codex', 'codex')} · ${s.waiting} en espera${s.paused ? ' · COLA EN PAUSA' : ''}` : '';
-  const apiActive = s ? Object.entries(s.active).filter(([k]) => !['claude', 'ollama', 'codex'].includes(k)).reduce((a, [, v]) => a + v, 0) : 0;
+  $('#stats').textContent = s ? `${eng('Claude Code', 'claude')} · ${eng('Ollama', 'ollama')} · ${eng('Codex', 'codex')} · ${lmStatus() ? `LM Studio ${lmStatus()}${lmStatus() === 'activo' ? ` ${s.active.lmstudio ?? 0}/${s.limit?.lmstudio ?? 1}` : ''} · ` : ''}${s.waiting} en espera${s.paused ? ' · COLA EN PAUSA' : ''}` : '';
+  const apiActive = s ? Object.entries(s.active).filter(([k]) => !['claude', 'ollama', 'codex', 'lmstudio'].includes(k)).reduce((a, [, v]) => a + v, 0) : 0;
   office.update({ agents: state.agents, tasks: [...state.tasks.values()], stats: s ? { ...s, off, apiActive, apiLimit: s.limit?.api ?? 1 } : null });
   office.setComms({ links: activeLinks(state.tasks), flights: state.flights });
   paintComms();
@@ -942,6 +950,8 @@ function renderSystem() {
   setChip('#chip-claude', !s.claude.enabled ? 'Claude Code desactivado' : s.claude.ok ? `Claude Code ${s.claude.version.split(' ')[0]}` : 'Claude Code no disponible', !s.claude.enabled ? 'warn' : s.claude.ok ? 'ok' : 'bad');
   setChip('#chip-ollama', !s.ollama.enabled ? 'Ollama desactivado' : s.ollama.ok ? `Ollama · ${s.ollama.models.length} modelos` : 'Ollama sin servicio', s.ollama.enabled && s.ollama.ok ? 'ok' : 'warn');
   setChip('#chip-codex', !s.codex.enabled ? 'Codex desactivado' : s.codex.ok ? `Codex ${s.codex.version.replace(/^codex-cli\s*/, '')}` : 'Codex no disponible', s.codex.enabled && s.codex.ok ? 'ok' : 'warn');
+  const lms = lmStatus();
+  setChip('#chip-lmstudio', lms === 'activo' ? 'LM Studio activo' : lms === 'sin servidor' ? 'LM Studio sin servidor' : 'LM Studio desactivado', lms === 'activo' ? 'ok' : 'warn');
   const on = s.providers.filter((p) => p.enabled).length;
   setChip('#chip-apis', `${on} modelo(s) extra activos`, on ? 'ok' : 'warn');
   $('#queue-toggle').textContent = s.queue.paused ? 'Reanudar cola' : 'Pausar cola';
@@ -960,8 +970,8 @@ function renderSystem() {
 
   // cola
   const q = s.queue;
-  const isApi = (e) => !['claude', 'ollama', 'codex'].includes(e);
-  const ENG_LABEL = { claude: 'Claude Code', ollama: 'Ollama', codex: 'Codex' };
+  const isApi = (e) => !['claude', 'ollama', 'codex', 'lmstudio'].includes(e);
+  const ENG_LABEL = { claude: 'Claude Code', ollama: 'Ollama', codex: 'Codex', lmstudio: 'LM Studio' };
   const engLabel = (e) => ENG_LABEL[e] ?? e;
   const gauge = (name, used, lim, nWait, offNow) => el('div', { className: `gauge${offNow ? ' off' : ''}` },
     el('div', { className: 'g-head' }, el('strong', { textContent: name }), span(offNow ? 'desactivado' : `${used}/${lim} en curso${nWait ? ` · ${nWait} en espera` : ''}`)),
@@ -973,6 +983,7 @@ function renderSystem() {
     gauge('Claude Code', q.active.claude ?? 0, q.limit.claude, waitOf((e) => e === 'claude'), qoff.includes('claude')),
     gauge('Ollama', q.active.ollama ?? 0, q.limit.ollama, waitOf((e) => e === 'ollama'), qoff.includes('ollama')),
     gauge('Codex', q.active.codex ?? 0, q.limit.codex ?? 1, waitOf((e) => e === 'codex'), qoff.includes('codex')),
+    gauge('LM Studio', q.active.lmstudio ?? 0, q.limit.lmstudio ?? 1, waitOf((e) => e === 'lmstudio'), lmStatus() === 'apagado'),
     gauge('Otros modelos', apiUsed, q.limit.api, waitOf(isApi), false));
   const list = el('div', { className: 'mini-list' });
   const engTag = (e) => el('em', { className: `eng eng-${isApi(e) ? 'api' : e}`, textContent: engLabel(e) });
@@ -1021,6 +1032,7 @@ async function refreshModels() {
     state.modelInfo = await api('/api/models');
     state.syncHint?.();
     if (state.view === 'system' && state.system) renderSystem();
+    render();
   } catch { /* el servidor puede estar reiniciando */ }
 }
 
@@ -1457,4 +1469,5 @@ showView('office');
 office.start();
 connect();
 setInterval(() => refreshState().catch(() => {}), 5000);
+setInterval(() => refreshModels(), 10_000); // la cabecera muestra si LM Studio está activo, en cualquier vista
 window.__office = { state, office }; // depuración desde la consola

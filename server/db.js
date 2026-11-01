@@ -14,8 +14,9 @@ export const DEFAULT_SETTINGS = {
   max_ollama: config.maxOllama,
   max_api: config.maxApi,
   max_codex: 1,
+  max_lmstudio: 1,
 };
-const LIMIT_KEYS = new Set(['max_claude', 'max_ollama', 'max_api', 'max_codex']);
+const LIMIT_KEYS = new Set(['max_claude', 'max_ollama', 'max_api', 'max_codex', 'max_lmstudio']);
 
 const TASK_COLUMNS = ['title', 'description', 'project', 'agent', 'engine', 'mode', 'status', 'result', 'error',
   'cost_usd', 'started_at', 'finished_at', 'parent_id', 'depends_on', 'kind', 'schedule_id', 'model', 'reply_text', 'branch', 'worktree', 'base_sha', 'change_state', 'chain_fired', 'workdir', 'used_model'];

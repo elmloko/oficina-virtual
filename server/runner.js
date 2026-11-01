@@ -26,7 +26,7 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
   const active = { claude: 0, ollama: 0 };
   let paused = false;
   // Límites editables desde la web (se leen en cada ciclo); los proveedores en internet comparten `max_api`.
-  const limits = () => { const s = db.settings(); return { claude: s.max_claude, ollama: s.max_ollama, codex: s.max_codex, api: s.max_api }; };
+  const limits = () => { const s = db.settings(); return { claude: s.max_claude, ollama: s.max_ollama, codex: s.max_codex, lmstudio: s.max_lmstudio, api: s.max_api }; };
   const limitOf = (engine) => limits()[engine] ?? limits().api;
   const hasRoom = (engine) => (active[engine] ?? 0) < limitOf(engine);
   // El proceso `claude` no debe heredar claves de otros proveedores (ni activar facturación por API sin querer).
