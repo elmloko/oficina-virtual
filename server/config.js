@@ -37,12 +37,14 @@ function findCodex() {
       const bin = join(releases, v, 'bin', 'codex.exe');
       if (existsSync(bin)) return bin;
     }
-  } catch { /* sin app de Codex: se intenta el PATH */ }
-  return 'codex';
+  } catch { /* sin app de Codex: se intenta el instalador de escritorio o el PATH */ }
+  const desktop = join(process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local'), 'Programs', 'OpenAI', 'Codex', 'bin', 'codex.exe');
+  return existsSync(desktop) ? desktop : 'codex';
 }
 
 export const config = {
-  codexBin: findCodex(),
+  // Se busca en cada uso: la app de Codex se actualiza sola y cambia la carpeta de la versión.
+  get codexBin() { return findCodex(); },
   root,
   port: Number(process.env.PORT || 4000),
   host: '127.0.0.1', // solo local: la oficina puede ejecutar agentes sobre tus carpetas
