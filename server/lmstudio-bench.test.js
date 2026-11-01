@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { openDb } from './db.js';
 import { createRunner } from './runner.js';
-import { createApp } from './index.js';
+import { createApp, defaultServerCtl } from './index.js';
 import { paramsB, listLmStudio, measureLmStudio, runBenchmark, recommend } from './ollama-models.js';
 
 const URL = 'http://127.0.0.1:1234/v1';
@@ -172,4 +172,40 @@ test('API: encender el servidor de LM Studio y de Ollama desde la oficina', asyn
     assert.equal(r3.status, 400);
     assert.match((await r3.json()).error, /apagado/);
   } finally { for (const a of [app2, app3]) { a.server.close(); a.server.closeAllConnections?.(); } }
+});
+
+test('API: apagar el servidor de LM Studio y de Ollama (con serverCtl simulado)', async () => {
+  let lmUp = true; let ollamaUp = true;
+  const stopped = [];
+  const fetchFn = async (url) => ({ ok: url.includes('1234') ? lmUp : ollamaUp, json: async () => ({ data: [] }) });
+  const serverCtl = {
+    stop: {
+      lmstudio: async () => { stopped.push('lmstudio'); lmUp = false; },
+      ollama: async () => { stopped.push('ollama'); ollamaUp = false; },
+    },
+  };
+  const probe = { claude: async () => ({ ok: true }), codex: async () => ({ ok: true }), ollama: async () => ({ ok: true, models: [], loaded: [] }) };
+  const providers = { lmstudio: { name: 'lmstudio', kind: 'openai', baseUrl: URL, key: '', model: 'local-model' } };
+  const db = openDb(':memory:');
+  const app = createApp({ db, probe, providers, ollamaFetch: fetchFn, serverCtl });
+  await new Promise((r) => app.server.listen(0, '127.0.0.1', r));
+  const post = async (path) => { const r = await fetch(`http://127.0.0.1:${app.server.address().port}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); return { status: r.status, body: await r.json() }; };
+  try {
+    const a = await post('/api/system/lmstudio/server/stop');
+    assert.deepEqual([a.status, a.body.already], [200, false]);
+    const again = await post('/api/system/lmstudio/server/stop');
+    assert.deepEqual([again.status, again.body.already], [200, true]); // ya apagado: no vuelve a lanzar nada
+    const o = await post('/api/system/ollama/server/stop');
+    assert.deepEqual([o.status, o.body.already], [200, false]);
+    assert.deepEqual(stopped, ['lmstudio', 'ollama']);
+    assert.ok(db.auditLog(10).some((x) => x.action === 'ollama.server.stop'));
+    assert.equal((await post('/api/system/groq/server/stop')).status, 404);
+  } finally { app.server.close(); app.server.closeAllConnections?.(); }
+});
+
+test('el controlador real tiene encender y apagar para Ollama y LM Studio (sin ejecutarlos)', () => {
+  for (const e of ['ollama', 'lmstudio']) {
+    assert.equal(typeof defaultServerCtl[e], 'function', `encender ${e}`);
+    assert.equal(typeof defaultServerCtl.stop?.[e], 'function', `apagar ${e}`);
+  }
 });

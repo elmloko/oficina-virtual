@@ -1013,7 +1013,7 @@ function renderSystem() {
   // motores y modelos (solo se reconstruye si cambian los datos, para no perder lo que escribes)
   state.benches ??= {};
   for (const e of ['ollama', 'lmstudio']) if (!state.benches[e]) refreshBench(e);
-  renderIfChanged($('#sys-engines'), { b: state.benches, m: state.modelInfo, c: [s.claude.enabled, s.claude.ok, s.claude.version], o: [s.ollama.enabled, s.ollama.ok, s.ollama.models?.length ?? 0], x: [s.codex.enabled, s.codex.ok, s.codex.version], p: s.providers }, () => enginesView(s));
+  renderIfChanged($('#sys-engines'), { b: state.benches, m: state.modelInfo, c: [s.claude.enabled, s.claude.ok, s.claude.version], o: [s.ollama.enabled, s.ollama.ok, s.ollama.models?.length ?? 0], x: [s.codex.enabled, s.codex.ok, s.codex.version], p: s.providers, n: state.netMore }, () => enginesView(s));
   fillSettings();
 }
 
@@ -1080,6 +1080,15 @@ const serverButton = (engine) => el('button', { className: 'primary', textConten
     toast(`${BENCH_LABEL[engine]} encendido`, false);
   } finally { await refreshModels(); await refreshSystem(); }
 }) });
+/** Apaga el servidor local (libera la RAM). Pide confirmación; el servidor la rechaza si hay una misión usándolo. */
+const stopButton = (engine) => el('button', { className: 'danger', textContent: 'Apagar servidor', title: `Apaga ${BENCH_LABEL[engine]} en este equipo y libera su memoria`, disabled: !!state.benches?.[engine]?.running, onclick: guard(async (e) => {
+  if (!(await confirmDialog(`Apagar el servidor de ${BENCH_LABEL[engine]}`, `Se cerrará ${BENCH_LABEL[engine]} y se liberará la memoria que usa. Puedes volver a encenderlo con un clic.`))) return;
+  e.target.disabled = true; e.target.textContent = 'Apagando…';
+  try {
+    await post(`/api/system/${engine}/server/stop`);
+    toast(`${BENCH_LABEL[engine]} apagado`, false);
+  } finally { await refreshModels(); await refreshSystem(); }
+}) });
 const benchButton = (engine) => el('button', { textContent: state.benches?.[engine]?.running ? 'Midiendo…' : 'Medir modelos', disabled: !!state.benches?.[engine]?.running, title: 'Prueba cada modelo instalado y te dice cuál rinde mejor en esta computadora', onclick: guard(() => startBench(engine)) });
 
 /** Tabla de la última medición (o de la que está corriendo) con «Usar este». */
@@ -1106,7 +1115,12 @@ function benchPanel(engine) {
   const skipped = b.skipped.length ? el('p', { className: 'hint', textContent: `No medidos: ${b.skipped.map((s) => `${s.name} (${s.reason})`).join(' · ')}` }) : null;
   const note = !b.running && b.best ? el('p', { className: 'hint', textContent: `★ = el más grande (mejor calidad) que responde a 4 tokens/s o más. Juzga tú la calidad leyendo la respuesta de cada uno.${engine === 'lmstudio' ? ' En LM Studio el tamaño se estima por el nombre del modelo (~)' : ''}${approx ? ' y la velocidad con ~ es aproximada (incluye cargar el modelo).' : '.'}` }) : null;
   const stop = b.running ? el('button', { className: 'danger', textContent: 'Detener', onclick: guard(async () => { await api(`/api/system/${engine}/benchmark`, { method: 'DELETE' }); }) }) : null;
-  return el('div', { className: 'bench' }, el('div', { className: 'bench-head' }, span(head), ...(stop ? [stop] : [])),
+  const okN = b.results.filter((r) => r.ok).length;
+  const summary = b.running ? head : `Medición del ${new Date(b.at).toLocaleDateString()} · ${okN ? `${okN} modelos medidos` : 'ningún modelo respondió (ábrela para ver por qué)'}${b.best ? ` · recomendado: ★ ${b.best}` : ''}`;
+  state.benchOpen ??= {};
+  return el('details', { className: 'bench', open: state.benchOpen[engine] ?? b.running, ontoggle: (e) => { state.benchOpen[engine] = e.target.open; } },
+    el('summary', {}, span(summary), ...(stop ? [stop] : [])),
+    el('div', { className: 'bench-head' }, span(head)),
     el('table', {}, el('thead', {}, el('tr', {}, ...['Modelo', 'Tamaño', 'Velocidad', 'Tiempo', 'Respuesta', ''].map((t) => el('th', { textContent: t })))), el('tbody', {}, ...rows)),
     ...(skipped ? [skipped] : []), ...(note ? [note] : []));
 }
@@ -1115,7 +1129,7 @@ function benchPanel(engine) {
 function engineItem({ name, kind, kindClass, on, ok, detail, model, actions, more = [] }) {
   const line = el('div', { className: `eng-line${on ? '' : ' off'}` },
     el('div', { className: 'c-name' }, el('strong', { textContent: name }), el('em', { className: `kind ${kindClass}`, textContent: kind })),
-    el('div', { className: 'c-state' }, el('span', { className: on && ok ? 'dot-ok' : on ? 'dot-bad' : 'dot-off' }), span(detail)),
+    el('div', { className: 'c-state', title: detail }, el('span', { className: on && ok ? 'dot-ok' : on ? 'dot-bad' : 'dot-off' }), span(detail)),
     el('div', { className: 'c-model' }, model),
     el('div', { className: 'c-act' }, ...actions));
   return el('div', { className: 'eng-item' }, line, el('div', { className: 'eng-more' }, ...more));
@@ -1128,7 +1142,7 @@ function localEngineItem(key, label, info, detail, kind, kindClass) {
     detail: info.enabled ? (detail ?? '') : `apagado · ${detail ?? ''}`,
     model: modelSelect(key, label),
     more: key === 'ollama' ? [benchPanel('ollama')] : [],
-    actions: [...(key === 'ollama' && info.ok ? [benchButton('ollama')] : []), ...(key === 'ollama' && !info.ok && info.enabled ? [serverButton('ollama')] : []), switchBtn(info.enabled, info.enabled ? `Apagar ${label}: las misiones dejan de usarlo` : `Encender ${label}`, async () => {
+    actions: [...(key === 'ollama' && info.ok ? [benchButton('ollama'), stopButton('ollama')] : []), ...(key === 'ollama' && !info.ok && info.enabled ? [serverButton('ollama')] : []), switchBtn(info.enabled, info.enabled ? `Apagar ${label}: las misiones dejan de usarlo` : `Encender ${label}`, async () => {
       if (info.enabled && key === 'claude' && !(await confirmDialog('Apagar Claude Code', 'Sin Claude Code no se pueden editar archivos ni correr agentes de código; solo quedarán Ollama, Codex y los modelos extra (que únicamente leen). Puedes encenderlo cuando quieras.'))) return;
       await api(`/api/system/engines/${key}/toggle`, { method: 'PUT', body: JSON.stringify({ enabled: !info.enabled }) });
       toast(`${label} ${info.enabled ? 'apagado' : 'encendido'}`, false);
@@ -1159,7 +1173,7 @@ function providerItem(p) {
     await refreshState(); await refreshSystem();
   });
   const actions = [];
-  if (lm && p.enabled && lmUp) actions.push(benchButton('lmstudio'));
+  if (lm && p.enabled && lmUp) actions.push(benchButton('lmstudio'), stopButton('lmstudio'));
   if (lm && p.enabled && lmUp === false) actions.push(serverButton('lmstudio'));
   if (p.configured) {
     actions.push(el('button', { textContent: 'Probar', onclick: guard(async () => {
@@ -1186,18 +1200,26 @@ function providerItem(p) {
 
 /** Vista completa de «Motores y modelos»: tres grupos con la misma estructura de fila. */
 function enginesView(s) {
-  const group = (title, hint) => el('div', { className: 'eng-group' }, el('h3', { className: 'sub', textContent: title }), ...(hint ? [el('span', { className: 'muted', textContent: hint })] : []));
+  const group = (title, hint, count) => el('div', { className: 'eng-group' }, el('h3', { className: 'sub', textContent: title }), ...(count ? [el('b', { className: 'eng-count', textContent: count })] : []), ...(hint ? [el('span', { className: 'muted', textContent: hint })] : []));
+  const net = s.providers.filter((p) => p.needsKey);
+  const keyed = net.filter((p) => p.configured);
+  const bare = net.filter((p) => !p.configured);
+  const local = s.providers.filter((p) => !p.needsKey);
+  const nOn = (...flags) => flags.filter(Boolean).length;
+  const moreBtn = el('button', { className: 'eng-toggle', textContent: state.netMore ? 'Ocultar los que no tienen clave ▴' : `Mostrar ${bare.length} más sin clave ▾`, onclick: () => { state.netMore = !state.netMore; renderSystem(); } });
   const head = el('div', { className: 'eng-head' }, ...['Motor', 'Estado', 'Modelo que usa', 'Acciones'].map((t) => el('span', { textContent: t })));
   return [
     head,
-    group('Con tu suscripción', 'usan tu sesión iniciada en esta PC'),
+    group('Con tu suscripción', 'usan tu sesión iniciada en esta PC', `${nOn(s.claude.enabled, s.codex.enabled)}/2 activos`),
     localEngineItem('claude', 'Claude Code', s.claude, s.claude.ok ? `${s.claude.version} · edita archivos` : s.claude.error, 'Suscripción', 'k-sub'),
     localEngineItem('codex', 'Codex', s.codex, s.codex.ok ? `${s.codex.version.replace(/^codex-cli\s*/, '')} · solo lee` : s.codex.error, 'Suscripción', 'k-sub'),
-    group('En este equipo', 'gratis y privados; solo leen'),
+    group('En este equipo', 'gratis y privados; solo leen', `${nOn(s.ollama.enabled, ...local.map((p) => p.enabled))}/${1 + local.length} activos`),
     localEngineItem('ollama', 'Ollama', s.ollama, s.ollama.ok ? `${s.ollama.models.length} modelos instalados` : s.ollama.error, 'Local', 'k-local'),
-    ...s.providers.filter((p) => !p.needsKey).map(providerItem),
-    group('En internet', 'con tu clave; el texto de la misión sale de este equipo'),
-    ...s.providers.filter((p) => p.needsKey).map(providerItem),
+    ...local.map(providerItem),
+    group('En internet', 'con tu clave; el texto de la misión sale de este equipo', `${keyed.filter((p) => p.enabled).length}/${net.length} activos`),
+    ...keyed.map(providerItem),
+    ...(bare.length ? [moreBtn] : []),
+    ...(state.netMore ? bare.map(providerItem) : []),
   ];
 }
 

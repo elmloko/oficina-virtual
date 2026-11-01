@@ -31,15 +31,26 @@ const MODES = new Set(['read', 'edit']);
 const MAX_REVIEWERS = 4;
 
 /** Enciende un servidor local. Sin shell: se lanza el programa con argumentos fijos (el puerto sale de la configuración, nunca de la petición). */
-const defaultServerCtl = {
+export const defaultServerCtl = {
   lmstudio: (port) => new Promise((resolve, reject) => {
-    execFile(config.lmsBin, ['server', 'start', '--port', String(port)], { timeout: 30_000, windowsHide: true }, (err) => (err ? reject(new Error(err.code === 'ENOENT' ? 'No encontré el programa «lms» de LM Studio (define LMS_BIN en .env)' : err.message)) : resolve()));
+    const run = (retry) => execFile(config.lmsBin, ['server', 'start', '--port', String(port)], { timeout: 30_000, windowsHide: true }, (err) => (err && err.code !== 'ENOENT' && retry ? setTimeout(() => run(false), 2000) : err ? reject(new Error(err.code === 'ENOENT' ? 'No encontré el programa «lms» de LM Studio (define LMS_BIN en .env)' : err.message)) : resolve()));
+    run(true);
   }),
   ollama: () => new Promise((resolve, reject) => {
     const child = spawnProc(config.ollamaBin, ['serve'], { detached: true, stdio: 'ignore', windowsHide: true });
     child.once('error', (e) => reject(new Error(e.code === 'ENOENT' ? 'No encontré el programa «ollama» (define OLLAMA_BIN en .env)' : e.message)));
     child.once('spawn', () => { child.unref(); resolve(); }); // sigue vivo aunque se cierre la oficina
   }),
+  /** Apaga el servidor. Ollama no tiene comando de apagado: se cierran sus procesos (y la bandeja, que si no lo reabre). */
+  stop: {
+    lmstudio: () => new Promise((resolve, reject) => {
+      execFile(config.lmsBin, ['server', 'stop'], { timeout: 30_000, windowsHide: true }, (err) => (err ? reject(new Error(err.code === 'ENOENT' ? 'No encontré el programa «lms» de LM Studio (define LMS_BIN en .env)' : err.message)) : resolve()));
+    }),
+    ollama: async () => {
+      const kill = (name) => new Promise((resolve) => execFile('taskkill', ['/F', '/IM', name], { windowsHide: true }, () => resolve()));
+      await kill('ollama app.exe'); await kill('ollama.exe');
+    },
+  },
 };
 
 export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loadProviders(), logger = createLogger(), envFile = config.envFile, probe = createProbe({ config }), attachmentsDir = config.attachmentsDir, dispatcher, docsRoot = config.docsRoot, openFolder = (dir) => spawnProc('explorer.exe', [dir], { detached: true, stdio: 'ignore' }).unref(), ollamaFetch = fetch, serverCtl = defaultServerCtl, freeMem = freemem } = {}) {
@@ -214,6 +225,25 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
         defaults: { claude: db.defaultSeen().claude, ollama: ollamaDefault, codex: null, lmstudio: null },
       });
     }
+    // --- apagar el servidor local de Ollama o de LM Studio ---
+    if (method === 'POST' && (r = m(/^\/api\/system\/(ollama|lmstudio)\/server\/stop$/))) {
+      const engine = r[1];
+      const label = engine === 'ollama' ? 'Ollama' : 'LM Studio';
+      const lm = providers.lmstudio;
+      if (engine === 'lmstudio' && !lm) return send(res, 400, { error: 'LM Studio está apagado en Sistema' });
+      const base = engine === 'ollama' ? config.ollamaUrl : lm.baseUrl;
+      const up = async () => { try { return (await ollamaFetch(engine === 'ollama' ? `${base}/api/tags` : `${base}/models`, { signal: AbortSignal.timeout(1500) })).ok; } catch { return false; } };
+      if (!(await up())) return send(res, 200, { ok: true, already: true });
+      if ((runner.stats().active[engine] ?? 0) > 0) return send(res, 409, { error: `${label} está ocupado con una misión: espera a que termine o cancélala antes de apagarlo` });
+      if (benchOf(engine).running) return send(res, 409, { error: `Hay una medición de ${label} en curso: espera a que termine` });
+      try { await (serverCtl.stop ?? defaultServerCtl.stop)[engine](); } catch (e) { return send(res, 400, { error: e.message }); }
+      let down = false;
+      for (let i = 0; i < 12 && !down; i++) { down = !(await up()); if (!down) await new Promise((r2) => setTimeout(r2, 500)); }
+      db.audit(`${engine}.server.stop`, null, down ? 'ok' : 'sigue respondiendo');
+      logger.info(`Servidor de ${label}: ${down ? 'apagado' : 'sigue encendido'}`);
+      if (!down) return send(res, 504, { error: `${label} sigue respondiendo tras intentar apagarlo` });
+      return send(res, 200, { ok: true, already: false });
+    }
     // --- encender el servidor local de Ollama o de LM Studio ---
     if (method === 'POST' && (r = m(/^\/api\/system\/(ollama|lmstudio)\/server$/))) {
       const engine = r[1];
@@ -225,7 +255,7 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
       if (await up()) return send(res, 200, { ok: true, already: true });
       try { await serverCtl[engine](engine === 'lmstudio' ? new URL(base).port || 1234 : null); } catch (e) { return send(res, 400, { error: e.message }); }
       let ok = false;
-      for (let i = 0; i < 16 && !ok; i++) { ok = await up(); if (!ok) await new Promise((r2) => setTimeout(r2, 500)); }
+      for (let i = 0; i < 60 && !ok; i++) { ok = await up(); if (!ok) await new Promise((r2) => setTimeout(r2, 500)); }
       db.audit(`${engine}.server.start`, null, ok ? 'ok' : 'sin respuesta');
       logger.info(`Servidor de ${label}: ${ok ? 'encendido' : 'no respondió a tiempo'}`);
       if (!ok) return send(res, 504, { error: `${label} no respondió tras encenderlo (revisa que esté instalado)` });
