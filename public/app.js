@@ -917,8 +917,8 @@ function fillSettings() {
 function renderIfChanged(box, data, build) {
   const sig = JSON.stringify(data);
   if (box.dataset.sig === sig) return;
-  box.dataset.sig = sig;
   box.replaceChildren(...build());
+  box.dataset.sig = sig; // solo tras construir: si build() falla, el siguiente refresco lo reintenta
 }
 
 function pushLog(entry) {
@@ -1013,7 +1013,7 @@ function renderSystem() {
   // motores y modelos (solo se reconstruye si cambian los datos, para no perder lo que escribes)
   state.benches ??= {};
   for (const e of ['ollama', 'lmstudio']) if (!state.benches[e]) refreshBench(e);
-  renderIfChanged($('#sys-engines'), { b: state.benches, m: state.modelInfo, c: [s.claude.enabled, s.claude.ok, s.claude.version], o: [s.ollama.enabled, s.ollama.ok, s.ollama.models.length], x: [s.codex.enabled, s.codex.ok, s.codex.version], p: s.providers }, () => enginesView(s));
+  renderIfChanged($('#sys-engines'), { b: state.benches, m: state.modelInfo, c: [s.claude.enabled, s.claude.ok, s.claude.version], o: [s.ollama.enabled, s.ollama.ok, s.ollama.models?.length ?? 0], x: [s.codex.enabled, s.codex.ok, s.codex.version], p: s.providers }, () => enginesView(s));
   fillSettings();
 }
 
