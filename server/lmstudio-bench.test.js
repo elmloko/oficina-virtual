@@ -72,7 +72,7 @@ test('API: medir LM Studio; apagado o sin servidor da un error claro', async () 
   const probe = { claude: async () => ({ ok: true }), codex: async () => ({ ok: true }), ollama: async () => ({ ok: false }) };
   const db = openDb(':memory:');
   const providers = { lmstudio: { name: 'lmstudio', kind: 'openai', baseUrl: URL, key: '', model: 'local-model' } };
-  const app = createApp({ db, probe, providers, ollamaFetch: fake.fetchFn });
+  const app = createApp({ db, probe, providers, ollamaFetch: fake.fetchFn, freeMem: () => 32e9 }); // RAM fija: el test no depende de la del equipo
   await new Promise((r) => app.server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${app.server.address().port}`;
   const call = async (method, path, body) => { const r = await fetch(base + path, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }); return { status: r.status, body: await r.json() }; };

@@ -102,7 +102,7 @@ test('API: medir, ver resultado y recomendación, guardarlo, y no medir si Ollam
   const db = openDb(':memory:');
   const models = [{ name: 'gemma3:4b', size: 3.4 * GB }, { name: 'llama3.2:3b', size: 2 * GB }, { name: 'qwen2.5-coder:7b', size: 4.7 * GB }];
   const probe = { claude: async () => ({ ok: true }), codex: async () => ({ ok: true }), ollama: async () => ({ ok: true, models, loaded: [] }) };
-  const app = createApp({ db, probe, ollamaFetch: fakeOllama({ 'gemma3:4b': { tps: 6 }, 'llama3.2:3b': { tps: 9 } }) });
+  const app = createApp({ db, probe, ollamaFetch: fakeOllama({ 'gemma3:4b': { tps: 6 }, 'llama3.2:3b': { tps: 9 } }), freeMem: () => 32e9 }); // RAM fija: el test no depende de la del equipo
   await new Promise((r) => app.server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${app.server.address().port}`;
   const call = async (method, path, body) => { const r = await fetch(base + path, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }); return { status: r.status, body: await r.json() }; };

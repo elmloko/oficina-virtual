@@ -1,3 +1,4 @@
+import './test-agents.js'; // primero: fija AGENTS_DIR antes de cargar config.js
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';

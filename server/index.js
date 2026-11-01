@@ -42,7 +42,7 @@ const defaultServerCtl = {
   }),
 };
 
-export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loadProviders(), logger = createLogger(), envFile = config.envFile, probe = createProbe({ config }), attachmentsDir = config.attachmentsDir, dispatcher, docsRoot = config.docsRoot, openFolder = (dir) => spawnProc('explorer.exe', [dir], { detached: true, stdio: 'ignore' }).unref(), ollamaFetch = fetch, serverCtl = defaultServerCtl } = {}) {
+export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loadProviders(), logger = createLogger(), envFile = config.envFile, probe = createProbe({ config }), attachmentsDir = config.attachmentsDir, dispatcher, docsRoot = config.docsRoot, openFolder = (dir) => spawnProc('explorer.exe', [dir], { detached: true, stdio: 'ignore' }).unref(), ollamaFetch = fetch, serverCtl = defaultServerCtl, freeMem = freemem } = {}) {
   const startedAt = new Date();
   const engineSet = () => new Set(['auto', ...['claude', 'ollama', 'codex'].filter((e) => !db.disabledEngines().includes(e)), ...Object.keys(providers)]);
   /** Recarga los proveedores en el mismo objeto (el runner conserva la referencia). */
@@ -251,7 +251,7 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
           try { models = await listLmStudio({ url: lm.baseUrl, fetchFn: ollamaFetch }); } catch { return send(res, 400, { error: 'LM Studio no responde: abre la app y activa su servidor local (pestaña Developer)' }); }
           baseUrl = lm.baseUrl; fetchFn = ollamaFetch; measureFn = measureLmStudio;
         }
-        const freeGb = freemem() / 1e9;
+        const freeGb = freeMem() / 1e9;
         const { candidates, skipped } = benchCandidates(models, freeGb);
         if (!candidates.length) return send(res, 400, { error: engine === 'ollama' ? 'No hay modelos de chat que medir (descarga uno, p. ej. «ollama pull gemma3:4b»)' : 'LM Studio no tiene modelos de chat descargados' });
         Object.assign(bench, { running: true, current: null, total: candidates.length, results: [], skipped, free_gb: Math.round(freeGb * 10) / 10, abort: new AbortController() });

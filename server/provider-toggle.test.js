@@ -1,4 +1,5 @@
 // Activar / desactivar un proveedor en internet sin borrar su clave.
+import './test-agents.js'; // primero: fija AGENTS_DIR antes de cargar config.js
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { openDb } from './db.js';
