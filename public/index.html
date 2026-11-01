@@ -113,18 +113,16 @@
       <article class="card-sys wide" id="card-providers" data-g="motores"><h2>Motores y modelos</h2>
         <p class="hint">Apaga con el interruptor lo que no quieras usar: las misiones no lo tocarán y tus claves se conservan (viven en <code>.env</code>; solo se ve su final).</p>
         <div id="sys-engines"></div></article>
-      <article class="card-sys" id="card-schedules" data-g="ajustes"><h2>Próximas rutinas</h2><div id="sys-schedules"></div></article>
+      <article class="card-sys" id="card-schedules" data-g="ajustes"><h2>Próximas rutinas <button type="button" class="mini-link" id="goto-routines">Gestionar →</button></h2><div id="sys-schedules"></div>
+        <p class="hint">Las rutinas corren en modo solo lectura y solo mientras la oficina está encendida.</p></article>
       <article class="card-sys" id="card-settings" data-g="ajustes"><h2>Ajustes</h2>
-        <form id="settings-form" class="settings-grid">
-          <label>Tope diario de seguridad (USD) <small>0 = sin tope · solo frena, no cobra</small><input name="daily_budget_usd" type="number" min="0" step="0.5"></label>
-          <label>Tope por tarea (USD) <small>0 = sin tope</small><input name="task_budget_usd" type="number" min="0" step="0.5"></label>
-          <label>Timeout por tarea (min)<input name="task_timeout_min" type="number" min="1" step="1"></label>
-          <label>Colaboración entre agentes <small>1 = activada · 0 = apagada</small><input name="collab" type="number" min="0" max="1" step="1"></label>
-          <label>Claude a la vez<input name="max_claude" type="number" min="1" max="16" step="1"></label>
-          <label>Ollama a la vez<input name="max_ollama" type="number" min="1" max="16" step="1"></label>
-          <label>Codex a la vez<input name="max_codex" type="number" min="1" max="16" step="1"></label>
-          <label>LM Studio a la vez<input name="max_lmstudio" type="number" min="1" max="16" step="1"></label>
-          <label>Internet a la vez<input name="max_api" type="number" min="1" max="16" step="1"></label>
+        <form id="settings-form" class="settings-form">
+          <fieldset><legend>Seguridad</legend><p class="hint">Topes que frenan una misión; no cobran nada. 0 = sin tope.</p>
+            <div class="set-row"><label>Tope diario (USD)<input name="daily_budget_usd" type="number" min="0" step="0.5"></label><label>Tope por tarea (USD)<input name="task_budget_usd" type="number" min="0" step="0.5"></label><label>Tiempo máximo por tarea (min)<input name="task_timeout_min" type="number" min="1" step="1"></label></div></fieldset>
+          <fieldset><legend>Colaboración</legend><p class="hint">Permite que un agente pida ayuda a otros durante la misión.</p>
+            <div class="set-row"><label>Entre agentes<select name="collab"><option value="1">Activada</option><option value="0">Apagada</option></select></label></div></fieldset>
+          <fieldset><legend>Misiones a la vez por motor</legend><p class="hint">Las demás esperan en la cola. En un equipo sin GPU, los modelos locales rinden mejor de uno en uno.</p>
+            <div class="set-row five"><label>Claude Code<input name="max_claude" type="number" min="1" step="1" max="16"></label><label>Codex<input name="max_codex" type="number" min="1" step="1" max="16"></label><label>Ollama<input name="max_ollama" type="number" min="1" step="1" max="16"></label><label>LM Studio<input name="max_lmstudio" type="number" min="1" step="1" max="16"></label><label>Internet<input name="max_api" type="number" min="1" step="1" max="16"></label></div></fieldset>
           <button class="primary" type="submit">Guardar ajustes</button>
         </form>
       </article>

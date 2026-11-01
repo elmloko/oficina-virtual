@@ -835,6 +835,7 @@ function setupForms() {
     toast(state.settings.collab > 0 ? 'Colaboración entre agentes activada' : 'Colaboración apagada: los agentes ya no se piden ayuda', false);
     renderComms();
   });
+  $('#goto-routines').onclick = () => document.querySelector('[data-view="routines"]').click();
   $('#settings-form').onsubmit = guard(async (e) => {
     e.preventDefault();
     state.settings = await api('/api/settings', { method: 'PUT', body: JSON.stringify(Object.fromEntries(new FormData(e.target))) });
