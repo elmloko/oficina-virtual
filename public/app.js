@@ -1126,13 +1126,14 @@ function benchPanel(engine) {
 }
 
 /** Una fila: nombre y tipo | estado | modelo | acciones. `more` = zona desplegable (clave, resultado de «Probar»). */
-function engineItem({ name, kind, kindClass, on, ok, detail, model, actions, more = [] }) {
+function engineItem({ name, kind, kindClass, on, ok, detail, model, actions, panel = null, tools = [], more = [] }) {
   const line = el('div', { className: `eng-line${on ? '' : ' off'}` },
     el('div', { className: 'c-name' }, el('strong', { textContent: name }), el('em', { className: `kind ${kindClass}`, textContent: kind })),
     el('div', { className: 'c-state', title: detail }, el('span', { className: on && ok ? 'dot-ok' : on ? 'dot-bad' : 'dot-off' }), span(detail)),
     el('div', { className: 'c-model' }, model),
     el('div', { className: 'c-act' }, ...actions));
-  return el('div', { className: 'eng-item' }, line, el('div', { className: 'eng-more' }, ...more));
+  const bar = panel || tools.length ? [el('div', { className: 'eng-tools' }, ...(panel ? [panel] : []), ...(tools.length ? [el('div', { className: 'tools-btns' }, ...tools)] : []))] : [];
+  return el('div', { className: 'eng-item' }, line, ...bar, el('div', { className: 'eng-more' }, ...more));
 }
 
 /** Claude Code, Codex y Ollama: motores locales que se encienden y apagan sin tocar nada más. */
@@ -1141,8 +1142,9 @@ function localEngineItem(key, label, info, detail, kind, kindClass) {
     name: label, kind, kindClass, on: info.enabled, ok: info.ok,
     detail: info.enabled ? (detail ?? '') : `apagado · ${detail ?? ''}`,
     model: modelSelect(key, label),
-    more: key === 'ollama' ? [benchPanel('ollama')] : [],
-    actions: [...(key === 'ollama' && info.ok ? [benchButton('ollama'), stopButton('ollama')] : []), ...(key === 'ollama' && !info.ok && info.enabled ? [serverButton('ollama')] : []), switchBtn(info.enabled, info.enabled ? `Apagar ${label}: las misiones dejan de usarlo` : `Encender ${label}`, async () => {
+    panel: key === 'ollama' && info.enabled ? benchPanel('ollama') : null,
+    tools: key !== 'ollama' || !info.enabled ? [] : info.ok ? [benchButton('ollama'), stopButton('ollama')] : [serverButton('ollama')],
+    actions: [switchBtn(info.enabled, info.enabled ? `Apagar ${label}: las misiones dejan de usarlo` : `Encender ${label}`, async () => {
       if (info.enabled && key === 'claude' && !(await confirmDialog('Apagar Claude Code', 'Sin Claude Code no se pueden editar archivos ni correr agentes de código; solo quedarán Ollama, Codex y los modelos extra (que únicamente leen). Puedes encenderlo cuando quieras.'))) return;
       await api(`/api/system/engines/${key}/toggle`, { method: 'PUT', body: JSON.stringify({ enabled: !info.enabled }) });
       toast(`${label} ${info.enabled ? 'apagado' : 'encendido'}`, false);
@@ -1173,10 +1175,11 @@ function providerItem(p) {
     await refreshState(); await refreshSystem();
   });
   const actions = [];
-  if (lm && p.enabled && lmUp) actions.push(benchButton('lmstudio'), stopButton('lmstudio'));
-  if (lm && p.enabled && lmUp === false) actions.push(serverButton('lmstudio'));
-  if (p.configured) {
-    actions.push(el('button', { textContent: 'Probar', onclick: guard(async () => {
+  const tools = [];
+  if (lm && p.enabled && lmUp) tools.push(benchButton('lmstudio'), stopButton('lmstudio'));
+  if (lm && p.enabled && lmUp === false) tools.push(serverButton('lmstudio'));
+  if (p.configured && !(lm && lmUp === false)) { // con el servidor de LM Studio apagado no hay nada que probar
+    (lm ? tools : actions).push(el('button', { textContent: 'Probar', onclick: guard(async () => {
       res.className = 'res'; res.textContent = 'Probando…';
       const r = await post(`/api/system/providers/${p.name}/test`);
       res.className = `res ${r.ok ? 'ok' : 'bad'}`; res.textContent = r.ok ? `✓ Conexión correcta (${r.ms} ms)` : `✕ ${r.error}`;
@@ -1194,7 +1197,7 @@ function providerItem(p) {
     name: lm ? 'LM Studio' : p.name, kind: lm ? 'Local' : 'Internet', kindClass: lm ? 'k-local' : 'k-net',
     on: p.enabled, ok: lm ? lmUp !== false : true, detail,
     model: lm && p.enabled ? modelSelect('lmstudio', 'LM Studio') : el('span', { className: 'muted', textContent: p.configured || lm ? p.model : `modelo: ${p.model}` }),
-    actions, more: [...(lm && p.enabled ? [benchPanel('lmstudio')] : []), res, keyform],
+    actions, panel: lm && p.enabled ? benchPanel('lmstudio') : null, tools, more: [res, keyform],
   });
 }
 

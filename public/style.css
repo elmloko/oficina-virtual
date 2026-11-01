@@ -477,6 +477,12 @@ em.kind.k-net { color: var(--blue); border-color: var(--blue); }
 .switch.on { border-color: var(--green); }
 .switch.on i { left: 21px; background: var(--green); }
 .eng-more:empty { display: none; }
+.eng-tools { display: flex; gap: 10px; align-items: flex-start; padding: 0 6px 8px; }
+.eng-tools > .bench, .eng-tools > .hint { flex: 1 1 0; min-width: 0; margin: 0; }
+.eng-tools > .hint { align-self: center; }
+.tools-btns { display: flex; gap: 6px; flex: none; }
+.tools-btns button { padding: 3px 10px; font-size: 12px; }
+.c-model select { padding-right: 24px; text-overflow: ellipsis; }
 .eng-more { padding: 0 6px 8px; }
 .eng-more .res { font-size: 11px; }
 .eng-more .res:empty { display: none; }
