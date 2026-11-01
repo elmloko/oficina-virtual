@@ -132,3 +132,44 @@ test('misión con LM Studio: si el modelo elegido no existe en esta PC, usa el r
   assert.deepEqual(sent, ['llama-3.2-3b-instruct']); // el que ya estaba cargado
   assert.match(db.events(t.id).map((e) => e.text).join('\n'), /«modelo-de-otra-pc» no está en LM Studio.*«llama-3.2-3b-instruct»/);
 });
+
+test('API: encender el servidor de LM Studio y de Ollama desde la oficina', async () => {
+  let lmUp = false; let ollamaUp = false;
+  const started = [];
+  const fetchFn = async (url) => ({ ok: url.includes('1234') ? lmUp : ollamaUp, json: async () => ({ data: [] }) });
+  const serverCtl = {
+    lmstudio: async (port) => { started.push(['lmstudio', port]); lmUp = true; },
+    ollama: async () => { started.push(['ollama']); ollamaUp = true; },
+  };
+  const probe = { claude: async () => ({ ok: true }), codex: async () => ({ ok: true }), ollama: async () => ({ ok: false }) };
+  const providers = { lmstudio: { name: 'lmstudio', kind: 'openai', baseUrl: URL, key: '', model: 'local-model' } };
+  const db = openDb(':memory:');
+  const app = createApp({ db, probe, providers, ollamaFetch: fetchFn, serverCtl });
+  await new Promise((r) => app.server.listen(0, '127.0.0.1', r));
+  const post = async (path) => { const r = await fetch(`http://127.0.0.1:${app.server.address().port}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); return { status: r.status, body: await r.json() }; };
+  try {
+    const a = await post('/api/system/lmstudio/server');
+    assert.deepEqual([a.status, a.body.already], [200, false]);
+    assert.deepEqual(started, [['lmstudio', '1234']]); // el puerto sale de la configuración del proveedor
+    const again = await post('/api/system/lmstudio/server');
+    assert.deepEqual([again.status, again.body.already], [200, true]); // ya encendido: no lo vuelve a lanzar
+    assert.equal(started.length, 1);
+    const o = await post('/api/system/ollama/server');
+    assert.deepEqual([o.status, o.body.already], [200, false]);
+    assert.ok(db.auditLog(10).some((x) => x.action === 'lmstudio.server.start'));
+    assert.equal((await post('/api/system/groq/server')).status, 404);
+  } finally { app.server.close(); app.server.closeAllConnections?.(); }
+
+  // el programa no existe: error claro; LM Studio apagado en Sistema: error claro
+  const app2 = createApp({ db: openDb(':memory:'), probe, providers, ollamaFetch: async () => ({ ok: false }), serverCtl: { lmstudio: async () => { throw new Error('No encontré el programa «lms» de LM Studio'); } } });
+  const app3 = createApp({ db: openDb(':memory:'), probe, providers: {}, ollamaFetch: async () => ({ ok: false }), serverCtl });
+  for (const a of [app2, app3]) await new Promise((r) => a.server.listen(0, '127.0.0.1', r));
+  try {
+    const r2 = await fetch(`http://127.0.0.1:${app2.server.address().port}/api/system/lmstudio/server`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    assert.equal(r2.status, 400);
+    assert.match((await r2.json()).error, /lms/);
+    const r3 = await fetch(`http://127.0.0.1:${app3.server.address().port}/api/system/lmstudio/server`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    assert.equal(r3.status, 400);
+    assert.match((await r3.json()).error, /apagado/);
+  } finally { for (const a of [app2, app3]) { a.server.close(); a.server.closeAllConnections?.(); } }
+});

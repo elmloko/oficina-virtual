@@ -86,7 +86,7 @@ test('modelos de Ollama y LM Studio: lista sin embeddings, gemma3:4b recomendado
 
   const db = openDb(':memory:');
   assert.deepEqual(db.engineModels(), { claude: '', codex: '', ollama: '', lmstudio: '' });
-  const app = createApp({ db, probe: { claude: async () => ({ ok: true }), ollama: async () => ({ ok: true, models: [{ name: 'gemma3:4b', size: 3.4e9 }, { name: 'bge-m3:latest', size: 1e9 }], loaded: [] }), codex: async () => ({ ok: true }) } });
+  const app = createApp({ db, probe: { claude: async () => ({ ok: true }), ollama: async () => ({ ok: true, models: [{ name: 'gemma3:4b', size: 3.4e9 }, { name: 'bge-m3:latest', size: 1e9 }], loaded: [] }), codex: async () => ({ ok: true }) }, ollamaFetch: async () => { throw new Error('apagado'); } });
   await new Promise((r) => app.server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${app.server.address().port}`;
   const call = async (method, path, body) => { const r = await fetch(base + path, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }); return { status: r.status, body: await r.json() }; };

@@ -28,6 +28,9 @@ function parseExtraRoots(spec) {
 // «Documentos» real de Windows (suele estar dentro de OneDrive): la primera ruta que exista.
 const docsCandidates = [join(homedir(), 'OneDrive', 'Documentos'), join(homedir(), 'OneDrive', 'Documents'), join(homedir(), 'Documents'), join(homedir(), 'Documentos')];
 
+/** Programa de un servidor local: variable de entorno, o la ruta habitual si existe, o el nombre (del PATH). */
+const localBin = (envVar, candidate, name) => process.env[envVar] || (existsSync(candidate) ? candidate : name);
+
 /** Codex CLI: CODEX_BIN, o el que instala la app de Codex/ChatGPT en ~/.codex (la versión más nueva), o «codex» del PATH. */
 function findCodex() {
   if (process.env.CODEX_BIN) return process.env.CODEX_BIN;
@@ -45,6 +48,8 @@ function findCodex() {
 export const config = {
   // Se busca en cada uso: la app de Codex se actualiza sola y cambia la carpeta de la versión.
   get codexBin() { return findCodex(); },
+  get lmsBin() { return localBin('LMS_BIN', join(homedir(), '.lmstudio', 'bin', 'lms.exe'), 'lms'); },
+  get ollamaBin() { return localBin('OLLAMA_BIN', join(homedir(), 'AppData', 'Local', 'Programs', 'Ollama', 'ollama.exe'), 'ollama'); },
   root,
   port: Number(process.env.PORT || 4000),
   host: '127.0.0.1', // solo local: la oficina puede ejecutar agentes sobre tus carpetas

@@ -15,7 +15,7 @@ import { CLAUDE_MODELS, ollamaChatModels } from './system.js';
 import { OLLAMA_MODELS } from './router.js';
 import { pickDefault, benchCandidates, runBenchmark, recommend, listLmStudio, measureLmStudio } from './ollama-models.js';
 import { freemem } from 'node:os';
-import { spawn as spawnProc } from 'node:child_process';
+import { spawn as spawnProc, execFile } from 'node:child_process';
 import { loadProviders, publicProviders, knownProviders, testProvider, MODEL_RE } from './providers.js';
 import { createLogger } from './logger.js';
 import { setEnvVar, KEY_RE } from './envfile.js';
@@ -30,7 +30,19 @@ const MANUAL_STATUSES = new Set(['backlog', 'review', 'done']); // el resto lo m
 const MODES = new Set(['read', 'edit']);
 const MAX_REVIEWERS = 4;
 
-export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loadProviders(), logger = createLogger(), envFile = config.envFile, probe = createProbe({ config }), attachmentsDir = config.attachmentsDir, dispatcher, docsRoot = config.docsRoot, openFolder = (dir) => spawnProc('explorer.exe', [dir], { detached: true, stdio: 'ignore' }).unref(), ollamaFetch = fetch } = {}) {
+/** Enciende un servidor local. Sin shell: se lanza el programa con argumentos fijos (el puerto sale de la configuración, nunca de la petición). */
+const defaultServerCtl = {
+  lmstudio: (port) => new Promise((resolve, reject) => {
+    execFile(config.lmsBin, ['server', 'start', '--port', String(port)], { timeout: 30_000, windowsHide: true }, (err) => (err ? reject(new Error(err.code === 'ENOENT' ? 'No encontré el programa «lms» de LM Studio (define LMS_BIN en .env)' : err.message)) : resolve()));
+  }),
+  ollama: () => new Promise((resolve, reject) => {
+    const child = spawnProc(config.ollamaBin, ['serve'], { detached: true, stdio: 'ignore', windowsHide: true });
+    child.once('error', (e) => reject(new Error(e.code === 'ENOENT' ? 'No encontré el programa «ollama» (define OLLAMA_BIN en .env)' : e.message)));
+    child.once('spawn', () => { child.unref(); resolve(); }); // sigue vivo aunque se cierre la oficina
+  }),
+};
+
+export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loadProviders(), logger = createLogger(), envFile = config.envFile, probe = createProbe({ config }), attachmentsDir = config.attachmentsDir, dispatcher, docsRoot = config.docsRoot, openFolder = (dir) => spawnProc('explorer.exe', [dir], { detached: true, stdio: 'ignore' }).unref(), ollamaFetch = fetch, serverCtl = defaultServerCtl } = {}) {
   const startedAt = new Date();
   const engineSet = () => new Set(['auto', ...['claude', 'ollama', 'codex'].filter((e) => !db.disabledEngines().includes(e)), ...Object.keys(providers)]);
   /** Recarga los proveedores en el mismo objeto (el runner conserva la referencia). */
@@ -188,7 +200,7 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
       const lmp = providers.lmstudio;
       if (lmp) {
         try {
-          const j = await (await fetch(`${lmp.baseUrl}/models`, { signal: AbortSignal.timeout(1500) })).json();
+          const j = await (await ollamaFetch(`${lmp.baseUrl}/models`, { signal: AbortSignal.timeout(1500) })).json();
           const best = db.engineBench('lmstudio')?.best;
           lm = (j.data ?? []).filter((x) => !/embed/i.test(x.id)).map((x) => ({ value: x.id, label: x.id, recommended: x.id === best }));
         } catch { lm = null; }
@@ -201,6 +213,23 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
         engine_models: db.engineModels(), default_seen: db.defaultSeen(),
         defaults: { claude: db.defaultSeen().claude, ollama: ollamaDefault, codex: null, lmstudio: null },
       });
+    }
+    // --- encender el servidor local de Ollama o de LM Studio ---
+    if (method === 'POST' && (r = m(/^\/api\/system\/(ollama|lmstudio)\/server$/))) {
+      const engine = r[1];
+      const label = engine === 'ollama' ? 'Ollama' : 'LM Studio';
+      const lm = providers.lmstudio;
+      if (engine === 'lmstudio' && !lm) return send(res, 400, { error: 'LM Studio está apagado en Sistema: enciéndelo primero' });
+      const base = engine === 'ollama' ? config.ollamaUrl : lm.baseUrl;
+      const up = async () => { try { return (await ollamaFetch(engine === 'ollama' ? `${base}/api/tags` : `${base}/models`, { signal: AbortSignal.timeout(1500) })).ok; } catch { return false; } };
+      if (await up()) return send(res, 200, { ok: true, already: true });
+      try { await serverCtl[engine](engine === 'lmstudio' ? new URL(base).port || 1234 : null); } catch (e) { return send(res, 400, { error: e.message }); }
+      let ok = false;
+      for (let i = 0; i < 16 && !ok; i++) { ok = await up(); if (!ok) await new Promise((r2) => setTimeout(r2, 500)); }
+      db.audit(`${engine}.server.start`, null, ok ? 'ok' : 'sin respuesta');
+      logger.info(`Servidor de ${label}: ${ok ? 'encendido' : 'no respondió a tiempo'}`);
+      if (!ok) return send(res, 504, { error: `${label} no respondió tras encenderlo (revisa que esté instalado)` });
+      return send(res, 200, { ok: true, already: false });
     }
     // --- medir los modelos instalados en esta computadora (Ollama o LM Studio) ---
     if ((r = m(/^\/api\/system\/(ollama|lmstudio)\/benchmark$/))) {

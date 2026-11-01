@@ -1059,6 +1059,14 @@ async function startBench(engine) {
   clearTimeout(benchTimers[engine]); benchTimers[engine] = setTimeout(() => refreshBench(engine), 2000);
   renderSystem();
 }
+/** Enciende el servidor local de Ollama o de LM Studio (sin abrir la terminal). */
+const serverButton = (engine) => el('button', { className: 'primary', textContent: 'Encender servidor', title: `Enciende ${BENCH_LABEL[engine]} en este equipo`, onclick: guard(async (e) => {
+  e.target.disabled = true; e.target.textContent = 'Encendiendo…';
+  try {
+    await post(`/api/system/${engine}/server`);
+    toast(`${BENCH_LABEL[engine]} encendido`, false);
+  } finally { await refreshModels(); await refreshSystem(); }
+}) });
 const benchButton = (engine) => el('button', { textContent: state.benches?.[engine]?.running ? 'Midiendo…' : 'Medir modelos', disabled: !!state.benches?.[engine]?.running, title: 'Prueba cada modelo instalado y te dice cuál rinde mejor en esta computadora', onclick: guard(() => startBench(engine)) });
 
 /** Tabla de la última medición (o de la que está corriendo) con «Usar este». */
@@ -1066,7 +1074,7 @@ function benchPanel(engine) {
   const b = state.benches?.[engine];
   if (!b || (!b.running && !b.results.length)) {
     const off = engine === 'lmstudio' && state.modelInfo?.lmstudio_up === false;
-    return el('p', { className: 'hint', textContent: off ? 'Para medir tus modelos de LM Studio, abre la app y enciende su servidor local (pestaña Developer → Start Server).' : 'Tip: «Medir modelos» prueba cada modelo instalado con la misma consigna y te recomienda el mejor para esta computadora.' });
+    return el('p', { className: 'hint', textContent: off ? 'Para medir tus modelos de LM Studio enciende primero su servidor con el botón «Encender servidor».' : 'Tip: «Medir modelos» prueba cada modelo instalado con la misma consigna y te recomienda el mejor para esta computadora.' });
   }
   const cur = state.modelInfo?.engine_models?.[engine] ?? '';
   const approx = b.results.some((r) => r.approx);
@@ -1107,7 +1115,7 @@ function localEngineItem(key, label, info, detail, kind, kindClass) {
     detail: info.enabled ? (detail ?? '') : `apagado · ${detail ?? ''}`,
     model: modelSelect(key, label),
     more: key === 'ollama' ? [benchPanel('ollama')] : [],
-    actions: [...(key === 'ollama' && info.ok ? [benchButton('ollama')] : []), switchBtn(info.enabled, info.enabled ? `Apagar ${label}: las misiones dejan de usarlo` : `Encender ${label}`, async () => {
+    actions: [...(key === 'ollama' && info.ok ? [benchButton('ollama')] : []), ...(key === 'ollama' && !info.ok && info.enabled ? [serverButton('ollama')] : []), switchBtn(info.enabled, info.enabled ? `Apagar ${label}: las misiones dejan de usarlo` : `Encender ${label}`, async () => {
       if (info.enabled && key === 'claude' && !(await confirmDialog('Apagar Claude Code', 'Sin Claude Code no se pueden editar archivos ni correr agentes de código; solo quedarán Ollama, Codex y los modelos extra (que únicamente leen). Puedes encenderlo cuando quieras.'))) return;
       await api(`/api/system/engines/${key}/toggle`, { method: 'PUT', body: JSON.stringify({ enabled: !info.enabled }) });
       toast(`${label} ${info.enabled ? 'apagado' : 'encendido'}`, false);
@@ -1139,6 +1147,7 @@ function providerItem(p) {
   });
   const actions = [];
   if (lm && p.enabled && lmUp) actions.push(benchButton('lmstudio'));
+  if (lm && p.enabled && lmUp === false) actions.push(serverButton('lmstudio'));
   if (p.configured) {
     actions.push(el('button', { textContent: 'Probar', onclick: guard(async () => {
       res.className = 'res'; res.textContent = 'Probando…';
