@@ -245,7 +245,7 @@ function render() {
   office.update({ agents: state.agents, tasks: [...state.tasks.values()], stats: s ? { ...s, off, apiActive, apiLimit: s.limit?.api ?? 1 } : null });
   office.setComms({ links: activeLinks(state.tasks), flights: state.flights });
   paintComms();
-  if (state.view === 'comms') renderComms();
+  if (state.view === 'system') renderComms();
   const attn = attentionItems([...state.tasks.values()]);
   paintBadge(attn.length);
   if (state.view === 'attention') renderAttention(attn);
@@ -1600,12 +1600,13 @@ async function refreshSystem() {
 
 const SYS_TAB_KEY = 'oficina.systab';
 function setSysTab(tab) {
-  const tabs = ['resumen', 'motores', 'ajustes', 'registro'];
+  const tabs = ['resumen', 'motores', 'ajustes', 'comunicaciones', 'registro'];
   if (!tabs.includes(tab)) tab = 'resumen';
   $('#view-system').dataset.tab = tab;
   for (const b of document.querySelectorAll('.sys-tabs button')) b.setAttribute('aria-selected', String(b.dataset.tab === tab));
   try { localStorage.setItem(SYS_TAB_KEY, tab); } catch { /* sin almacenamiento: vale solo esta sesión */ }
   if (tab === 'registro') renderLogs();
+  if (tab === 'comunicaciones') renderComms();
 }
 
 function setupSystem() {

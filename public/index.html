@@ -22,7 +22,6 @@
         <button role="tab" data-view="office" aria-selected="true">Oficina</button>
         <button role="tab" data-view="attention" aria-selected="false">Atención <span id="attn-badge" class="badge" hidden>0</span></button>
         <button role="tab" data-view="board" aria-selected="false">Tablero</button>
-        <button role="tab" data-view="comms" aria-selected="false">Comunicaciones <span id="comms-badge" class="badge live" hidden>0</span></button>
         <button role="tab" data-view="routines" aria-selected="false">Rutinas</button>
         <button role="tab" data-view="costs" aria-selected="false">Uso</button>
         <button role="tab" data-view="system" aria-selected="false">Sistema</button>
@@ -59,13 +58,6 @@
     <main id="board" aria-label="Tablero de misiones"></main>
   </section>
 
-  <section id="view-comms" class="view" hidden>
-    <div class="panel wide-panel">
-      <div class="panel-head"><h2>Comunicaciones entre agentes</h2><button id="collab-toggle" type="button"></button></div>
-      <p class="hint">Cuando un agente necesita la opinión de otro especialista, se la pide aquí: el colega recibe una misión de solo lectura, responde, y el agente original continúa con esa respuesta. En la Oficina se ve el sobre volar entre ambos.</p>
-      <div id="comms-list"></div>
-    </div>
-  </section>
 
 
   <section id="view-routines" class="view" hidden>
@@ -107,6 +99,7 @@
       <button role="tab" data-tab="resumen" aria-selected="true">Resumen</button>
       <button role="tab" data-tab="motores" aria-selected="false">Motores y modelos</button>
       <button role="tab" data-tab="ajustes" aria-selected="false">Ajustes y rutinas</button>
+      <button role="tab" data-tab="comunicaciones" aria-selected="false">Comunicaciones <span id="comms-badge" class="badge live" hidden>0</span></button>
       <button role="tab" data-tab="registro" aria-selected="false">Registro</button>
     </nav>
     <div class="sys-grid">
@@ -146,6 +139,7 @@
           <button class="primary" type="submit">Guardar ajustes</button>
         </form>
       </article>
+      <article class="card-sys wide" id="card-comms" data-g="comunicaciones"><h2>Comunicaciones entre agentes <button id="collab-toggle" type="button"></button></h2><p class="hint">Cuando un agente necesita la opinión de otro especialista, se la pide aquí: el colega recibe una misión de solo lectura, responde, y el agente original continúa con esa respuesta. En la Oficina se ve el sobre volar entre ambos.</p><div id="comms-list"></div></article>
       <article class="card-sys wide" id="card-logs" data-g="registro"><h2>Registro en vivo
           <select id="log-level" aria-label="Filtrar registro"><option value="">todo</option><option value="warn">avisos y errores</option><option value="error">solo errores</option></select></h2>
         <div id="sys-log" role="log" aria-live="off"></div></article>
