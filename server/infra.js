@@ -88,6 +88,38 @@ const RULES = {
 const SECRETS = /(\.env\b|id_rsa|id_ed25519|id_ecdsa|\.pem\b|\.key\b|\/etc\/shadow|\.ssh\/|credentials|\.aws\/|\.git-credentials|\.kube\/config|\.npmrc|\.netrc|secret|passw|token)/i;
 const stripSafeRedirects = (s) => s.replace(/\d?>\s*\/dev\/null/g, ' ').replace(/2>&1/g, ' ');
 
+/**
+ * Recorre el comando respetando comillas: devuelve los tramos separados por && || ; | & (como listas de palabras sin comillas)
+ * y si hay redirecciones fuera de comillas. Lo que va entre comillas es texto, no operadores (p. ej. --format '{{.A}}|{{.B}}').
+ */
+function scan(cmd) {
+  const segs = [[]]; let word = null; let quote = null; let redirect = false;
+  const endWord = () => { if (word !== null) { segs.at(-1).push(word); word = null; } };
+  for (let i = 0; i < cmd.length; i++) {
+    const c = cmd[i];
+    if (quote) { if (c === quote) quote = null; else word += c; continue; }
+    if (c === '"' || c === "'") { quote = c; word ??= ''; continue; }
+    if (/\s/.test(c)) { endWord(); continue; }
+    if (c === '>' || c === '<') {
+      // «2>&1» y «>/dev/null» no escriben nada útil
+      const rest = cmd.slice(i);
+      const safe = /^>\s*\/dev\/null/.exec(rest) ?? /^>&\d/.exec(rest);
+      if (safe) { if (/^\d$/.test(word ?? '')) word = null; endWord(); i += safe[0].length - 1; continue; }
+      redirect = true; continue;
+    }
+    if (c === ';' || c === '|' || c === '&') {
+      endWord(); if ((c === '&' || c === '|') && cmd[i + 1] === c) i++;
+      if (segs.at(-1).length) segs.push([]);
+      continue;
+    }
+    word = (word ?? '') + c;
+  }
+  endWord();
+  return { segs: segs.filter((x) => x.length), redirect, openQuote: quote !== null };
+}
+const shellQuote = (t) => (/^[\w@%+=:,./-]+$/.test(t) ? t : `'${t.replace(/'/g, "'\\''")}'`);
+const DOCKER_EXEC_ARG_OPTS = new Set(['-e', '--env', '-u', '--user', '-w', '--workdir', '--env-file', '--detach-keys']);
+
 /** Clasifica un comando completo (con pipes, && y ;). La categoría es la del peor de sus tramos. */
 export function classify(command) {
   const cmd = String(command ?? '').trim();
@@ -96,18 +128,36 @@ export function classify(command) {
   if (cmd.length > MAX_CMD) return strong('comando demasiado largo');
   if (/[\r\n]/.test(cmd)) return strong('varias líneas');
   if (/\$\(|`|<\(|>\(|<<|\$\{|\\\n/.test(cmd)) return strong('sustitución de comandos o heredoc');
-  if (/[<>]/.test(stripSafeRedirects(cmd))) return strong('escribe o lee archivos con redirección');
   if (DANGER.some((re) => re.test(cmd))) return strong('acción destructiva o que afecta el servicio');
-  let worst = 'read';
   if (SECRETS.test(cmd)) return strong('puede exponer secretos (se enviarían al modelo)');
-  for (const seg of stripSafeRedirects(cmd).split(/&&|\|\||;|\||&/)) {
-    const tokens = seg.trim().split(/\s+/).filter(Boolean);
-    if (!tokens.length) continue;
+  const { segs, redirect, openQuote } = scan(cmd);
+  if (openQuote) return strong('comillas sin cerrar');
+  if (redirect) return strong('escribe o lee archivos con redirección');
+  let worst = 'read';
+  for (let tokens of segs) {
     if (/^\w+=/.test(tokens[0])) return strong('variables de entorno antes del comando');
     const name = tokens[0].replace(/^.*\//, ''); // /usr/bin/ls → ls
-    const rule = RULES[name];
-    if (!rule) return strong(`«${name}» no está en la lista de comandos de solo lectura`);
-    const tier = rule(tokens);
+    if (name === 'git') { // «git -C ruta …» y «git -c k=v …» solo cambian dónde o cómo se ejecuta
+      const t = [tokens[0]]; for (let k = 1; k < tokens.length; k++) { if (tokens[k] === '-C' || tokens[k] === '-c') { k++; continue; } t.push(tokens[k]); }
+      tokens = t;
+    }
+    let tier;
+    if (name === 'docker' && tokens[1] === 'exec') { // se evalúa el comando de dentro del contenedor con las mismas reglas
+      let k = 2;
+      while (k < tokens.length && tokens[k].startsWith('-')) {
+        if (/^(--privileged|-d|--detach)$/.test(tokens[k])) return strong('docker exec con privilegios o en segundo plano');
+        k += DOCKER_EXEC_ARG_OPTS.has(tokens[k]) ? 2 : 1;
+      }
+      const inner = tokens.slice(k + 1); // tokens[k] es el contenedor
+      if (!inner.length) return strong('docker exec sin comando');
+      const r = classify(inner.map(shellQuote).join(' '));
+      if (r.tier === 'strong') return { ...r, reason: `dentro del contenedor: ${r.reason}` };
+      tier = r.tier;
+    } else {
+      const rule = RULES[name];
+      if (!rule) return strong(`«${name}» no está en la lista de comandos de solo lectura`);
+      tier = rule(tokens);
+    }
     if (tier === 'strong') return strong(`«${name}» puede modificar el servidor`);
     if (tier === 'mild') worst = 'mild';
   }

@@ -131,8 +131,12 @@ function renderServers() {
     return el('div', { className: 'srv-item' }, el('div', { className: 'srv-row' },
       el('span', { className: `pill ${s.env === 'prod' ? 'bad' : 'ok'}`, textContent: ENV_ES[s.env] ?? s.env }),
       el('strong', { textContent: s.name }),
-      el('span', { className: 'muted', title: s.hostkey ? `Huella fijada: ${s.hostkey}` : 'La huella se fija en la primera conexión', textContent: `${s.user ? `${s.user}@` : ''}${s.host}:${s.port} · ${s.has_password ? '🔑 contraseña guardada' : 'llave SSH'}${s.hostkey ? ' · huella ✓' : ''}${s.notes ? ` · ${s.notes}` : ''}` }),
+      el('span', { className: 'muted', title: s.hostkey ? `Huella fijada: ${s.hostkey}` : 'La huella se fija en la primera conexión', textContent: `${s.user ? `${s.user}@` : ''}${s.host}:${s.port} · ${s.has_password ? '🔑 contraseña guardada' : 'llave SSH'}${s.hostkey ? ' · huella ✓' : ''}${s.allow_all ? ' · 🔓 sin preguntar' : ''}${s.notes ? ` · ${s.notes}` : ''}` }),
       el('span', { className: 'srv-btns' },
+        el('button', { type: 'button', className: s.allow_all ? 'danger' : '', textContent: s.allow_all ? '🔒 Volver a preguntar' : '🔓 Permitir todo', title: 'En este servidor el agente ejecuta sin preguntar (en todas las misiones)', onclick: guard(async () => {
+          if (!s.allow_all && !(await confirmDialog('Permitir todo en «' + s.name + '»', 'En TODAS las misiones sobre este servidor el agente ejecutará cualquier comando sin preguntarte, incluso borrar o reiniciar' + (s.env === 'prod' ? ' — y es PRODUCCIÓN' : '') + '. Todo queda en el historial. Puedes volver a activar las preguntas aquí cuando quieras. ¿Seguro?'))) return;
+          await saveServers(list.map((x) => (x.name === s.name ? { ...x, allow_all: !s.allow_all } : x)));
+        }) }),
         el('button', { type: 'button', textContent: s.has_password ? 'Cambiar contraseña' : 'Poner contraseña', onclick: () => { form.hidden = !form.hidden; if (!form.hidden) pw.focus(); } }),
         el('button', { className: 'danger', textContent: 'Quitar', onclick: guard(async () => {
           if (!(await confirmDialog('Quitar servidor', `«${s.name}» deja de aparecer como destino y se borra su contraseña guardada. No se toca el servidor real.`))) return;
@@ -159,6 +163,9 @@ function setupServers() {
 
 // ---------- Permisos de infraestructura: el agente pide ejecutar algo fuerte en un servidor y espera tu respuesta ----------
 const approvalSeen = new Set();
+const approvalSoundFor = new Set();
+// mientras algo siga esperando tu decisión, el aviso se repite cada 30 s
+setInterval(() => { if (state.approvals?.length) alerts.ask({ title: 'Sigue pendiente un permiso', body: 'Un agente espera tu decisión', onClick: showApproval }); }, 30_000);
 async function refreshApprovals() {
   let list = [];
   try { list = await api('/api/approvals'); } catch { return; }
@@ -168,6 +175,11 @@ async function refreshApprovals() {
   btn.textContent = `⏸ ${list.length} ${list.length === 1 ? 'permiso pendiente' : 'permisos pendientes'}`;
   const fresh = list.some((a) => !approvalSeen.has(a.id));
   for (const a of list) approvalSeen.add(a.id);
+  if (fresh) {
+    const a = list.find((x) => !approvalSoundFor.has(x.id)) ?? list[0];
+    alerts.ask({ title: 'Un agente pide tu permiso', body: `${a.server}: ${a.command.slice(0, 120)}`, onClick: showApproval });
+  }
+  for (const a of list) approvalSoundFor.add(a.id);
   const dlg = $('#approval-dialog');
   if (!list.length) { if (dlg.open) dlg.close(); return; }
   if (dlg.open || fresh) showApproval();
@@ -189,6 +201,12 @@ function showApproval() {
   });
   $('#ap-ok').onclick = decide('approve');
   $('#ap-no').onclick = decide('deny');
+  $('#ap-all').onclick = guard(async () => {
+    if (!(await confirmDialog('Permitir todo en esta misión', `El agente podrá ejecutar CUALQUIER comando en ${a.server} sin preguntarte, incluso borrar, reiniciar o cambiar permisos${srv?.env === 'prod' ? ' — y es PRODUCCIÓN' : ''}. Todo queda en el historial. Se apaga solo al terminar la misión, o antes desde el panel de la misión. ¿Seguro?`))) return;
+    await post(`/api/tasks/${a.task_id}/allow-all`, { enabled: true });
+    toast('Permitir todo: el agente ya no te preguntará en esta misión', false);
+    await refreshApprovals();
+  });
   if (!$('#approval-dialog').open) $('#approval-dialog').showModal();
 }
 function setupApprovals() {
@@ -547,6 +565,14 @@ function drawer(t) {
   const stop = el('button', { textContent: 'Cancelar', disabled: !busy });
   stop.onclick = guard(() => post(`/api/tasks/${t.id}/cancel`));
   act.append(run, stop);
+  if (t.mode === 'infra' && String(t.project ?? '').startsWith('srv:')) {
+    const all = el('button', { className: t.allow_all ? 'danger' : '', textContent: t.allow_all ? '🔒 Volver a preguntar' : '🔓 Permitir todo', title: t.allow_all ? 'Ahora el agente ejecuta sin preguntar: púlsalo para que vuelva a pedirte permiso' : 'El agente deja de preguntarte en esta misión (se apaga al terminar)' });
+    all.onclick = guard(async () => {
+      if (!t.allow_all && !(await confirmDialog('Permitir todo en esta misión', 'El agente podrá ejecutar CUALQUIER comando en el servidor sin preguntarte, incluso borrar o reiniciar. Todo queda en el historial. Se apaga solo al terminar la misión. ¿Seguro?'))) return;
+      await post(`/api/tasks/${t.id}/allow-all`, { enabled: !t.allow_all });
+    });
+    act.append(all);
+  }
 
   if (isObj && kids.length) {
     const pending = kids.some((k) => ['backlog', 'failed'].includes(k.status));
@@ -1832,7 +1858,7 @@ function setupAlerts() {
     else if (perm !== 'default') toast('Las notificaciones del navegador no están permitidas: solo sonará (puedes habilitarlas en el candado de la barra de direcciones)', false);
   };
   paint();
-  document.addEventListener('pointerdown', () => { if (alerts.enabled) alerts.unlock(); }, { once: true }); // el audio necesita un gesto antes de poder sonar
+  document.addEventListener('pointerdown', () => alerts.unlock(), { once: true }); // el audio necesita un gesto antes de poder sonar
   let testing = false;
   $('#sound-test').onclick = async () => {
     if (testing) return;

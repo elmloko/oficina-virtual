@@ -14,6 +14,7 @@ export const SOUNDS = {
   question: 'droide que pregunta',
   plan: 'motor hiperespacial cargando',
   failed: 'dos disparos de blaster y una explosión',
+  permission: 'alarma imperial: tres pitidos que suben y un golpe grave',
 };
 
 const store = {
@@ -88,6 +89,15 @@ const PLAY = {
     tone(ctx, out, { type: 'sawtooth', f0: 80 * p, f1: 880 * p, t, dur: 0.7, vol: 0.05, attack: 0.1, release: 0.15 });
     tone(ctx, out, { type: 'sine', f0: 120 * p, f1: 55 * p, t: t + 0.62, dur: 0.3, vol: 0.12, attack: 0.01 }); // empuje al saltar
   },
+  /** Alarma: tres pitidos ascendentes y un golpe grave; inconfundible, para algo que espera tu decisión. */
+  permission(ctx, out, t, p) {
+    [0, 0.2, 0.4].forEach((off, i) => {
+      const f = (880 + i * 260) * p;
+      tone(ctx, out, { type: 'square', f0: f, t: t + off, dur: 0.13, vol: 0.07, attack: 0.004, release: 0.04 });
+      tone(ctx, out, { type: 'sawtooth', f0: f / 2, t: t + off, dur: 0.13, vol: 0.05, attack: 0.004, release: 0.04 });
+    });
+    tone(ctx, out, { type: 'sine', f0: 140 * p, f1: 70 * p, t: t + 0.66, dur: 0.4, vol: 0.14, attack: 0.01 });
+  },
   /** Blaster: dos disparos «pew pew» y una explosión sorda. */
   failed(ctx, out, t, p) {
     [0, 0.2].forEach((off, i) => {
@@ -133,6 +143,14 @@ export function createAlerts({ skinId, onOpen, notify = (typeof Notification !==
       if (!notify) return 'unsupported';
       if (notify.permission !== 'default') return notify.permission;
       return notify.requestPermission().catch(() => 'denied');
+    },
+    /** Algo bloqueante espera tu decisión (p. ej. el permiso de un agente): suena siempre, aunque los avisos estén apagados, y notifica si la pestaña está oculta. */
+    ask({ title, body, onClick }) {
+      beep('permission');
+      if (notify && notify.permission === 'granted' && document.hidden) {
+        const n = new notify(title, { body, tag: 'permiso' });
+        n.onclick = () => { window.focus(); onClick?.(); n.close(); };
+      }
     },
     /** Avisa de un evento (ver `transition`). Devuelve true si avisó. */
     fire({ kind, task }) {

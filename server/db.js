@@ -19,7 +19,7 @@ export const DEFAULT_SETTINGS = {
 const LIMIT_KEYS = new Set(['max_claude', 'max_ollama', 'max_api', 'max_codex', 'max_lmstudio']);
 
 const TASK_COLUMNS = ['title', 'description', 'project', 'agent', 'engine', 'mode', 'status', 'result', 'error',
-  'cost_usd', 'started_at', 'finished_at', 'parent_id', 'depends_on', 'kind', 'schedule_id', 'model', 'reply_text', 'branch', 'worktree', 'base_sha', 'change_state', 'chain_fired', 'workdir', 'used_model', 'stream_id', 'cycle'];
+  'cost_usd', 'started_at', 'finished_at', 'parent_id', 'depends_on', 'kind', 'schedule_id', 'model', 'reply_text', 'branch', 'worktree', 'base_sha', 'change_state', 'chain_fired', 'workdir', 'used_model', 'stream_id', 'cycle', 'allow_all'];
 
 function addColumnIfMissing(db, table, column, ddl) {
   const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
@@ -140,6 +140,7 @@ export function openDb(file = config.dbFile) {
   addColumnIfMissing(db, 'tasks', 'workdir', 'TEXT'); // carpeta nueva creada en Documentos para esta misión
   addColumnIfMissing(db, 'tasks', 'stream_id', 'INTEGER'); // «Nueva tarea»: la misión es un ciclo de esa tarea continua
   addColumnIfMissing(db, 'tasks', 'cycle', 'INTEGER');
+  addColumnIfMissing(db, 'tasks', 'allow_all', 'INTEGER NOT NULL DEFAULT 0'); // «Permitir todo»: el agente ya no te pregunta en esta misión
   addColumnIfMissing(db, 'tasks', 'consult_of', 'INTEGER'); // misión creada porque la #consult_of pidió ayuda a este agente
   addColumnIfMissing(db, 'tasks', 'reply_text', 'TEXT'); // respuesta del usuario en vuelo (o cancelada, lista para editar)
 

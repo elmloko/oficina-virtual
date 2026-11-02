@@ -222,3 +222,56 @@ test('contraseña de servidor: se guarda codificada en .env, nunca se devuelve y
     assert.ok(!readFileSync(envFile, 'utf8').includes(passVar('pw-web')));
   } finally { app2.runner.cancelAll(); app2.server.close(); app2.server.closeAllConnections?.(); rmSync(dir, { recursive: true, force: true }); delete process.env[passVar('pw-web')]; }
 });
+
+test('classify: respeta comillas, «git -C» y «docker exec» (se evalúa el comando de dentro)', () => {
+  for (const c of ["docker ps -a --format '{{.Names}}|{{.Image}}|{{.Status}}'", "docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}'", 'docker exec app git status --short',
+    "docker inspect app --format '{{.Mounts}} -> {{.Config}}'", "docker exec app find / -maxdepth 4 -name .git -not -path '/proc/*'", 'git -C /home/u/app status --short --branch',
+    'docker exec -u root app cat /etc/hosts', 'echo "a>b"']) assert.equal(tier(c), 'read', c);
+  for (const c of ['docker exec app rm -rf /x', 'docker exec app sh -c "ls"', 'docker exec -d app ls', 'docker exec --privileged app ls', 'git -C /x reset --hard', 'echo a > f', 'ls "sin cerrar',
+    'docker exec app find / -delete', 'docker exec app sed -i s/a/b/ f']) assert.equal(tier(c), 'strong', c);
+});
+
+test('«Permitir todo»: por misión (aprueba lo pendiente y se apaga al terminar) y por servidor', async () => {
+  const agent = listAgents()[0].name;
+  await call('PUT', '/api/servers', { servers: [{ name: 'auto-web', host: '10.2.2.2', env: 'prod' }] });
+  const t = (await call('POST', '/api/tasks', { title: 'Todo', agent, project: 'srv:auto-web', mode: 'infra', engine: 'claude' })).body;
+  await call('POST', `/api/tasks/${t.id}/run`, { confirm: true });
+  const token = await waitFor(() => app.runner.infraToken(t.id));
+  const exec = (command) => call('POST', '/api/infra/exec', { task_id: t.id, token, command });
+
+  // esperando permiso → «permitir todo» lo aprueba y las siguientes ya no preguntan
+  const p1 = exec('systemctl restart nginx');
+  await waitFor(async () => (await call('GET', '/api/approvals')).body[0]);
+  const on = await call('POST', `/api/tasks/${t.id}/allow-all`, { enabled: true });
+  assert.equal(on.body.allow_all, 1);
+  assert.match((await p1).body.stdout, /ok: systemctl restart/);
+  const r2 = await exec('rm -rf /tmp/zz'); // fuerte y crítico, en producción: corre sin preguntar
+  assert.match(r2.body.stdout, /ok: rm -rf/);
+  assert.equal((await call('GET', '/api/approvals')).body.length, 0);
+  assert.ok(app.db.events(t.id).some((e) => /Permitido automáticamente/.test(e.text))); // queda constancia
+
+  // volver a preguntar
+  await call('POST', `/api/tasks/${t.id}/allow-all`, { enabled: false });
+  const p3 = exec('reboot');
+  const ap = await waitFor(async () => (await call('GET', '/api/approvals')).body[0]);
+  await call('POST', `/api/approvals/${ap.id}/deny`);
+  assert.equal((await p3).body.denied, true);
+
+  // se apaga solo cuando la misión termina
+  await call('POST', `/api/tasks/${t.id}/allow-all`, { enabled: true });
+  app.runner.cancel(t.id);
+  await waitFor(() => app.db.getTask(t.id).allow_all === 0);
+
+  // por servidor: vale para todas las misiones
+  await call('PUT', '/api/servers', { servers: [{ name: 'auto-web', host: '10.2.2.2', env: 'prod', allow_all: true }] });
+  const t2 = (await call('POST', '/api/tasks', { title: 'Otra', agent, project: 'srv:auto-web', mode: 'infra', engine: 'claude' })).body;
+  await call('POST', `/api/tasks/${t2.id}/run`, { confirm: true });
+  const token2 = await waitFor(() => app.runner.infraToken(t2.id));
+  const r4 = await call('POST', '/api/infra/exec', { task_id: t2.id, token: token2, command: 'docker rm app' });
+  assert.match(r4.body.stdout, /ok: docker rm/);
+  app.runner.cancel(t2.id);
+  assert.equal((await call('POST', `/api/tasks/${t.id}/allow-all`, { enabled: true })).status, 200);
+  const plano = (await call('POST', '/api/tasks', { title: 'x', agent, engine: 'ollama' })).body;
+  assert.equal((await call('POST', `/api/tasks/${plano.id}/allow-all`, { enabled: true })).status, 400); // solo misiones de infraestructura
+  await call('PUT', '/api/servers', { servers: [] });
+});

@@ -49,7 +49,7 @@ function parseServers(raw) {
     if (!Number.isInteger(port) || port < 1 || port > 65535) return { error: `Puerto inválido en «${name}»` };
     const env = SERVER_ENVS.has(s.env) ? s.env : 'prod';
     if (out.some((o) => passVar(o.name) === passVar(name))) return { error: `«${name}» se parece demasiado a otro servidor (mismo nombre sin símbolos)` };
-    out.push({ name, host, user, port, env, notes: String(s.notes ?? '').slice(0, 500) });
+    out.push({ name, host, user, port, env, notes: String(s.notes ?? '').slice(0, 500), allow_all: s.allow_all === true });
   }
   return { value: out };
 }
@@ -468,7 +468,9 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
       if (!server) return send(res, 404, { error: 'El servidor de destino ya no está registrado' });
       const command = String(body.command ?? '').trim();
       const { tier, reason, critical } = classify(command);
-      const ask = needsApproval(tier, server.env);
+      const wouldAsk = needsApproval(tier, server.env);
+      const allowAll = !!task.allow_all || server.allow_all === true; // «Permitir todo» en la misión o en el servidor
+      const ask = wouldAsk && !allowAll;
       const show = command.length > 300 ? `${command.slice(0, 300)}…` : command;
       if (ask) {
         const ap = db.createApproval({ task_id: task.id, server: server.name, command, tier, reason, critical });
@@ -489,11 +491,26 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
           return send(res, 200, { ok: false, denied: true, note: cur.status === 'expired' ? 'sin respuesta a tiempo' : '' });
         }
       }
+      if (wouldAsk && allowAll) runner.log(task.id, 'info', `🔓 Permitido automáticamente (${task.allow_all ? 'permitir todo en la misión' : 'permitir todo en el servidor'}): ${reason}`);
       runner.log(task.id, 'tool', `ssh ${server.name} $ ${show}`);
       db.audit('infra.exec', task.id, `${server.name}: ${show}`);
       const r = await sshRun({ server, command });
       runner.log(task.id, 'info', `↳ código ${r.code}${r.timedOut ? ' (tiempo agotado)' : ''}${r.stderr ? ` · ${r.stderr.slice(0, 200)}` : ''}`);
       return send(res, 200, { ok: r.code === 0, ...r });
+    }
+    // «Permitir todo» en esta misión: deja de preguntar (y aprueba lo que estaba esperando). Se apaga solo cuando termina la misión.
+    if ((r = m(/^\/api\/tasks\/(\d+)\/allow-all$/)) && method === 'POST') {
+      const task = db.getTask(Number(r[1]));
+      if (!task) return send(res, 404, { error: 'No existe' });
+      if (task.mode !== 'infra' || !isServerRef(task.project)) return send(res, 400, { error: 'Solo aplica a misiones de infraestructura sobre un servidor' });
+      const { enabled } = await readJson(req);
+      const on = enabled !== false;
+      db.updateTask(task.id, { allow_all: on ? 1 : 0 });
+      db.audit(on ? 'infra.allowall.on' : 'infra.allowall.off', task.id, task.project);
+      runner.log(task.id, 'info', on ? '🔓 Permitir todo: el agente ya no te pregunta en esta misión' : '🔒 Vuelve a preguntar lo fuerte');
+      if (on) for (const ap of db.pendingApprovals().filter((a) => a.task_id === task.id)) broadcast({ type: 'approval', approval: db.decideApproval(ap.id, 'approved') });
+      emit(task.id);
+      return send(res, 200, db.getTask(task.id));
     }
     if (url.pathname === '/api/approvals' && method === 'GET') return send(res, 200, db.pendingApprovals());
     if ((r = m(/^\/api\/approvals\/(\d+)\/(approve|deny)$/)) && method === 'POST') {

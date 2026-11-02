@@ -44,6 +44,7 @@ export function transition(prevStatus, task) {
 }
 
 export const KIND_LABEL = {
+  permission: 'Permiso pendiente',
   question: 'Te hace una pregunta',
   failed: 'Falló',
   plan: 'Plan listo para lanzar',

@@ -39,6 +39,7 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
   const childEnv = () => { const env = { ...process.env }; for (const k of secretEnvNames()) delete env[k]; for (const k of Object.keys(env)) if (k.startsWith('SERVER_PASS_')) delete env[k]; return env; };
   const waiting = []; // { id, engine, model }
   const procs = new Map(); // id -> { kill }
+  const clearAllowAll = (id) => { const t = db.getTask(id); if (t?.allow_all) db.updateTask(id, { allow_all: 0 }); }; // «Permitir todo» vale solo mientras corre la misión
   const infraTokens = new Map(); // id -> token de la ejecución en curso (solo esa misión puede usar /api/infra/exec)
   /** ¿Esta misión opera de verdad un servidor? Solo con Claude Code (los demás motores no tienen herramientas) y con un servidor de destino. */
   const infraLive = (task) => task.mode === 'infra' && task.engine === 'claude' && isServerRef(task.project);
@@ -487,7 +488,7 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     return new Promise((resolve, reject) => {
       const child = spawnFn('claude', args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
       procs.set(task.id, { kill: () => child.kill() });
-      child.on('close', () => infraTokens.delete(task.id));
+      child.on('close', () => { infraTokens.delete(task.id); clearAllowAll(task.id); });
       let buf = '';
       let final = null;
       let stderr = '';
