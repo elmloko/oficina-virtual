@@ -8,6 +8,11 @@
     "dev": "node --watch server/index.js",
     "test": "node --test server/*.test.js public/*.test.js"
   },
-  "engines": { "node": ">=22.5" },
-  "dependencies": { "ws": "^8.18.0" }
+  "engines": {
+    "node": ">=22.5"
+  },
+  "dependencies": {
+    "ssh2": "^1.17.0",
+    "ws": "^8.18.0"
+  }
 }

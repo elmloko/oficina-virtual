@@ -145,13 +145,13 @@ test('runner: una tarea espera a su dependencia y recibe su resultado como conte
   const db = openDb(':memory:');
   const a = db.createTask({ title: 'A', agent: 'backend' });
   const b = db.createTask({ title: 'B', agent: 'tester', depends_on: [a.id] });
-  const { spawnFn, calls } = claudeFactory((input) => [{ type: 'result', result: input.startsWith('A') ? 'RESULTADO-A' : 'fin-B' }], { delay: 30 });
+  const { spawnFn, calls } = claudeFactory((input) => [{ type: 'result', result: /INSTRUCCIONES[^\n]*\nA(\n|$)/.test(input) ? 'RESULTADO-A' : 'fin-B' }], { delay: 30 });
   const runner = createRunner(db, () => {}, { spawnFn, registry });
   runner.enqueue(a.id);
   runner.enqueue(b.id); // A sigue en curso: B espera su resultado
   await waitFor(() => db.getTask(b.id).status === 'review');
   assert.equal(calls.length, 2);
-  assert.ok(calls[0].input.startsWith('A'), 'A debe correr primero');
+  assert.match(calls[0].input, /INSTRUCCIONES[^\n]*\nA(\n|$)/, 'A debe correr primero');
   assert.match(calls[1].input, /RESULTADO-A/);
 });
 
@@ -598,4 +598,93 @@ test('revisión cruzada: si falla el presupuesto de un revisor, la misión origi
   assert.equal(db.getTask(t.id).status, 'review'); // no se marca fallida por culpa del revisor
   assert.ok(db.events(t.id).some((e) => /No se pudo lanzar la revisión de reviewer: Presupuesto/.test(e.text)));
   db.raw.close();
+});
+
+test('Nueva tarea: el primer ciclo arranca solo; los siguientes esperan tu instrucción hasta que finalizas', async () => {
+  const sinObj = await call('POST', '/api/streams', { title: 'Vigilar errores', agent: 'backend' });
+  assert.equal(sinObj.status, 400);
+  const edit = await call('POST', '/api/streams', { title: 'T', goal: 'G', agent: 'backend', project: 'proj', mode: 'edit' });
+  assert.equal(edit.status, 409); assert.equal(edit.body.needsConfirm, true); // pueden editar: confirmación explícita
+
+  const made = await call('POST', '/api/streams', { title: 'Vigilar errores', goal: 'Que no haya fallos nuevos', agent: 'backend', engine: 'claude', skin: 'forjador' });
+  assert.equal(made.status, 201);
+  const id = made.body.id;
+  const view = async () => (await call('GET', '/api/streams')).body.streams.find((s) => s.id === id);
+  let s = await view();
+  assert.equal(s.skin, 'forjador');
+  assert.equal(s.cycles.length, 1); // ciclo 1 sin pedirlo
+  assert.match(s.cycles[0].title, /ciclo 1/);
+  await new Promise((r) => setTimeout(r, 300));
+  s = await view();
+  assert.equal(s.state, 'waiting'); // terminó y espera instrucciones: no lanza el 2 solo
+  assert.equal(s.cycles.length, 1);
+
+  const prevCalls = apiCalls.length;
+  assert.equal((await call('POST', `/api/streams/${id}/next`, { instruction: 'Enfócate en el login' })).status, 202);
+  assert.match(apiCalls[prevCalls].input, /INSTRUCCIÓN DEL USUARIO.*login/);
+  assert.match(apiCalls[prevCalls].input, /Ciclo 1: /); // recibe lo que ya entregó (el claude falso contesta un plan porque el texto lleva «OBJETIVO»)
+  await new Promise((r) => setTimeout(r, 300));
+  s = await view();
+  assert.equal(s.cycles.length, 2);
+  assert.equal(s.cycles[1].cycle, 2);
+
+  assert.equal((await call('DELETE', `/api/streams/${id}`)).status, 409); // primero se finaliza
+  assert.equal((await call('POST', `/api/streams/${id}/finish`)).body.state, 'finished');
+  assert.equal((await call('POST', `/api/streams/${id}/next`, {})).status, 409);
+  assert.equal((await call('DELETE', `/api/streams/${id}`)).status, 200);
+  assert.equal((await call('GET', '/api/streams')).body.streams.some((x) => x.id === id), false);
+});
+
+test('Nueva tarea: con agente «auto» el despachador elige el agente de cada ciclo', async () => {
+  const made = await call('POST', '/api/streams', { title: 'Revisar la seguridad de la API y los permisos', goal: 'Encontrar vulnerabilidades de autenticación', agent: 'auto', engine: 'claude' });
+  assert.equal(made.status, 201);
+  assert.equal(made.body.agent, 'auto');
+  const s = (await call('GET', '/api/streams')).body.streams.find((x) => x.id === made.body.id);
+  assert.ok(s.cycles[0].agent && s.cycles[0].agent !== 'auto'); // ciclo 1 ya con un agente real
+  assert.ok(listAgents().some((a) => a.name === s.cycles[0].agent));
+  await call('POST', `/api/streams/${s.id}/finish`); await call('DELETE', `/api/streams/${s.id}`);
+});
+
+test('Modo infraestructura: servidores sin secretos, destino «srv:», el agente solo planifica', async () => {
+  assert.equal((await call('PUT', '/api/servers', { servers: [{ name: 'web 1', host: 'bad host!' }] })).status, 400);
+  assert.equal((await call('PUT', '/api/servers', { servers: [{ name: 'a', host: 'x.com' }, { name: 'A', host: 'y.com' }] })).status, 400); // repetido
+  const ok = await call('PUT', '/api/servers', { servers: [{ name: 'prod-web', host: '10.0.0.5', user: 'deploy', port: 2222, env: 'prod', notes: 'nginx + php-fpm', password: 'nunca' }] });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.body[0].password, undefined); // ni se guarda ni se devuelve
+  assert.equal((await call('GET', '/api/state')).body.servers[0].name, 'prod-web');
+
+  assert.equal((await call('POST', '/api/tasks', { title: 'x', agent: 'devops', project: 'srv:no-existe', mode: 'infra' })).status, 400);
+  assert.equal((await call('POST', '/api/tasks', { title: 'x', agent: 'devops', project: 'srv:prod-web', mode: 'edit' })).status, 400); // un servidor no se «edita»
+  const t = (await call('POST', '/api/tasks', { title: 'Revisar nginx', description: 'Está lento', agent: 'devops', project: 'srv:prod-web', mode: 'infra', engine: 'claude' })).body;
+  const before = apiCalls.length;
+  const sinOk = await call('POST', `/api/tasks/${t.id}/run`, {});
+  assert.equal(sinOk.status, 409); assert.equal(sinOk.body.needsConfirm, true); // con Claude puede operar el servidor: confirmación
+  assert.equal((await call('POST', `/api/tasks/${t.id}/run`, { confirm: true })).status, 202);
+  await waitFor(() => apiCalls.length > before);
+  const input = apiCalls[before].input;
+  assert.match(input, /Modo infraestructura \(con ejecución\)/);
+  assert.match(input, /infra-exec\.mjs/);
+  assert.match(input, /deploy@10\.0\.0\.5:2222 · entorno prod/);
+  assert.match(input, /ES PRODUCCIÓN/);
+  const args = apiCalls[before].args;
+  assert.ok(!args.includes('acceptEdits')); // nunca edita archivos
+  assert.ok(args.some((a) => /^Bash\(node .*infra-exec\.mjs:\*\)$/.test(a))); // su único Bash es la herramienta de la oficina
+  assert.equal(route({ agent: 'backend', project: 'srv:x' }).mode, 'infra');
+  assert.equal((await call('PUT', '/api/servers', { servers: [] })).status, 200);
+});
+
+test('prompt: el título es solo una etiqueta; las instrucciones son la descripción (sin descripción, el título)', async () => {
+  const db = openDb(':memory:');
+  const a = db.createTask({ title: 'ETIQUETA-X', description: 'Haz la tarea Z con detalle', agent: 'backend' });
+  const b = db.createTask({ title: 'Solo título como instrucción', agent: 'backend' });
+  const { spawnFn, calls } = claudeFactory(ok('hecho'));
+  const runner = createRunner(db, () => {}, { spawnFn, registry });
+  runner.enqueue(a.id); runner.enqueue(b.id);
+  await waitFor(() => db.getTask(a.id).status === 'review' && db.getTask(b.id).status === 'review');
+  const pa = calls.find((c) => c.input.includes('ETIQUETA-X')).input;
+  assert.ok(pa.includes('NO la tomes como instrucción'));
+  assert.ok(pa.includes('INSTRUCCIONES (haz exactamente esto):\nHaz la tarea Z con detalle'));
+  const pb = calls.find((c) => c.input.includes('Solo título')).input;
+  assert.ok(pb.includes('INSTRUCCIONES (haz exactamente esto):\nSolo título como instrucción'));
+  assert.ok(!pb.includes('NO la tomes como instrucción'));
 });

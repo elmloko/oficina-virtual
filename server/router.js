@@ -15,15 +15,17 @@ const ENGINE_NAME = { claude: 'Claude Code', ollama: 'Ollama', codex: 'Codex' };
  * `off`: motores locales apagados por el usuario ('claude', 'ollama'). Si el elegido está apagado, devuelve `blocked`. */
 export function route({ agent, engine = 'auto', mode = 'read', project = null }, off = [], down = []) {
   const extra = typeof project === 'string' && project.startsWith('@'); // carpetas extra: solo lectura
+  const server = typeof project === 'string' && project.startsWith('srv:'); // servidor: modo infraestructura (plan y comandos)
   const forcedRead = INFRA.has(agent) || extra;
-  const finalMode = forcedRead ? 'read' : mode === 'edit' ? 'edit' : 'read';
+  // «infra»: solo lectura de archivos + reglas de seguridad de infraestructura en el prompt (el agente nunca se conecta a servidores).
+  const finalMode = server || mode === 'infra' ? 'infra' : forcedRead ? 'read' : mode === 'edit' ? 'edit' : 'read';
   let finalEngine = engine;
   if (engine === 'auto') {
-    finalEngine = LIGHT.has(agent) && finalMode === 'read' ? 'ollama' : 'claude';
+    finalEngine = LIGHT.has(agent) && finalMode !== 'edit' ? 'ollama' : 'claude';
     // En automático se esquiva el motor apagado si el otro puede hacer el trabajo (Ollama solo lee).
     const out = [...off, ...down];
     if (finalEngine === 'ollama' && out.includes('ollama')) finalEngine = 'claude';
-    else if (finalEngine === 'claude' && off.includes('claude') && finalMode === 'read' && !out.includes('ollama')) finalEngine = 'ollama';
+    else if (finalEngine === 'claude' && off.includes('claude') && finalMode !== 'edit' && !out.includes('ollama')) finalEngine = 'ollama';
   }
   // Ollama y los proveedores en internet son solo chat (sin archivos): si piden edición, va a Claude.
   if (finalEngine !== 'claude' && finalMode === 'edit') finalEngine = 'claude';

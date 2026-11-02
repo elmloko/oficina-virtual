@@ -19,7 +19,7 @@ export const DEFAULT_SETTINGS = {
 const LIMIT_KEYS = new Set(['max_claude', 'max_ollama', 'max_api', 'max_codex', 'max_lmstudio']);
 
 const TASK_COLUMNS = ['title', 'description', 'project', 'agent', 'engine', 'mode', 'status', 'result', 'error',
-  'cost_usd', 'started_at', 'finished_at', 'parent_id', 'depends_on', 'kind', 'schedule_id', 'model', 'reply_text', 'branch', 'worktree', 'base_sha', 'change_state', 'chain_fired', 'workdir', 'used_model'];
+  'cost_usd', 'started_at', 'finished_at', 'parent_id', 'depends_on', 'kind', 'schedule_id', 'model', 'reply_text', 'branch', 'worktree', 'base_sha', 'change_state', 'chain_fired', 'workdir', 'used_model', 'stream_id', 'cycle'];
 
 function addColumnIfMissing(db, table, column, ddl) {
   const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
@@ -83,6 +83,32 @@ export function openDb(file = config.dbFile) {
       task_id INTEGER,
       detail TEXT NOT NULL DEFAULT ''
     );
+    CREATE TABLE IF NOT EXISTS streams (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL,
+      goal TEXT NOT NULL DEFAULT '',
+      agent TEXT NOT NULL,
+      engine TEXT NOT NULL DEFAULT 'auto',
+      model TEXT,
+      project TEXT,
+      mode TEXT NOT NULL DEFAULT 'read',
+      skin TEXT NOT NULL DEFAULT 'centinela',
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      finished_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS approvals (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id INTEGER NOT NULL,
+      server TEXT NOT NULL,
+      command TEXT NOT NULL,
+      tier TEXT NOT NULL,
+      reason TEXT NOT NULL DEFAULT '',
+      critical INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'pending',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      decided_at TEXT
+    );
     CREATE TABLE IF NOT EXISTS schedules (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
@@ -112,9 +138,12 @@ export function openDb(file = config.dbFile) {
   addColumnIfMissing(db, 'tasks', 'review_of', 'INTEGER'); // esta misión revisa a la #review_of
   addColumnIfMissing(db, 'tasks', 'used_model', 'TEXT'); // modelo con el que corrió de verdad la última ejecución
   addColumnIfMissing(db, 'tasks', 'workdir', 'TEXT'); // carpeta nueva creada en Documentos para esta misión
+  addColumnIfMissing(db, 'tasks', 'stream_id', 'INTEGER'); // «Nueva tarea»: la misión es un ciclo de esa tarea continua
+  addColumnIfMissing(db, 'tasks', 'cycle', 'INTEGER');
   addColumnIfMissing(db, 'tasks', 'consult_of', 'INTEGER'); // misión creada porque la #consult_of pidió ayuda a este agente
   addColumnIfMissing(db, 'tasks', 'reply_text', 'TEXT'); // respuesta del usuario en vuelo (o cancelada, lista para editar)
 
+  db.exec("UPDATE approvals SET status='expired', decided_at=datetime('now') WHERE status='pending'"); // al reiniciar nadie sigue esperando
   // Una tarea que quedó "running"/"queued" en un reinicio ya no tiene proceso: se marca fallida.
   db.exec(`UPDATE tasks SET status='failed', error='Interrumpida por reinicio del servidor',
            finished_at=datetime('now') WHERE status IN ('running','queued')`);
@@ -161,13 +190,28 @@ export function openDb(file = config.dbFile) {
   return {
     raw: db,
     createTask(t) {
-      const row = db.prepare(`INSERT INTO tasks (title, description, project, agent, engine, mode, parent_id, depends_on, kind, schedule_id, model, chain, review_of, consult_of)
-                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`)
+      const row = db.prepare(`INSERT INTO tasks (title, description, project, agent, engine, mode, parent_id, depends_on, kind, schedule_id, model, chain, review_of, consult_of, stream_id, cycle)
+                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`)
         .get(t.title, t.description ?? '', t.project ?? null, t.agent, t.engine ?? 'auto', t.mode ?? 'read',
           t.parent_id ?? null, JSON.stringify(t.depends_on ?? []), t.kind ?? 'task', t.schedule_id ?? null, t.model ?? null,
-          JSON.stringify(t.chain ?? []), t.review_of ?? null, t.consult_of ?? null);
+          JSON.stringify(t.chain ?? []), t.review_of ?? null, t.consult_of ?? null, t.stream_id ?? null, t.cycle ?? null);
       return parseTask(row);
     },
+    /** Permisos que pide el agente en modo infraestructura (comandos fuertes). */
+    createApproval: (a) => db.prepare('INSERT INTO approvals (task_id, server, command, tier, reason, critical) VALUES (?, ?, ?, ?, ?, ?) RETURNING *')
+      .get(a.task_id, a.server, String(a.command).slice(0, 2000), a.tier, a.reason ?? '', a.critical ? 1 : 0),
+    getApproval: (id) => db.prepare('SELECT * FROM approvals WHERE id = ?').get(id),
+    pendingApprovals: () => db.prepare("SELECT * FROM approvals WHERE status = 'pending' ORDER BY id").all(),
+    approvalsOf: (taskId) => db.prepare('SELECT * FROM approvals WHERE task_id = ? ORDER BY id').all(taskId),
+    decideApproval: (id, status) => db.prepare("UPDATE approvals SET status = ?, decided_at = datetime('now') WHERE id = ? AND status = 'pending' RETURNING *").get(status, id),
+    /** «Nueva tarea»: agentes especiales de larga duración. */
+    createStream: (s) => db.prepare('INSERT INTO streams (title, goal, agent, engine, model, project, mode, skin) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING *')
+      .get(s.title, s.goal ?? '', s.agent, s.engine ?? 'auto', s.model ?? null, s.project ?? null, s.mode ?? 'read', s.skin ?? 'centinela'),
+    getStream: (id) => db.prepare('SELECT * FROM streams WHERE id = ?').get(id),
+    listStreams: () => db.prepare('SELECT * FROM streams ORDER BY id DESC').all(),
+    finishStream: (id) => db.prepare("UPDATE streams SET status='finished', finished_at=datetime('now') WHERE id = ? RETURNING *").get(id),
+    deleteStream: (id) => db.prepare('DELETE FROM streams WHERE id = ?').run(id).changes > 0,
+    streamCycles: (id) => db.prepare('SELECT * FROM tasks WHERE stream_id = ? ORDER BY cycle, id').all(id).map(parseTask),
     getTask: (id) => parseTask(q.get.get(id)),
     listTasks: () => q.list.all().map(parseTask),
     children: (id) => q.children.all(id).map(parseTask),
@@ -258,6 +302,11 @@ export function openDb(file = config.dbFile) {
     engineBench(engine) {
       try { return JSON.parse(q.getSetting.get(`${engine}_bench`)?.value ?? 'null'); } catch { return null; }
     },
+    /** Servidores de infraestructura (sin contraseñas ni claves): nombre, host, usuario, puerto, entorno y notas. */
+    servers() {
+      try { const v = JSON.parse(q.getSetting.get('servers')?.value ?? '[]'); return Array.isArray(v) ? v : []; } catch { return []; }
+    },
+    setServers(list) { q.setSetting.run('servers', JSON.stringify(list)); },
     setEngineBench(engine, bench) { q.setSetting.run(`${engine}_bench`, JSON.stringify(bench)); },
     /** Modelo que usó la última ejecución sin elección manual: así se sabe cuál es «el predeterminado» de la sesión. */
     defaultSeen() {

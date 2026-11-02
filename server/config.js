@@ -49,6 +49,7 @@ export const config = {
   // Se busca en cada uso: la app de Codex se actualiza sola y cambia la carpeta de la versión.
   get codexBin() { return findCodex(); },
   get lmsBin() { return localBin('LMS_BIN', join(homedir(), '.lmstudio', 'bin', 'lms.exe'), 'lms'); },
+  get sshBin() { return process.env.SSH_BIN || 'ssh'; },
   get ollamaBin() { return localBin('OLLAMA_BIN', join(homedir(), 'AppData', 'Local', 'Programs', 'Ollama', 'ollama.exe'), 'ollama'); },
   root,
   port: Number(process.env.PORT || 4000),

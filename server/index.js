@@ -9,7 +9,7 @@ import { createRunner } from './runner.js';
 import { createScheduler, validateSpec } from './scheduler.js';
 import { TEMPLATES } from './templates.js';
 import { route } from './router.js';
-import { listAgents, listProjects, resolveProject, isExtraRoot } from './registry.js';
+import { listAgents, listProjects, resolveProject, isExtraRoot, isServerRef } from './registry.js';
 import { insideBase } from './workspace.js';
 import { CLAUDE_MODELS, ollamaChatModels } from './system.js';
 import { OLLAMA_MODELS } from './router.js';
@@ -18,6 +18,9 @@ import { freemem } from 'node:os';
 import { spawn as spawnProc, execFile } from 'node:child_process';
 import { loadProviders, publicProviders, knownProviders, testProvider, MODEL_RE } from './providers.js';
 import { createLogger } from './logger.js';
+import { STREAM_SKINS, MAX_CYCLES, buildCyclePrompt } from './streams.js';
+import { classify, needsApproval, runSsh, runSsh2, passVar, encodePass, decodePass } from './infra.js';
+import { timingSafeEqual } from 'node:crypto';
 import { setEnvVar, KEY_RE } from './envfile.js';
 import { createProbe, collectSystem } from './system.js';
 import { join } from 'node:path';
@@ -27,7 +30,29 @@ import { checkUpload, saveFile, readStored, removeFile, removeTaskDir, isImage, 
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png' };
 const MANUAL_STATUSES = new Set(['backlog', 'review', 'done']); // el resto lo mueve el runner
-const MODES = new Set(['read', 'edit']);
+const MODES = new Set(['read', 'edit', 'infra']);
+const SERVER_ENVS = new Set(['prod', 'staging', 'dev']);
+/** Valida la lista de servidores (sin secretos: nada de contraseñas ni claves). */
+function parseServers(raw) {
+  if (!Array.isArray(raw) || raw.length > 100) return { error: 'Lista de servidores inválida' };
+  const seen = new Set(); const out = [];
+  for (const s of raw) {
+    const name = String(s?.name ?? '').trim();
+    if (!/^[\w][\w .-]{0,39}$/.test(name)) return { error: `Nombre inválido: «${name.slice(0, 40)}» (letras, números, espacio, punto, guion; máx. 40)` };
+    if (seen.has(name.toLowerCase())) return { error: `Nombre repetido: ${name}` };
+    seen.add(name.toLowerCase());
+    const host = String(s.host ?? '').trim();
+    if (!/^[\w][\w.-]{0,99}$/.test(host)) return { error: `Host inválido en «${name}»` };
+    const user = String(s.user ?? '').trim();
+    if (user && !/^[\w][\w.-]{0,39}$/.test(user)) return { error: `Usuario inválido en «${name}»` };
+    const port = s.port === '' || s.port == null ? 22 : Number(s.port);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return { error: `Puerto inválido en «${name}»` };
+    const env = SERVER_ENVS.has(s.env) ? s.env : 'prod';
+    if (out.some((o) => passVar(o.name) === passVar(name))) return { error: `«${name}» se parece demasiado a otro servidor (mismo nombre sin símbolos)` };
+    out.push({ name, host, user, port, env, notes: String(s.notes ?? '').slice(0, 500) });
+  }
+  return { value: out };
+}
 const MAX_REVIEWERS = 4;
 
 /** Enciende un servidor local. Sin shell: se lanza el programa con argumentos fijos (el puerto sale de la configuración, nunca de la petición). */
@@ -53,8 +78,20 @@ export const defaultServerCtl = {
   },
 };
 
-export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loadProviders(), logger = createLogger(), envFile = config.envFile, probe = createProbe({ config }), attachmentsDir = config.attachmentsDir, dispatcher, docsRoot = config.docsRoot, openFolder = (dir) => spawnProc('explorer.exe', [dir], { detached: true, stdio: 'ignore' }).unref(), ollamaFetch = fetch, serverCtl = defaultServerCtl, freeMem = freemem } = {}) {
+export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loadProviders(), logger = createLogger(), envFile = config.envFile, probe = createProbe({ config }), attachmentsDir = config.attachmentsDir, dispatcher, docsRoot = config.docsRoot, openFolder = (dir) => spawnProc('explorer.exe', [dir], { detached: true, stdio: 'ignore' }).unref(), ollamaFetch = fetch, serverCtl = defaultServerCtl, freeMem = freemem, runSshFn = runSsh, runSsh2Fn = runSsh2, approvalWaitMs = 15 * 60_000 } = {}) {
   const startedAt = new Date();
+  const APPROVAL_WAIT_MS = approvalWaitMs;
+  /** Contraseña guardada de un servidor (vive en .env, codificada); null = se usa tu llave SSH. */
+  const serverPassword = (name) => decodePass(process.env[passVar(name)]);
+  const pinHostKey = (name, fp) => { db.setServers(db.servers().map((s) => (s.name === name ? { ...s, hostkey: fp } : s))); db.audit('servers.hostkey', null, `${name}: ${fp}`); };
+  const sshRun = (o) => {
+    const password = serverPassword(o.server.name);
+    return password
+      ? runSsh2Fn({ server: o.server, command: o.command, password, pinned: o.server.hostkey ?? null, onPin: (fp) => pinHostKey(o.server.name, fp) })
+      : runSshFn({ ...o, sshBin: config.sshBin });
+  };
+  /** Lo que ve la web de cada servidor: nunca la contraseña, solo si hay una guardada. */
+  const publicServers = () => db.servers().map((s) => ({ ...s, has_password: !!serverPassword(s.name) }));
   const engineSet = () => new Set(['auto', ...['claude', 'ollama', 'codex'].filter((e) => !db.disabledEngines().includes(e)), ...Object.keys(providers)]);
   /** Recarga los proveedores en el mismo objeto (el runner conserva la referencia). */
   // Los proveedores apagados a mano se quitan del conjunto activo (su clave sigue guardada en .env).
@@ -113,7 +150,14 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
     if (!partial || 'agent' in out) if (!agents.has(out.agent)) return { error: 'Agente desconocido' };
     if ('engine' in out && !engineSet().has(out.engine)) return { error: 'Motor inválido (¿falta la clave del proveedor o está desactivado?)' };
     if ('mode' in out && !MODES.has(out.mode)) return { error: 'Modo inválido' };
-    if (out.project) {
+    // Modo infraestructura con Claude Code sin servidor de destino: no podría operar nada y se quedaría en un plan. Mejor avisar al crear.
+    if (out.mode === 'infra' && !isServerRef(out.project) && (!partial || 'engine' in out) && ['auto', 'claude'].includes(out.engine ?? 'auto')) {
+      return { error: 'Para que el agente opere un servidor elige uno en «Proyecto» (agrégalo antes en Sistema → Ajustes → Servidores). Sin servidor de destino solo puede entregar un plan: en ese caso elige otro motor (Codex, Ollama…).' };
+    }
+    if (isServerRef(out.project)) {
+      if (!db.servers().some((s) => `srv:${s.name}` === out.project)) return { error: 'Servidor desconocido (agrégalo en Sistema → Ajustes)' };
+      if (out.mode === 'edit') return { error: 'Un servidor se trabaja en modo infraestructura: el agente planifica y tú ejecutas' };
+    } else if (out.project) {
       if (!resolveProject(out.project)) return { error: 'Proyecto fuera de htdocs o inexistente' };
       if (isExtraRoot(out.project) && out.mode === 'edit') return { error: 'Las carpetas extra son de solo lectura' };
     } else if (out.mode === 'edit') return { error: 'Editar requiere un proyecto' };
@@ -135,7 +179,11 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
   }
 
   /** Ejecutar con permiso de edición exige confirmación explícita (confirm:true). */
-  const needsConfirm = (task) => route(task, db.disabledEngines()).mode === 'edit';
+  /** Pide confirmación si la misión puede editar archivos o actuar de verdad sobre un servidor (Claude Code + modo infraestructura). */
+  const needsConfirm = (task) => {
+    const plan = route(task, db.disabledEngines(), runner.down());
+    return plan.mode === 'edit' || (plan.mode === 'infra' && plan.engine === 'claude' && isServerRef(task.project));
+  };
 
   function costs() {
     const s = db.settings();
@@ -173,7 +221,7 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
     if (method === 'GET' && url.pathname === '/api/state') {
       return send(res, 200, {
         tasks: db.listTasks(), agents: listAgents(), projects: listProjects(), stats: runner.stats(),
-        engines_off: db.disabledEngines(),
+        engines_off: db.disabledEngines(), servers: publicServers(),
         settings: db.settings(), providers: publicProviders(providers), templates: TEMPLATES, schedules: db.schedules(), costs: costs(),
         messages: db.messages(150),
       });
@@ -407,6 +455,159 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
       }
       emit(task.id);
       return send(res, 201, choice ? { ...task, auto: choice } : task);
+    }
+    // --- infraestructura: el agente pide ejecutar un comando; lo fuerte espera tu aprobación ---
+    if (url.pathname === '/api/infra/exec' && method === 'POST') {
+      const body = await readJson(req);
+      const task = db.getTask(Number(body.task_id));
+      const token = runner.infraToken(task?.id);
+      const a = Buffer.from(String(body.token ?? '')); const b = Buffer.from(token ?? '');
+      if (!task || !token || a.length !== b.length || !timingSafeEqual(a, b)) return send(res, 403, { error: 'No autorizado: solo una misión en modo infraestructura en curso puede usar esta herramienta' });
+      if (task.status !== 'running' || task.mode !== 'infra' || !isServerRef(task.project)) return send(res, 403, { error: 'La misión no está en curso en modo infraestructura sobre un servidor' });
+      const server = db.servers().find((s) => `srv:${s.name}` === task.project);
+      if (!server) return send(res, 404, { error: 'El servidor de destino ya no está registrado' });
+      const command = String(body.command ?? '').trim();
+      const { tier, reason, critical } = classify(command);
+      const ask = needsApproval(tier, server.env);
+      const show = command.length > 300 ? `${command.slice(0, 300)}…` : command;
+      if (ask) {
+        const ap = db.createApproval({ task_id: task.id, server: server.name, command, tier, reason, critical });
+        runner.log(task.id, 'info', `⏸ Espera tu permiso (#${ap.id}) en ${server.name}: ${show} — ${reason}`);
+        db.audit('infra.ask', task.id, `${server.name}: ${show}`);
+        broadcast({ type: 'approval', approval: ap });
+        const deadline = Date.now() + APPROVAL_WAIT_MS;
+        let cur = ap;
+        while (cur.status === 'pending' && Date.now() < deadline) {
+          await new Promise((r2) => setTimeout(r2, 500));
+          cur = db.getApproval(ap.id);
+          if (db.getTask(task.id)?.status !== 'running') { cur = db.decideApproval(ap.id, 'denied') ?? db.getApproval(ap.id); break; } // misión cancelada: no se ejecuta nada
+        }
+        if (cur.status === 'pending') { cur = db.decideApproval(ap.id, 'expired') ?? db.getApproval(ap.id); }
+        broadcast({ type: 'approval', approval: cur });
+        if (cur.status !== 'approved') {
+          runner.log(task.id, 'info', `✕ No se ejecutó (#${ap.id}): ${cur.status === 'denied' ? 'lo rechazaste' : 'nadie lo aprobó a tiempo'}`);
+          return send(res, 200, { ok: false, denied: true, note: cur.status === 'expired' ? 'sin respuesta a tiempo' : '' });
+        }
+      }
+      runner.log(task.id, 'tool', `ssh ${server.name} $ ${show}`);
+      db.audit('infra.exec', task.id, `${server.name}: ${show}`);
+      const r = await sshRun({ server, command });
+      runner.log(task.id, 'info', `↳ código ${r.code}${r.timedOut ? ' (tiempo agotado)' : ''}${r.stderr ? ` · ${r.stderr.slice(0, 200)}` : ''}`);
+      return send(res, 200, { ok: r.code === 0, ...r });
+    }
+    if (url.pathname === '/api/approvals' && method === 'GET') return send(res, 200, db.pendingApprovals());
+    if ((r = m(/^\/api\/approvals\/(\d+)\/(approve|deny)$/)) && method === 'POST') {
+      const ap = db.getApproval(Number(r[1]));
+      if (!ap) return send(res, 404, { error: 'No existe' });
+      if (ap.status !== 'pending') return send(res, 409, { error: 'Ya estaba decidido' });
+      const done = db.decideApproval(ap.id, r[2] === 'approve' ? 'approved' : 'denied');
+      db.audit(r[2] === 'approve' ? 'infra.approve' : 'infra.deny', ap.task_id, `${ap.server}: ${ap.command.slice(0, 200)}`);
+      broadcast({ type: 'approval', approval: done });
+      return send(res, 200, done);
+    }
+    if (url.pathname === '/api/servers' && method === 'GET') return send(res, 200, publicServers());
+    if ((r = m(/^\/api\/servers\/([^/]+)\/password$/)) && method === 'PUT') {
+      const name = decodeURIComponent(r[1]);
+      if (!db.servers().some((s) => s.name === name)) return send(res, 404, { error: 'Servidor desconocido' });
+      const { password } = await readJson(req);
+      if (password === '' || password === null) {
+        setEnvVar(envFile, passVar(name), null); delete process.env[passVar(name)];
+        db.audit('servers.password.remove', null, name);
+        return send(res, 200, { has_password: false });
+      }
+      if (typeof password !== 'string' || password.length > 200 || /[\u0000-\u001f]/.test(password)) return send(res, 400, { error: 'Contraseña inválida (máx. 200 caracteres, sin saltos de línea)' });
+      const value = encodePass(password);
+      setEnvVar(envFile, passVar(name), value); process.env[passVar(name)] = value;
+      db.audit('servers.password.set', null, name); // nunca se registra la contraseña
+      return send(res, 200, { has_password: true });
+    }
+    if (url.pathname === '/api/servers' && method === 'PUT') {
+      const { servers } = await readJson(req);
+      const { error, value } = parseServers(servers);
+      if (error) return send(res, 400, { error });
+      const used = new Set(db.listTasks().filter((t) => ['queued', 'running'].includes(t.status) && isServerRef(t.project)).map((t) => t.project));
+      const gone = db.servers().find((s) => used.has(`srv:${s.name}`) && !value.some((v) => v.name === s.name));
+      if (gone) return send(res, 409, { error: `«${gone.name}» tiene una misión en curso: espera a que termine` });
+      const before = db.servers();
+      // la huella fijada se conserva mientras no cambie el host o el puerto
+      const merged = value.map((v) => { const o = before.find((b) => b.name === v.name); return o?.hostkey && o.host === v.host && o.port === v.port ? { ...v, hostkey: o.hostkey } : v; });
+      for (const b of before) if (!merged.some((v) => v.name === b.name)) { setEnvVar(envFile, passVar(b.name), null); delete process.env[passVar(b.name)]; } // quitar el servidor borra su contraseña
+      db.setServers(merged);
+      db.audit('servers.update', null, `${value.length} servidores`);
+      broadcast({ type: 'providers' });
+      return send(res, 200, publicServers());
+    }
+    // --- «Nueva tarea»: agentes especiales que trabajan por ciclos hasta que tú los finalices ---
+    const streamView = (s) => {
+      const cycles = db.streamCycles(s.id);
+      const last = cycles.at(-1);
+      const state = s.status === 'finished' ? 'finished' : last && ['queued', 'running'].includes(last.status) ? 'running' : 'waiting';
+      return { ...s, state, cost_usd: cycles.reduce((a, c) => a + (c.cost_usd || 0), 0),
+        cycles: cycles.map((c) => ({ id: c.id, cycle: c.cycle, agent: c.agent, status: c.status, title: c.title, result: c.result, error: c.error, cost_usd: c.cost_usd, engine: c.engine, finished_at: c.finished_at })) };
+    };
+    /** Crea y encola el siguiente ciclo. Si no se puede encolar, no deja rastro. */
+    const launchCycle = async (stream, instruction) => {
+      const cycles = db.streamCycles(stream.id);
+      const n = cycles.length + 1;
+      if (n > MAX_CYCLES) throw new Error(`Tope de ${MAX_CYCLES} ciclos: finaliza esta tarea y crea otra`);
+      // Agente «auto»: el despachador elige en cada ciclo según la tarea, el objetivo y tu instrucción (y crea uno si ninguno encaja).
+      let choice = null; let agent = stream.agent;
+      if (agent === 'auto') {
+        choice = await dispatcher.choose({ title: stream.title, description: `${stream.goal}
+${instruction}`.trim(), project: stream.project, mode: stream.mode });
+        agent = choice.agent;
+        if (choice.created) db.audit('agent.create', stream.id, `${choice.created.name}: ${choice.created.description}`);
+      }
+      const task = db.createTask({ title: `${stream.title.slice(0, 150)} · ciclo ${n}`, description: buildCyclePrompt(stream, cycles, instruction), agent, engine: stream.engine,
+        model: stream.model, project: stream.project, mode: stream.mode, kind: 'cycle', stream_id: stream.id, cycle: n });
+      try { runner.enqueue(task.id); } catch (e) { db.deleteTask(task.id); throw e; }
+      if (choice) db.addEvent(task.id, 'info', `Agente elegido automáticamente: ${choice.agent}${choice.created ? ' (agente nuevo creado)' : ''} — ${choice.reason}`);
+      db.audit('stream.cycle', stream.id, `ciclo ${n}`);
+      emit(task.id);
+      return task;
+    };
+    if (url.pathname === '/api/streams' && method === 'GET') return send(res, 200, { skins: STREAM_SKINS, streams: db.listStreams().map(streamView) });
+    if (url.pathname === '/api/streams' && method === 'POST') {
+      const body = await readJson(req);
+      const auto = !body.agent || body.agent === 'auto';
+      const { error, value } = validate({ title: body.title, description: body.goal, agent: auto ? listAgents()[0]?.name : body.agent, engine: body.engine ?? 'auto', model: body.model, project: body.project || null, mode: body.mode ?? 'read' });
+      if (error) return send(res, 400, { error });
+      if (typeof body.goal !== 'string' || !body.goal.trim()) return send(res, 400, { error: 'Falta el objetivo' });
+      if (needsConfirm({ agent: value.agent, engine: value.engine, mode: value.mode, project: value.project }) && body.confirm !== true) return send(res, 409, { error: 'Esta tarea puede editar archivos o actuar sobre un servidor en cada ciclo: requiere confirmación', needsConfirm: true });
+      const skin = STREAM_SKINS.some((k) => k.id === body.skin) ? body.skin : STREAM_SKINS[0].id;
+      const stream = db.createStream({ title: value.title.trim().slice(0, 200), goal: body.goal.trim().slice(0, 2000), agent: auto ? 'auto' : value.agent, engine: value.engine, model: value.model, project: value.project, mode: value.mode, skin });
+      db.audit('stream.create', stream.id, stream.title);
+      try { await launchCycle(stream, ''); } catch (e) { db.deleteStream(stream.id); return send(res, 409, { error: e.message }); } // el primer ciclo arranca solo
+      broadcast({ type: 'streams' });
+      return send(res, 201, streamView(stream));
+    }
+    if ((r = m(/^\/api\/streams\/(\d+)(?:\/(next|finish))?$/))) {
+      const stream = db.getStream(Number(r[1]));
+      if (!stream) return send(res, 404, { error: 'No existe' });
+      if (r[2] === 'next' && method === 'POST') {
+        const body = await readJson(req);
+        if (stream.status === 'finished') return send(res, 409, { error: 'Esta tarea ya está finalizada' });
+        if (streamView(stream).state === 'running') return send(res, 409, { error: 'El ciclo actual sigue en curso' });
+        if (needsConfirm(stream) && body.confirm !== true) return send(res, 409, { error: 'Este ciclo puede editar archivos o actuar sobre un servidor: requiere confirmación', needsConfirm: true });
+        try { await launchCycle(stream, String(body.instruction ?? '').trim().slice(0, 2000)); } catch (e) { return send(res, 409, { error: e.message }); }
+        broadcast({ type: 'streams' });
+        return send(res, 202, streamView(stream));
+      }
+      if (r[2] === 'finish' && method === 'POST') {
+        for (const c of db.streamCycles(stream.id)) if (['queued', 'running'].includes(c.status)) runner.cancel(c.id);
+        db.finishStream(stream.id);
+        db.audit('stream.finish', stream.id, stream.title);
+        broadcast({ type: 'streams' });
+        return send(res, 200, streamView(db.getStream(stream.id)));
+      }
+      if (!r[2] && method === 'DELETE') {
+        if (stream.status !== 'finished') return send(res, 409, { error: 'Finaliza la tarea antes de borrarla' });
+        for (const c of db.streamCycles(stream.id)) { await runner.discardChanges(c.id).catch(() => {}); db.deleteTask(c.id); await dropAttachments(c.id); broadcast({ type: 'deleted', id: c.id }); }
+        db.deleteStream(stream.id);
+        db.audit('stream.delete', stream.id, stream.title);
+        broadcast({ type: 'streams' });
+        return send(res, 200, { ok: true });
+      }
     }
     if (method === 'POST' && url.pathname === '/api/objectives') {
       const body = await readJson(req);

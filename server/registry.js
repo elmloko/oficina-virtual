@@ -2,6 +2,8 @@ import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { config } from './config.js';
 
+/** Destino «servidor» (modo infraestructura): `srv:nombre`. No es una carpeta: el agente no se conecta, solo planifica. */
+export const isServerRef = (name) => typeof name === 'string' && name.startsWith('srv:');
 export const isExtraRoot = (name) => typeof name === 'string' && name.startsWith('@');
 export const DOCS_PROJECT = '+Documentos';
 export const isDocsRoot = (name) => name === DOCS_PROJECT;

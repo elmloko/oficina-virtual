@@ -65,7 +65,7 @@ function confirmDialog(title, text) {
 async function withConfirm(path, text, body = {}) {
   try { return await post(path, body); } catch (e) {
     if (e.status === 409 && e.data?.needsConfirm) {
-      if (await confirmDialog('Permitir edición de archivos', text ?? e.message)) return post(path, { ...body, confirm: true });
+      if (await confirmDialog('Permitir acciones', text ?? e.message)) return post(path, { ...body, confirm: true });
       return null;
     }
     throw e;
@@ -83,9 +83,206 @@ function showView(v) {
   for (const s of document.querySelectorAll('.view')) s.hidden = s.id !== `view-${v}`;
   requestAnimationFrame(fitOffice);
   if (v === 'costs') refreshCosts();
+  clearInterval(showView.timer2);
+  if (v === 'streams') { refreshStreams(); showView.timer2 = setInterval(refreshStreams, 3000); }
   clearInterval(showView.timer);
   if (v === 'system') { refreshSystem(); showView.timer = setInterval(refreshSystem, 2000); }
   render();
+}
+
+// ---------- Servidores (modo infraestructura): el agente planifica y tú entras a ejecutar ----------
+const ENV_ES = { prod: 'producción', staging: 'pruebas', dev: 'desarrollo' };
+/** Grupo «Servidores» para el selector de proyecto de Nueva misión / Nueva tarea. */
+const serverOptions = () => (state.servers?.length
+  ? [el('optgroup', { label: '🖥 Servidores (infraestructura)' }, ...state.servers.map((s) => el('option', { value: `srv:${s.name}`, textContent: `${s.name} · ${ENV_ES[s.env] ?? s.env}` })))]
+  : []);
+/** Si el destino es un servidor, el modo pasa a «infraestructura» (no se puede editar un servidor). */
+function applyServerMode(form) {
+  const srv = String(form.project.value).startsWith('srv:');
+  const edit = [...form.mode.options].find((o) => o.value === 'edit');
+  if (edit) edit.disabled = srv;
+  if (srv) form.mode.value = 'infra';
+}
+/** Aviso del modo infraestructura: si falta el servidor de destino, lo dice claro (sin él Claude solo puede dejar un plan). */
+function infraHint(node, form) {
+  const infra = form.mode.value === 'infra';
+  const needsServer = infra && !String(form.project.value).startsWith('srv:') && ['auto', 'claude'].includes(form.engine.value);
+  node.hidden = !infra;
+  node.className = needsServer ? 'error' : 'hint';
+  node.textContent = needsServer
+    ? (state.servers?.length
+      ? '⚠ Falta el servidor de destino: elígelo en «Proyecto» (grupo 🖥 Servidores). Sin él, el agente no puede operar nada.'
+      : '⚠ Aún no tienes servidores registrados. Agrégalo en Sistema → Ajustes → Servidores (nombre, host, usuario, entorno) y vuelve aquí a elegirlo como Proyecto.')
+    : '🖥 Con Claude Code y un servidor de destino, el agente opera el servidor por SSH. Lo de solo lectura corre solo; lo fuerte (borrar, reiniciar, instalar, permisos, firewall, escribir archivos…) te lo pregunta antes, y en producción también los cambios leves. Con otros motores solo entrega un plan con comandos.';
+}
+function renderServers() {
+  const list = state.servers ?? [];
+  const setPassword = (s, password) => guard(async () => {
+    const r = await api(`/api/servers/${encodeURIComponent(s.name)}/password`, { method: 'PUT', body: JSON.stringify({ password }) });
+    toast(r.has_password ? 'Contraseña guardada' : 'Contraseña quitada: se usará tu llave SSH', false);
+    state.servers = await api('/api/servers'); renderServers();
+  });
+  $('#sys-servers').replaceChildren(...(list.length ? list.map((s) => {
+    const pw = el('input', { type: 'password', placeholder: s.has_password ? 'Nueva contraseña' : 'Contraseña del servidor', autocomplete: 'new-password', maxLength: 200 });
+    const form = el('form', { className: 'srv-pw', hidden: true }, pw,
+      el('button', { type: 'submit', className: 'primary', textContent: 'Guardar' }),
+      ...(s.has_password ? [el('button', { type: 'button', className: 'danger', textContent: 'Quitar contraseña', onclick: setPassword(s, '') })] : []));
+    form.onsubmit = async (e) => { e.preventDefault(); if (pw.value) { await setPassword(s, pw.value)(); pw.value = ''; } };
+    return el('div', { className: 'srv-item' }, el('div', { className: 'srv-row' },
+      el('span', { className: `pill ${s.env === 'prod' ? 'bad' : 'ok'}`, textContent: ENV_ES[s.env] ?? s.env }),
+      el('strong', { textContent: s.name }),
+      el('span', { className: 'muted', title: s.hostkey ? `Huella fijada: ${s.hostkey}` : 'La huella se fija en la primera conexión', textContent: `${s.user ? `${s.user}@` : ''}${s.host}:${s.port} · ${s.has_password ? '🔑 contraseña guardada' : 'llave SSH'}${s.hostkey ? ' · huella ✓' : ''}${s.notes ? ` · ${s.notes}` : ''}` }),
+      el('span', { className: 'srv-btns' },
+        el('button', { type: 'button', textContent: s.has_password ? 'Cambiar contraseña' : 'Poner contraseña', onclick: () => { form.hidden = !form.hidden; if (!form.hidden) pw.focus(); } }),
+        el('button', { className: 'danger', textContent: 'Quitar', onclick: guard(async () => {
+          if (!(await confirmDialog('Quitar servidor', `«${s.name}» deja de aparecer como destino y se borra su contraseña guardada. No se toca el servidor real.`))) return;
+          await saveServers(list.filter((x) => x.name !== s.name));
+        }) }))), form);
+  }) : [el('p', { className: 'hint', textContent: 'Aún no hay servidores. Agrégalos para usarlos como destino en el modo infraestructura.' })]));
+}
+async function saveServers(list) {
+  const clean = list.map(({ has_password, hostkey, ...rest }) => rest); // la huella y la contraseña las gestiona el servidor
+  state.servers = await api('/api/servers', { method: 'PUT', body: JSON.stringify({ servers: clean }) });
+  renderServers(); fillSelects(); toast('Servidores guardados', false);
+}
+function setupServers() {
+  const f = $('#server-form');
+  f.onsubmit = guard(async (e) => {
+    e.preventDefault();
+    const { password, ...s } = Object.fromEntries(new FormData(f));
+    await saveServers([...(state.servers ?? []).filter((x) => x.name.toLowerCase() !== s.name.trim().toLowerCase()), s]);
+    if (password) { await api(`/api/servers/${encodeURIComponent(s.name.trim())}/password`, { method: 'PUT', body: JSON.stringify({ password }) }); state.servers = await api('/api/servers'); renderServers(); toast('Contraseña guardada', false); }
+    f.reset();
+  });
+  renderServers();
+}
+
+// ---------- Permisos de infraestructura: el agente pide ejecutar algo fuerte en un servidor y espera tu respuesta ----------
+const approvalSeen = new Set();
+async function refreshApprovals() {
+  let list = [];
+  try { list = await api('/api/approvals'); } catch { return; }
+  state.approvals = list;
+  const btn = $('#approvals-btn');
+  btn.hidden = !list.length;
+  btn.textContent = `⏸ ${list.length} ${list.length === 1 ? 'permiso pendiente' : 'permisos pendientes'}`;
+  const fresh = list.some((a) => !approvalSeen.has(a.id));
+  for (const a of list) approvalSeen.add(a.id);
+  const dlg = $('#approval-dialog');
+  if (!list.length) { if (dlg.open) dlg.close(); return; }
+  if (dlg.open || fresh) showApproval();
+}
+function showApproval() {
+  const a = state.approvals?.[0];
+  if (!a) return;
+  const t = state.tasks.get(a.task_id);
+  const srv = state.servers?.find((s) => s.name === a.server);
+  $('#ap-title').textContent = a.critical ? '⚠ Acción destructiva: necesita tu permiso' : 'Un agente pide tu permiso';
+  $('#ap-meta').textContent = `Misión #${a.task_id}${t ? ` · ${t.title}` : ''} · servidor ${a.server}${srv ? ` (${ENV_ES[srv.env] ?? srv.env})` : ''}${state.approvals.length > 1 ? ` · +${state.approvals.length - 1} más en espera` : ''}`;
+  $('#ap-cmd').textContent = a.command;
+  $('#ap-why').textContent = `Por qué te lo pregunta: ${a.reason}.${srv?.env === 'prod' ? ' Es un servidor de PRODUCCIÓN.' : ''}`;
+  $('#ap-why').className = a.critical || srv?.env === 'prod' ? 'error' : 'hint';
+  const decide = (kind) => guard(async () => {
+    await post(`/api/approvals/${a.id}/${kind}`);
+    toast(kind === 'approve' ? 'Aprobado: se ejecuta' : 'Rechazado: no se ejecuta', false);
+    await refreshApprovals();
+  });
+  $('#ap-ok').onclick = decide('approve');
+  $('#ap-no').onclick = decide('deny');
+  if (!$('#approval-dialog').open) $('#approval-dialog').showModal();
+}
+function setupApprovals() {
+  $('#approvals-btn').onclick = showApproval;
+  $('#approval-dialog').addEventListener('close', () => {});
+  refreshApprovals(); setInterval(refreshApprovals, 4000);
+}
+
+// ---------- Nueva tarea: agentes especiales que trabajan por ciclos hasta que los finalices ----------
+const GLYPH = { centinela: '◉', forjador: '✦', espectro: '☄', vigia: '◈' };
+async function refreshStreams() {
+  try {
+    const d = await api('/api/streams');
+    state.streamSkins = d.skins; state.streams = d.streams;
+    const waiting = d.streams.filter((s) => s.state === 'waiting').length;
+    const b = $('#streams-badge'); b.hidden = !waiting; b.textContent = String(waiting);
+    if (state.view === 'streams') renderStreams();
+  } catch { /* sin conexión: se reintenta */ }
+}
+const STREAM_STATE = { running: (s) => `ciclo ${s.cycles.at(-1)?.cycle ?? 1} en curso…`, waiting: () => 'esperando tus instrucciones', finished: () => 'finalizada' };
+function renderStreams() {
+  const list = state.streams ?? [];
+  const draft = new Map([...document.querySelectorAll('.stream textarea')].map((t) => [t.dataset.id, t.value])); // no pierdas lo que escribías
+  const head = JSON.stringify(list.map((s) => [s.id, s.state, s.cycles.map((c) => [c.id, c.status])]));
+  if (renderStreams.last === head && $('#streams-list').children.length) return;
+  renderStreams.last = head;
+  $('#streams-list').replaceChildren(...(list.length ? list.map((s) => {
+    const done = s.cycles.filter((c) => c.result).at(-1);
+    const instr = el('textarea', { placeholder: 'Instrucciones para el siguiente ciclo (opcional)…', maxLength: 2000 });
+    instr.dataset.id = String(s.id); instr.value = draft.get(String(s.id)) ?? '';
+    const cycle = guard(async () => {
+      if (s.mode === 'edit' && !(await confirmDialog('Siguiente ciclo', 'Este ciclo puede editar archivos del proyecto (en una copia aislada que luego aplicas o descartas). ¿Lanzarlo?'))) return;
+      await post(`/api/streams/${s.id}/next`, { instruction: instr.value, confirm: true });
+      instr.value = ''; await refreshStreams();
+    });
+    const finish = guard(async () => {
+      if (!(await confirmDialog('Finalizar tarea', 'El agente deja de trabajar en esta tarea (se cancela el ciclo en curso). Podrás ver el historial y borrarla.'))) return;
+      await post(`/api/streams/${s.id}/finish`); await refreshStreams();
+    });
+    const remove = guard(async () => {
+      if (!(await confirmDialog('Borrar tarea', 'Se borra la tarea y todas las misiones de sus ciclos. No se puede deshacer.'))) return;
+      await api(`/api/streams/${s.id}`, { method: 'DELETE' }); await refreshStreams();
+    });
+    const skinName = state.streamSkins?.find((k) => k.id === s.skin)?.name ?? '';
+    return el('article', { className: `stream skin-${s.skin} ${s.state}` },
+      el('div', { className: 'stream-head' }, el('div', { className: 'emblem' }, el('span', { textContent: GLYPH[s.skin] ?? '✦' })),
+        el('div', {}, el('div', { className: 'ribbon', textContent: `especial · ${skinName}` }), el('h3', { textContent: s.title }),
+          el('span', { className: 'muted', textContent: `${s.agent === 'auto' ? `🤖 auto${s.cycles.at(-1)?.agent ? ` → ${s.cycles.at(-1).agent}` : ''}` : s.agent} · ${s.engine}${s.mode === 'edit' ? ' · edita' : ' · lee'}${s.project ? ` · ${s.project}` : ''} · ${s.cycles.length} ciclos · ${money(s.cost_usd)}` })),
+        el('span', { className: 'state', textContent: STREAM_STATE[s.state](s) })),
+      el('p', { className: 'goal', textContent: `Objetivo: ${s.goal}` }),
+      el('div', { className: 'cyc' }, ...s.cycles.map((c) => el('button', { className: c.status, title: c.title, textContent: `#${c.cycle}`, onclick: () => openDrawer(c.id) }))),
+      done ? el('div', { className: 'last', textContent: `Última entrega (ciclo ${done.cycle}):\n${done.result.slice(0, 900)}` }) : el('p', { className: 'hint', textContent: s.state === 'running' ? 'Trabajando en la primera entrega…' : 'Aún sin entregas.' }),
+      ...(s.state === 'waiting' && s.cycles.at(-1)?.status === 'failed' ? [el('p', { className: 'error', textContent: `✕ El ciclo ${s.cycles.at(-1).cycle} falló: ${s.cycles.at(-1).error ?? 'error desconocido'}. Puedes lanzar otro ciclo o cambiar lo que pides.` })] : []),
+      ...(s.state === 'waiting' ? [instr, el('div', { className: 'row' }, el('button', { className: 'primary', textContent: `Lanzar ciclo ${s.cycles.length + 1}`, onclick: cycle }), el('button', { className: 'danger', textContent: 'Finalizar', onclick: finish }))]
+        : s.state === 'running' ? [el('div', { className: 'row' }, el('button', { className: 'danger', textContent: 'Finalizar (cancela el ciclo)', onclick: finish }))]
+          : [el('div', { className: 'row' }, el('button', { className: 'danger', textContent: 'Borrar', onclick: remove }))]));
+  }) : [el('p', { className: 'hint', textContent: 'Aún no hay tareas. Crea una con «✦ Nueva tarea».' })]));
+}
+function setupStreams() {
+  const f = $('#stream-form');
+  const sync = () => {
+    // solo Claude Code edita archivos; los demás motores (Codex, Ollama, LM Studio, internet) únicamente leen
+    const canEdit = ['auto', 'claude'].includes(f.engine.value);
+    f.mode.options[0].disabled = !canEdit; if (!canEdit && f.mode.value === 'edit') f.mode.value = 'read';
+    applyServerMode(f);
+    if (String(f.project.value).startsWith('srv:')) f.mode.options[0].disabled = true;
+    $('#stream-edit-hint').hidden = f.mode.value !== 'edit';
+    infraHint($('#stream-infra-hint'), f);
+    const prov = state.providers.find((p) => p.name === f.engine.value);
+    const pick = PICK_ENGINES.includes(f.engine.value) ? f.engine.value : null;
+    $('#stream-model-row').hidden = !prov && !pick;
+    f.model.hidden = !prov || !!pick; f.model_pick.hidden = !pick;
+    f.model.placeholder = prov ? `por defecto: ${prov.model}` : '';
+    if (pick) { const keep = f.model_pick.value; f.model_pick.replaceChildren(...modelOptions(pick, '')); f.model_pick.value = [...f.model_pick.options].some((o) => o.value === keep) ? keep : ''; }
+  };
+  const fill = () => {
+    f.agent.replaceChildren(el('option', { value: 'auto', textContent: '🤖 Automático — el sistema elige en cada ciclo (y crea uno si hace falta)' }), ...state.agents.map((a) => el('option', { value: a.name, textContent: `${a.name} — ${a.description}`.slice(0, 80) })));
+    f.project.replaceChildren(el('option', { value: '', textContent: '(sin proyecto)' }), ...state.projects.map((p) => el('option', { value: p.name, textContent: p.docs ? '📄 Documentos — carpeta nueva por tema' : p.name })), ...serverOptions());
+    f.engine.replaceChildren(...[...$('#new-form').engine.options].map((o) => el('option', { value: o.value, textContent: o.textContent })));
+    $('#stream-skins').replaceChildren(...(state.streamSkins ?? []).map((k, i) => el('label', { style: `--c:${k.color}` },
+      el('input', { type: 'radio', name: 'skin', value: k.id, checked: i === 0 }), el('span', { textContent: ` ${GLYPH[k.id] ?? '✦'} ${k.name}` }))));
+    sync();
+  };
+  f.engine.onchange = sync; f.mode.onchange = sync; f.project.onchange = sync;
+  openStreamDialog = wireDialog('#stream-dialog', '#stream-form', async (form) => {
+    const fd = Object.fromEntries(new FormData(form));
+    const body = { title: fd.title, goal: fd.goal, agent: fd.agent, project: fd.project || null, engine: fd.engine, mode: fd.mode, skin: fd.skin, model: (PICK_ENGINES.includes(fd.engine) ? fd.model_pick : fd.model) || null };
+    const liveInfra = body.mode === 'infra' && String(body.project ?? '').startsWith('srv:') && ['auto', 'claude'].includes(body.engine);
+    if ((body.mode === 'edit' || liveInfra) && !(await confirmDialog('Tarea con acciones reales', body.mode === 'edit' ? 'En cada ciclo el agente podrá modificar archivos del proyecto (en una copia aislada; tú aplicas o descartas). El primer ciclo arranca ya. ¿Continuar?' : 'En cada ciclo el agente podrá operar el servidor por SSH (lo de solo lectura corre solo; lo fuerte te lo pregunta). El primer ciclo arranca ya. ¿Continuar?'))) throw new Error('Cancelado');
+    await post('/api/streams', { ...body, confirm: true });
+    await refreshStreams(); showView('streams');
+  });
+  $('#stream-btn').onclick = async () => { await refreshStreams(); openStreamDialog(fill); };
+  refreshStreams(); setInterval(refreshStreams, 10_000); // el aviso de «esperando instrucciones» se mantiene al día
 }
 
 /** Ajusta el mapa para que quepa entero en la ventana (sin scroll), conservando su proporción. */
@@ -272,6 +469,7 @@ function card(t) {
     el('span', { className: 'tag', textContent: t.used_model ? `${t.engine} · ${t.used_model}` : t.engine }),
   );
   if (t.mode === 'edit') meta.append(el('span', { className: 'tag edit', textContent: 'edita' }));
+  if (t.mode === 'infra') meta.append(el('span', { className: 'tag', textContent: 'infra' }));
   if (kids.length) meta.append(el('span', { textContent: `pasos ${kids.filter((k) => ['review', 'done'].includes(k.status)).length}/${kids.length}` }));
   if (t.parent_id) meta.append(el('span', { textContent: `↳ #${t.parent_id}` }));
   if (t.review_of) meta.append(el('span', { textContent: `revisa #${t.review_of}` }));
@@ -297,6 +495,32 @@ async function openDrawer(id) {
   loadAtts(id);
 }
 
+/** Lo que pediste: en una misión, el título y la descripción; en un objetivo, el objetivo; en un ciclo de «Nueva tarea», la tarea, el objetivo y tu instrucción de ese ciclo. */
+function instructionBlocks(t) {
+  const block = (label, text) => el('div', {}, el('h4', { textContent: label }), el('div', { className: 'it', textContent: text }));
+  if (t.kind === 'cycle') {
+    const pick = (re) => (t.description.match(re)?.[1] ?? '').trim();
+    const tarea = pick(/TAREA PERMANENTE: (.*)/);
+    const objetivo = pick(/\nOBJETIVO: ([\s\S]*?)\n\n/);
+    const instr = pick(/INSTRUCCIÓN DEL USUARIO PARA ESTE CICLO: ([\s\S]*?)\n\nHaz /);
+    return [block('Tarea', tarea || t.title), block('Objetivo', objetivo || '—'),
+      block(`Tu instrucción para el ciclo ${t.cycle ?? ''}`, instr || (t.cycle === 1 ? '(ninguna: el primer ciclo arranca solo)' : '(ninguna: lo dejaste a criterio del agente)'))];
+  }
+  if (t.kind === 'objective') return [block('Objetivo', t.title), block('Detalles', t.description?.trim() || '(sin detalles)')];
+  const desc = t.description?.trim();
+  return desc ? [block('Instrucciones (lo que hace el agente)', desc), block('Título (solo etiqueta)', t.title)] : [block('Instrucciones (sin descripción: se usa el título)', t.title)];
+}
+
+// panel de detalle: ancho por defecto; «⤢» lo lleva a pantalla completa (se recuerda)
+const DRAWER_KEY = 'oficina.drawer.full';
+function setupDrawerSize() {
+  const d = $('#drawer');
+  try { d.classList.toggle('full', localStorage.getItem(DRAWER_KEY) === '1'); } catch { /* sin almacenamiento */ }
+  $('#d-expand').onclick = () => {
+    const full = d.classList.toggle('full');
+    try { localStorage.setItem(DRAWER_KEY, full ? '1' : '0'); } catch { /* sin almacenamiento */ }
+  };
+}
 function logLine(ev) { appendLine($('#d-log'), ev); }
 
 function drawer(t) {
@@ -307,6 +531,7 @@ function drawer(t) {
   $('#d-meta').title = t.workdir ? `Carpeta: ${t.workdir}` : '';
   $('#d-meta').textContent = `${t.kind === 'objective' ? 'coordinador' : t.agent} · ${t.project || 'sin proyecto'} · ${t.engine}${t.used_model || t.model ? ':' + (t.used_model || t.model) : ''}/${t.mode} · ${t.status}${deps}${t.error ? ' · ' + t.error : ''}`;
   $('#d-result').textContent = t.result || '';
+  $('#d-instr').replaceChildren(...instructionBlocks(t));
   const act = $('#d-actions');
   act.replaceChildren();
   const busy = t.status === 'queued' || t.status === 'running';
@@ -317,7 +542,7 @@ function drawer(t) {
   const run = el('button', { className: kids.length && isObj ? '' : 'primary', textContent: runLabel, disabled: busy });
   run.onclick = guard(async () => {
     if (isObj && kids.length && !(await confirmDialog('Replanificar', 'Se generará un plan nuevo y se mantendrán los pasos anteriores. ¿Continuar?'))) return;
-    await withConfirm(`/api/tasks/${t.id}/run`, 'Esta misión puede editar archivos de tu proyecto. ¿Permitirlo?');
+    await withConfirm(`/api/tasks/${t.id}/run`, 'Esta misión puede editar archivos de tu proyecto o actuar sobre un servidor (lo fuerte te lo preguntará antes). ¿Permitirlo?');
   });
   const stop = el('button', { textContent: 'Cancelar', disabled: !busy });
   stop.onclick = guard(() => post(`/api/tasks/${t.id}/cancel`));
@@ -619,7 +844,7 @@ function replyForm(t) {
         if (errs.length) { err.textContent = `No se envió: ${errs.join(' · ')}`; return; }
         picker.clear(); attsCache.delete(t.id);
       }
-      const r = await withConfirm(`/api/tasks/${t.id}/reply`, 'Esta misión puede editar archivos de tu proyecto. ¿Permitirlo?', { text });
+      const r = await withConfirm(`/api/tasks/${t.id}/reply`, 'Esta misión puede editar archivos de tu proyecto o actuar sobre un servidor (lo fuerte te lo preguntará antes). ¿Permitirlo?', { text });
       if (r) { agentUi.drafts.delete(t.id); ta.value = ''; toast('Respuesta enviada: el agente sigue trabajando', false); }
     } catch (x) { err.textContent = x.message; } finally { send.disabled = false; }
   };
@@ -737,7 +962,7 @@ function fillSelects() {
   f.agent.replaceChildren(el('option', { value: 'auto', textContent: '🤖 Automático — el sistema elige (y crea uno si hace falta)' }), ...state.agents.map((a) => el('option', { value: a.name, textContent: `${a.name} — ${a.description}`.slice(0, 80) })));
   if (keepAgent && [...f.agent.options].some((o) => o.value === keepAgent)) f.agent.value = keepAgent;
   const projectOptions = () => [el('option', { value: '', textContent: '(sin proyecto)' }), ...state.projects.map((p) => el('option', { value: p.name, textContent: p.docs ? '📄 Documentos — carpeta nueva por tema' : p.name }))];
-  f.project.replaceChildren(...projectOptions());
+  f.project.replaceChildren(...projectOptions(), ...serverOptions());
   const offE = state.enginesOff ?? [];
   const engines = [['auto', 'Auto (el router decide)'], ...(offE.includes('claude') ? [] : [['claude', 'Claude Code (suscripción)']]), ...(offE.includes('ollama') ? [] : [['ollama', 'Ollama (local)']]), ...(offE.includes('codex') ? [] : [['codex', 'Codex (ChatGPT · solo lectura)']]), ...state.providers.map((p) => [p.name, `${provName(p)} · ${p.local ? 'en este equipo' : 'en internet'} (${p.model})`])];
   const down = serversDown();
@@ -772,7 +997,7 @@ function wireDialog(dialogSel, formSel, submit) {
   return (setup) => { f.querySelector('.form-error').textContent = ''; setup?.(f); d.showModal(); };
 }
 
-let openTaskDialog, openObjDialog, openRoutineDialog;
+let openTaskDialog, openObjDialog, openRoutineDialog, openStreamDialog;
 const newFiles = [];
 
 function setupForms() {
@@ -794,7 +1019,7 @@ function setupForms() {
     if (errs.length) toast(`La misión se creó, pero fallaron adjuntos: ${errs.join(' · ')}`);
     if (runNow) {
       try {
-        const r = await withConfirm(`/api/tasks/${task.id}/run`, 'Esta misión puede editar archivos de tu proyecto. ¿Permitirlo?');
+        const r = await withConfirm(`/api/tasks/${task.id}/run`, 'Esta misión puede editar archivos de tu proyecto o actuar sobre un servidor (lo fuerte te lo preguntará antes). ¿Permitirlo?');
         toast(r ? 'Misión lanzada' : 'Misión creada en el Hangar (no se lanzó)', false);
       } catch (x) { toast(`La misión se creó pero no pudo lanzarse: ${x.message}`); }
     }
@@ -806,6 +1031,10 @@ function setupForms() {
     await post(`/api/tasks/${o.id}/run`).catch((e) => toast(e.message));
     openDrawer(o.id);
   });
+  setupStreams();
+  setupServers();
+  setupApprovals();
+  setupDrawerSize();
   openRoutineDialog = wireDialog('#routine-dialog', '#routine-form', async (f) => {
     const fd = new FormData(f);
     const tpl = state.templates.find((t) => t.id === fd.get('template'));
@@ -818,7 +1047,9 @@ function setupForms() {
   });
   const taskForm = $('#new-form');
   const syncHint = () => {
+    applyServerMode(taskForm);
     $('#mode-hint').hidden = taskForm.mode.value !== 'edit';
+    infraHint($('#infra-hint'), taskForm);
     const prov = state.providers.find((p) => p.name === taskForm.engine.value);
     const pick = PICK_ENGINES.includes(taskForm.engine.value) ? taskForm.engine.value : null;
     $('#model-row').hidden = !prov && !pick;
@@ -834,6 +1065,7 @@ function setupForms() {
   };
   state.syncHint = syncHint;
   taskForm.mode.onchange = syncHint;
+  taskForm.project.onchange = syncHint;
   taskForm.engine.onchange = syncHint;
   taskForm.addEventListener('reset', () => setTimeout(syncHint));
   const rf = $('#routine-form');
@@ -845,7 +1077,7 @@ function setupForms() {
   rf.template.onchange = syncTpl;
   rf.addEventListener('reset', () => setTimeout(syncTpl));
   // clic en el fondo cierra el modal (no el de confirmación, que exige elegir)
-  for (const d of document.querySelectorAll('dialog:not(#confirm-dialog)')) {
+  for (const d of document.querySelectorAll('dialog:not(#confirm-dialog):not(#approval-dialog)')) {
     d.addEventListener('mousedown', (e) => { if (e.target === d) d.close(); });
   }
   $('#new-btn').onclick = () => { refreshModels(); openTaskDialog(syncHint); }; // al abrir se comprueba qué servidores siguen encendidos
@@ -1472,6 +1704,7 @@ async function refreshState() {
   const provChanged = provSig !== JSON.stringify([state.providers, state.enginesOff ?? []]);
   state.enginesOff = s.engines_off ?? [];
   state.messages = s.messages ?? state.messages;
+  state.servers = s.servers ?? state.servers ?? [];
   Object.assign(state, { agents: s.agents, projects: s.projects, providers: s.providers ?? [], stats: s.stats, settings: s.settings, templates: s.templates, schedules: s.schedules, costs: s.costs });
   const before = state.tasks;
   state.tasks = new Map(s.tasks.map((t) => [t.id, t]));
@@ -1500,6 +1733,8 @@ function connect() {
       if (state.stats) state.stats.paused = m.paused;
       if (state.system) state.system.queue.paused = m.paused;
       render();
+    } else if (m.type === 'approval') {
+      refreshApprovals();
     } else if (m.type === 'deleted') {
       state.tasks.delete(m.id);
       if (state.open === m.id) state.open = null;
@@ -1671,7 +1906,7 @@ function attnCard({ kind, task: t }) {
   open.onclick = () => openDrawer(t.id);
   if (kind === 'failed') {
     const retry = el('button', { type: 'button', className: 'primary', textContent: 'Reintentar' });
-    retry.onclick = guard(() => withConfirm(`/api/tasks/${t.id}/run`, 'Esta misión puede editar archivos de tu proyecto. ¿Permitirlo?'));
+    retry.onclick = guard(() => withConfirm(`/api/tasks/${t.id}/run`, 'Esta misión puede editar archivos de tu proyecto o actuar sobre un servidor (lo fuerte te lo preguntará antes). ¿Permitirlo?'));
     const hangar = el('button', { type: 'button', textContent: 'Al Hangar' });
     hangar.onclick = guard(() => api(`/api/tasks/${t.id}`, { method: 'PATCH', body: JSON.stringify({ status: 'backlog' }) }));
     act.append(retry, hangar, open);

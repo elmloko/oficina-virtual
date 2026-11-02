@@ -14,6 +14,8 @@
       <div class="hd-actions">
         <button id="sound-test" type="button" title="Escuchar los 4 sonidos de los avisos (suenen o no los avisos)">🔊 Probar</button>
         <button id="alerts-btn" type="button" aria-pressed="false" title="Sonido y notificaciones cuando un agente termine, falle o pregunte">🔕 Avisos: no</button>
+        <button id="approvals-btn" class="danger" hidden title="Un agente espera tu permiso para ejecutar algo en un servidor">⏸ permisos</button>
+        <button id="stream-btn" title="Un agente especial con tarea y objetivo que no termina hasta que tú lo finalices">✦ Nueva tarea</button>
         <button id="obj-btn">★ Nuevo objetivo</button>
         <button id="new-btn" class="primary">+ Nueva misión</button>
       </div>
@@ -24,6 +26,7 @@
         <button role="tab" data-view="attention" aria-selected="false">Atención <span id="attn-badge" class="badge" hidden>0</span></button>
         <button role="tab" data-view="board" aria-selected="false">Tablero</button>
         <button role="tab" data-view="comms" aria-selected="false">Comunicaciones <span id="comms-badge" class="badge live" hidden>0</span></button>
+        <button role="tab" data-view="streams" aria-selected="false">Tareas <span id="streams-badge" class="badge" hidden>0</span></button>
         <button role="tab" data-view="routines" aria-selected="false">Rutinas</button>
         <button role="tab" data-view="costs" aria-selected="false">Uso</button>
         <button role="tab" data-view="system" aria-selected="false">Sistema</button>
@@ -66,6 +69,11 @@
       <p class="hint">Cuando un agente necesita la opinión de otro especialista, se la pide aquí: el colega recibe una misión de solo lectura, responde, y el agente original continúa con esa respuesta. En la Oficina se ve el sobre volar entre ambos.</p>
       <div id="comms-list"></div>
     </div>
+  </section>
+
+  <section id="view-streams" class="view" hidden>
+    <p class="hint streams-intro">Agentes especiales con una <b>tarea</b> y un <b>objetivo</b>. El primer ciclo arranca solo; después esperan tus instrucciones y no terminan hasta que los finalices.</p>
+    <div id="streams-list" class="streams"></div>
   </section>
 
   <section id="view-routines" class="view" hidden>
@@ -121,6 +129,19 @@
         <div id="sys-engines"></div></article>
       <article class="card-sys" id="card-schedules" data-g="ajustes"><h2>Próximas rutinas <button type="button" class="mini-link" id="goto-routines">Gestionar →</button></h2><div id="sys-schedules"></div>
         <p class="hint">Las rutinas corren en modo solo lectura y solo mientras la oficina está encendida.</p></article>
+      <article class="card-sys wide" id="card-servers" data-g="ajustes"><h2>Servidores (modo infraestructura)</h2>
+        <p class="hint">Para tus trabajos de infraestructura: eliges un servidor como destino. Con Claude Code el agente opera el servidor por SSH: lee solo, y todo lo fuerte te lo pregunta. Entra con tu <b>llave SSH</b> o, si prefieres, con la <b>contraseña</b> que guardes aquí. La contraseña se guarda solo en este equipo (archivo <code>.env</code>), <b>nunca se envía al modelo</b> ni se muestra de nuevo, y el agente no la ve; solo la usa la oficina para conectar. La primera conexión fija la huella del servidor y avisa si después cambia.</p>
+        <div id="sys-servers"></div>
+        <form id="server-form" class="srv-form">
+          <input name="name" required maxlength="40" placeholder="Nombre (ej. web-prod)" autocomplete="off">
+          <input name="host" required maxlength="100" placeholder="Host o IP" autocomplete="off">
+          <input name="user" maxlength="40" placeholder="Usuario" autocomplete="off">
+          <input name="password" type="password" maxlength="200" placeholder="Contraseña (opcional)" autocomplete="new-password">
+          <input name="port" type="number" min="1" max="65535" placeholder="22" autocomplete="off">
+          <select name="env"><option value="prod">Producción</option><option value="staging">Pruebas</option><option value="dev">Desarrollo</option></select>
+          <input name="notes" maxlength="500" placeholder="Notas (rol, stack, cuidados…)" autocomplete="off">
+          <button type="submit" class="primary">Agregar</button>
+        </form></article>
       <article class="card-sys" id="card-settings" data-g="ajustes"><h2>Ajustes</h2>
         <form id="settings-form" class="settings-form">
           <fieldset><legend>Seguridad</legend><p class="hint">Topes que frenan una misión; no cobran nada. 0 = sin tope.</p>
@@ -142,8 +163,8 @@
     <form id="new-form" method="dialog">
       <div class="modal-head"><h2 id="new-title">Nueva misión</h2><button type="button" class="icon-btn" data-close aria-label="Cerrar">✕</button></div>
       <div class="modal-body">
-        <label>Título <input name="title" required maxlength="200" placeholder="¿Qué debe hacer el agente?" autocomplete="off"></label>
-        <label>Descripción <textarea name="description" rows="4" placeholder="Contexto, criterios de aceptación, archivos relevantes…"></textarea></label>
+        <label>Título <small class="muted">(solo un nombre para identificarla)</small> <input name="title" required maxlength="200" placeholder="Nombre corto. Ej.: Revisar contenedores del servidor" autocomplete="off"></label>
+        <label>Instrucciones <small class="muted">(esto es lo que el agente hará)</small> <textarea name="description" rows="5" placeholder="Qué debe hacer exactamente: contexto, pasos, criterios de aceptación, archivos relevantes…"></textarea></label>
         <div id="new-files" class="files-field"></div>
         <div class="grid2">
           <label>Agente <select name="agent" required></select></label>
@@ -157,6 +178,7 @@
             <select name="mode">
               <option value="read">Solo lectura / plan</option>
               <option value="edit">Puede editar archivos</option>
+              <option value="infra">Infraestructura — opera el servidor (lo fuerte te lo pregunta)</option>
             </select>
           </label>
         </div>
@@ -170,6 +192,7 @@
           <select name="model_pick" hidden></select>
         </label>
         <p class="hint" id="engine-hint" hidden></p>
+        <p class="hint" id="infra-hint" hidden>🖥 Modo infraestructura: con Claude Code y un servidor de destino, el agente opera el servidor por SSH. Lo de solo lectura corre solo; <b>lo fuerte</b> (borrar, reiniciar, instalar, permisos, firewall, escribir archivos…) <b>te lo pregunta</b> antes, y en producción también los cambios leves. Con otros motores solo te entrega un plan con comandos.</p>
         <p class="mode-hint" id="mode-hint" hidden>⚠ Este modo puede modificar archivos del proyecto. Te pediremos confirmación antes de ejecutar.</p>
         <p class="form-error error" role="alert"></p>
       </div>
@@ -197,6 +220,37 @@
     </form>
   </dialog>
 
+  <dialog id="stream-dialog" aria-labelledby="stream-title">
+    <form id="stream-form" method="dialog">
+      <div class="modal-head"><h2 id="stream-title">Nueva tarea</h2><button type="button" class="icon-btn" data-close aria-label="Cerrar">✕</button></div>
+      <div class="modal-body">
+        <p class="hint">Un agente especial que trabaja por ciclos. El primero arranca solo; en los siguientes tú le das instrucciones. No termina hasta que lo finalices.</p>
+        <label>Tarea <input name="title" required maxlength="200" placeholder="¿Qué hace de forma continua? Ej.: Vigilar y mejorar la calidad del módulo de guías" autocomplete="off"></label>
+        <label>Objetivo <textarea name="goal" required rows="3" placeholder="Qué quieres lograr al final. En cada ciclo entregará algo nuevo que acerque la tarea a este objetivo."></textarea></label>
+        <div class="grid2">
+          <label>Agente <select name="agent" required></select></label>
+          <label>Proyecto <select name="project"><option value="">(sin proyecto)</option></select></label>
+        </div>
+        <div class="grid2">
+          <label>Motor <select name="engine"></select></label>
+          <label>Modo <select name="mode"><option value="edit">Puede hacer todo (editar archivos)</option><option value="read">Solo lectura / plan</option><option value="infra">Infraestructura — opera el servidor (lo fuerte te lo pregunta)</option></select></label>
+        </div>
+        <label id="stream-model-row" hidden>Modelo (opcional)
+          <input name="model" placeholder="" autocomplete="off" maxlength="100">
+          <select name="model_pick" hidden></select>
+        </label>
+        <fieldset class="skin-pick"><legend>Skin del agente especial</legend><div id="stream-skins"></div></fieldset>
+        <p class="hint" id="stream-infra-hint" hidden></p>
+        <p class="mode-hint" id="stream-edit-hint" hidden>⚠ Podrá modificar archivos del proyecto en cada ciclo (en una copia aislada; tú aplicas o descartas los cambios). Te pediremos confirmación.</p>
+        <p class="form-error error" role="alert"></p>
+      </div>
+      <div class="modal-foot">
+        <button type="button" data-close>Cancelar</button>
+        <button type="submit" class="primary">Crear y lanzar ciclo 1</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="routine-dialog" aria-labelledby="routine-title">
     <form id="routine-form" method="dialog">
       <div class="modal-head"><h2 id="routine-title">Nueva rutina</h2><button type="button" class="icon-btn" data-close aria-label="Cerrar">✕</button></div>
@@ -218,6 +272,17 @@
     </form>
   </dialog>
 
+  <dialog id="approval-dialog" aria-labelledby="ap-title">
+    <div class="modal-head"><h2 id="ap-title">Un agente pide tu permiso</h2></div>
+    <div class="modal-body">
+      <p class="muted" id="ap-meta"></p>
+      <pre id="ap-cmd" class="ap-cmd"></pre>
+      <p id="ap-why" class="hint"></p>
+      <p class="hint">Se ejecutará por SSH con tus llaves, tal cual está escrito arriba. Si no estás seguro, rechaza: el agente buscará otra alternativa.</p>
+    </div>
+    <div class="modal-foot"><button type="button" id="ap-no" class="danger">Rechazar</button><button type="button" id="ap-ok" class="primary">Aprobar y ejecutar</button></div>
+  </dialog>
+
   <dialog id="confirm-dialog" class="small" aria-labelledby="confirm-title">
     <form method="dialog">
       <div class="modal-head"><h2 id="confirm-title">Confirmar</h2></div>
@@ -234,19 +299,26 @@
   <aside id="drawer" hidden aria-label="Detalle de misión">
     <div class="drawer-head">
       <h2 id="d-title"></h2>
-      <button id="d-close" aria-label="Cerrar">✕</button>
+      <span class="d-head-btns"><button id="d-expand" type="button" aria-label="Ampliar a pantalla completa" title="Ampliar / reducir">⤢</button><button id="d-close" aria-label="Cerrar">✕</button></span>
     </div>
-    <div id="d-meta"></div>
-    <div id="d-actions"></div>
-    <div id="d-reply"></div>
-    <div id="d-steps"></div>
-    <div id="d-atts"></div>
-    <div id="d-changes"></div>
-    <div id="d-comms"></div>
-    <h3>Registro</h3>
-    <div id="d-log"></div>
-    <h3>Resultado</h3>
-    <pre id="d-result"></pre>
+    <div class="d-body">
+      <div class="d-left">
+        <div id="d-meta"></div>
+        <div id="d-instr" class="instr"></div>
+        <div id="d-actions"></div>
+        <div id="d-reply"></div>
+        <div id="d-steps"></div>
+        <div id="d-atts"></div>
+        <div id="d-changes"></div>
+        <div id="d-comms"></div>
+      </div>
+      <div class="d-right">
+        <h3>Registro</h3>
+        <div id="d-log"></div>
+        <h3>Resultado</h3>
+        <pre id="d-result"></pre>
+      </div>
+    </div>
   </aside>
 
   <aside id="agent-panel" hidden aria-label="Detalle del agente">
