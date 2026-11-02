@@ -619,3 +619,5 @@ em.cat-task { color: var(--gold); border-color: var(--gold); } em.cat-sys { colo
   #drawer .d-left { overflow: visible; }
   #drawer .d-right { min-height: 70vh; }
 }
+
+.alerts-row { display: flex; gap: 8px; flex-wrap: wrap; }

@@ -12,8 +12,6 @@
     <div class="hd-top">
       <h1>⟡ <span id="brand">BASE REBELDE</span> <small>oficina virtual</small></h1>
       <div class="hd-actions">
-        <button id="sound-test" type="button" title="Escuchar los 4 sonidos de los avisos (suenen o no los avisos)">🔊 Probar</button>
-        <button id="alerts-btn" type="button" aria-pressed="false" title="Sonido y notificaciones cuando un agente termine, falle o pregunte">🔕 Avisos: no</button>
         <button id="approvals-btn" class="danger" hidden title="Un agente espera tu permiso para ejecutar algo en un servidor">⏸ permisos</button>
         <button id="obj-btn">★ Nuevo objetivo</button>
         <button id="new-btn" class="primary">+ Nueva misión</button>
@@ -136,6 +134,7 @@
           <input name="notes" maxlength="500" placeholder="Notas (rol, stack, cuidados…)" autocomplete="off">
           <button type="submit" class="primary">Agregar</button>
         </form></article>
+      <article class="card-sys" id="card-alerts" data-g="ajustes"><h2>Avisos</h2><p class="hint">Sonido y notificaciones cuando un agente termine, falle o pida permiso.</p><div class="alerts-row"><button id="alerts-btn" type="button" aria-pressed="false" title="Sonido y notificaciones cuando un agente termine, falle o pregunte">🔕 Avisos: no</button> <button id="sound-test" type="button" title="Escuchar los 4 sonidos de los avisos (suenen o no los avisos)">🔊 Probar</button></div></article>
       <article class="card-sys" id="card-settings" data-g="ajustes"><h2>Ajustes</h2>
         <form id="settings-form" class="settings-form">
           <fieldset><legend>Seguridad</legend><p class="hint">Topes que frenan una misión; no cobran nada. 0 = sin tope.</p>
