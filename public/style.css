@@ -504,32 +504,6 @@ em.kind.k-net { color: var(--blue); border-color: var(--blue); }
 #sys-recent .mini.running { border-left: 3px solid var(--gold); }
 .switch:disabled { opacity: .5; cursor: wait; }
 /* Nueva tarea: agentes especiales */
-.streams-intro { margin: 10px 16px 0; }
-.streams { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 14px; padding: 14px 16px; align-content: start; }
-.stream { --sk: #7cc8ff; border: 1px solid var(--sk); box-shadow: 0 0 14px color-mix(in srgb, var(--sk) 30%, transparent); background: linear-gradient(160deg, color-mix(in srgb, var(--sk) 12%, #0a1220), #0a1220 60%); padding: 12px; display: flex; flex-direction: column; gap: 8px; }
-.stream.skin-forjador { --sk: #ffd24a; } .stream.skin-espectro { --sk: #c08cff; } .stream.skin-vigia { --sk: #5be3a0; }
-.stream.finished { filter: grayscale(.7); opacity: .75; }
-.stream-head { display: grid; grid-template-columns: 44px 1fr; gap: 6px 10px; align-items: center; }
-.emblem { width: 44px; height: 44px; display: grid; place-items: center; font-size: 22px; color: var(--sk); background: var(--sk); clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%); position: relative; }
-.emblem span { width: 40px; height: 40px; display: grid; place-items: center; background: #05080f; clip-path: polygon(25% 0, 75% 0, 100% 50%, 75% 100%, 25% 100%, 0 50%); }
-.stream.running .emblem { animation: emblem-pulse 1.4s ease-in-out infinite; }
-@keyframes emblem-pulse { 50% { filter: drop-shadow(0 0 8px var(--sk)); } }
-@media (prefers-reduced-motion: reduce) { .stream.running .emblem { animation: none; } }
-.stream h3 { margin: 0; font-size: 14px; }
-.stream .ribbon { font-size: 9px; letter-spacing: 1.5px; color: var(--sk); text-transform: uppercase; }
-.stream .goal { margin: 0; font-size: 12px; color: var(--muted); }
-.stream .state { grid-column: 1 / -1; justify-self: start; font-size: 11px; padding: 1px 8px; border: 1px solid var(--sk); color: var(--sk); white-space: nowrap; }
-.stream .last { border-left: 3px solid var(--sk); padding: 4px 8px; font-size: 12px; max-height: 110px; overflow: auto; white-space: pre-wrap; background: rgba(0,0,0,.25); }
-.stream .cyc { display: flex; flex-wrap: wrap; gap: 4px; }
-.stream .cyc button { padding: 1px 7px; font-size: 11px; }
-.stream .cyc .failed { border-color: var(--red); }
-.stream .cyc .done, .stream .cyc .review { border-color: var(--green); }
-.stream textarea { width: 100%; min-height: 54px; box-sizing: border-box; }
-.stream .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.skin-pick div { display: flex; gap: 8px; flex-wrap: wrap; }
-.skin-pick label { display: flex; align-items: center; gap: 6px; padding: 4px 10px; border: 1px solid var(--c); cursor: pointer; }
-.skin-pick input:checked + span { color: var(--c); font-weight: bold; }
-@media (max-width: 720px) { .streams { grid-template-columns: 1fr; } }
 
 .srv-item { border-bottom: 1px solid var(--line); }
 .srv-item .srv-row { border-bottom: 0; }

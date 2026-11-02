@@ -18,7 +18,6 @@ import { freemem } from 'node:os';
 import { spawn as spawnProc, execFile } from 'node:child_process';
 import { loadProviders, publicProviders, knownProviders, testProvider, MODEL_RE } from './providers.js';
 import { createLogger } from './logger.js';
-import { STREAM_SKINS, MAX_CYCLES, buildCyclePrompt } from './streams.js';
 import { classify, needsApproval, runSsh, runSsh2, passVar, encodePass, decodePass } from './infra.js';
 import { timingSafeEqual } from 'node:crypto';
 import { setEnvVar, KEY_RE } from './envfile.js';
@@ -553,78 +552,6 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
       db.audit('servers.update', null, `${value.length} servidores`);
       broadcast({ type: 'providers' });
       return send(res, 200, publicServers());
-    }
-    // --- «Nueva tarea»: agentes especiales que trabajan por ciclos hasta que tú los finalices ---
-    const streamView = (s) => {
-      const cycles = db.streamCycles(s.id);
-      const last = cycles.at(-1);
-      const state = s.status === 'finished' ? 'finished' : last && ['queued', 'running'].includes(last.status) ? 'running' : 'waiting';
-      return { ...s, state, cost_usd: cycles.reduce((a, c) => a + (c.cost_usd || 0), 0),
-        cycles: cycles.map((c) => ({ id: c.id, cycle: c.cycle, agent: c.agent, status: c.status, title: c.title, result: c.result, error: c.error, cost_usd: c.cost_usd, engine: c.engine, finished_at: c.finished_at })) };
-    };
-    /** Crea y encola el siguiente ciclo. Si no se puede encolar, no deja rastro. */
-    const launchCycle = async (stream, instruction) => {
-      const cycles = db.streamCycles(stream.id);
-      const n = cycles.length + 1;
-      if (n > MAX_CYCLES) throw new Error(`Tope de ${MAX_CYCLES} ciclos: finaliza esta tarea y crea otra`);
-      // Agente «auto»: el despachador elige en cada ciclo según la tarea, el objetivo y tu instrucción (y crea uno si ninguno encaja).
-      let choice = null; let agent = stream.agent;
-      if (agent === 'auto') {
-        choice = await dispatcher.choose({ title: stream.title, description: `${stream.goal}
-${instruction}`.trim(), project: stream.project, mode: stream.mode });
-        agent = choice.agent;
-        if (choice.created) db.audit('agent.create', stream.id, `${choice.created.name}: ${choice.created.description}`);
-      }
-      const task = db.createTask({ title: `${stream.title.slice(0, 150)} · ciclo ${n}`, description: buildCyclePrompt(stream, cycles, instruction), agent, engine: stream.engine,
-        model: stream.model, project: stream.project, mode: stream.mode, kind: 'cycle', stream_id: stream.id, cycle: n });
-      try { runner.enqueue(task.id); } catch (e) { db.deleteTask(task.id); throw e; }
-      if (choice) db.addEvent(task.id, 'info', `Agente elegido automáticamente: ${choice.agent}${choice.created ? ' (agente nuevo creado)' : ''} — ${choice.reason}`);
-      db.audit('stream.cycle', stream.id, `ciclo ${n}`);
-      emit(task.id);
-      return task;
-    };
-    if (url.pathname === '/api/streams' && method === 'GET') return send(res, 200, { skins: STREAM_SKINS, streams: db.listStreams().map(streamView) });
-    if (url.pathname === '/api/streams' && method === 'POST') {
-      const body = await readJson(req);
-      const auto = !body.agent || body.agent === 'auto';
-      const { error, value } = validate({ title: body.title, description: body.goal, agent: auto ? listAgents()[0]?.name : body.agent, engine: body.engine ?? 'auto', model: body.model, project: body.project || null, mode: body.mode ?? 'read' });
-      if (error) return send(res, 400, { error });
-      if (typeof body.goal !== 'string' || !body.goal.trim()) return send(res, 400, { error: 'Falta el objetivo' });
-      if (needsConfirm({ agent: value.agent, engine: value.engine, mode: value.mode, project: value.project }) && body.confirm !== true) return send(res, 409, { error: 'Esta tarea puede editar archivos o actuar sobre un servidor en cada ciclo: requiere confirmación', needsConfirm: true });
-      const skin = STREAM_SKINS.some((k) => k.id === body.skin) ? body.skin : STREAM_SKINS[0].id;
-      const stream = db.createStream({ title: value.title.trim().slice(0, 200), goal: body.goal.trim().slice(0, 2000), agent: auto ? 'auto' : value.agent, engine: value.engine, model: value.model, project: value.project, mode: value.mode, skin });
-      db.audit('stream.create', stream.id, stream.title);
-      try { await launchCycle(stream, ''); } catch (e) { db.deleteStream(stream.id); return send(res, 409, { error: e.message }); } // el primer ciclo arranca solo
-      broadcast({ type: 'streams' });
-      return send(res, 201, streamView(stream));
-    }
-    if ((r = m(/^\/api\/streams\/(\d+)(?:\/(next|finish))?$/))) {
-      const stream = db.getStream(Number(r[1]));
-      if (!stream) return send(res, 404, { error: 'No existe' });
-      if (r[2] === 'next' && method === 'POST') {
-        const body = await readJson(req);
-        if (stream.status === 'finished') return send(res, 409, { error: 'Esta tarea ya está finalizada' });
-        if (streamView(stream).state === 'running') return send(res, 409, { error: 'El ciclo actual sigue en curso' });
-        if (needsConfirm(stream) && body.confirm !== true) return send(res, 409, { error: 'Este ciclo puede editar archivos o actuar sobre un servidor: requiere confirmación', needsConfirm: true });
-        try { await launchCycle(stream, String(body.instruction ?? '').trim().slice(0, 2000)); } catch (e) { return send(res, 409, { error: e.message }); }
-        broadcast({ type: 'streams' });
-        return send(res, 202, streamView(stream));
-      }
-      if (r[2] === 'finish' && method === 'POST') {
-        for (const c of db.streamCycles(stream.id)) if (['queued', 'running'].includes(c.status)) runner.cancel(c.id);
-        db.finishStream(stream.id);
-        db.audit('stream.finish', stream.id, stream.title);
-        broadcast({ type: 'streams' });
-        return send(res, 200, streamView(db.getStream(stream.id)));
-      }
-      if (!r[2] && method === 'DELETE') {
-        if (stream.status !== 'finished') return send(res, 409, { error: 'Finaliza la tarea antes de borrarla' });
-        for (const c of db.streamCycles(stream.id)) { await runner.discardChanges(c.id).catch(() => {}); db.deleteTask(c.id); await dropAttachments(c.id); broadcast({ type: 'deleted', id: c.id }); }
-        db.deleteStream(stream.id);
-        db.audit('stream.delete', stream.id, stream.title);
-        broadcast({ type: 'streams' });
-        return send(res, 200, { ok: true });
-      }
     }
     if (method === 'POST' && url.pathname === '/api/objectives') {
       const body = await readJson(req);

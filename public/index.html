@@ -15,7 +15,6 @@
         <button id="sound-test" type="button" title="Escuchar los 4 sonidos de los avisos (suenen o no los avisos)">🔊 Probar</button>
         <button id="alerts-btn" type="button" aria-pressed="false" title="Sonido y notificaciones cuando un agente termine, falle o pregunte">🔕 Avisos: no</button>
         <button id="approvals-btn" class="danger" hidden title="Un agente espera tu permiso para ejecutar algo en un servidor">⏸ permisos</button>
-        <button id="stream-btn" title="Un agente especial con tarea y objetivo que no termina hasta que tú lo finalices">✦ Nueva tarea</button>
         <button id="obj-btn">★ Nuevo objetivo</button>
         <button id="new-btn" class="primary">+ Nueva misión</button>
       </div>
@@ -26,7 +25,6 @@
         <button role="tab" data-view="attention" aria-selected="false">Atención <span id="attn-badge" class="badge" hidden>0</span></button>
         <button role="tab" data-view="board" aria-selected="false">Tablero</button>
         <button role="tab" data-view="comms" aria-selected="false">Comunicaciones <span id="comms-badge" class="badge live" hidden>0</span></button>
-        <button role="tab" data-view="streams" aria-selected="false">Tareas <span id="streams-badge" class="badge" hidden>0</span></button>
         <button role="tab" data-view="routines" aria-selected="false">Rutinas</button>
         <button role="tab" data-view="costs" aria-selected="false">Uso</button>
         <button role="tab" data-view="system" aria-selected="false">Sistema</button>
@@ -71,10 +69,6 @@
     </div>
   </section>
 
-  <section id="view-streams" class="view" hidden>
-    <p class="hint streams-intro">Agentes especiales con una <b>tarea</b> y un <b>objetivo</b>. El primer ciclo arranca solo; después esperan tus instrucciones y no terminan hasta que los finalices.</p>
-    <div id="streams-list" class="streams"></div>
-  </section>
 
   <section id="view-routines" class="view" hidden>
     <div class="panel">
@@ -220,36 +214,6 @@
     </form>
   </dialog>
 
-  <dialog id="stream-dialog" aria-labelledby="stream-title">
-    <form id="stream-form" method="dialog">
-      <div class="modal-head"><h2 id="stream-title">Nueva tarea</h2><button type="button" class="icon-btn" data-close aria-label="Cerrar">✕</button></div>
-      <div class="modal-body">
-        <p class="hint">Un agente especial que trabaja por ciclos. El primero arranca solo; en los siguientes tú le das instrucciones. No termina hasta que lo finalices.</p>
-        <label>Tarea <input name="title" required maxlength="200" placeholder="¿Qué hace de forma continua? Ej.: Vigilar y mejorar la calidad del módulo de guías" autocomplete="off"></label>
-        <label>Objetivo <textarea name="goal" required rows="3" placeholder="Qué quieres lograr al final. En cada ciclo entregará algo nuevo que acerque la tarea a este objetivo."></textarea></label>
-        <div class="grid2">
-          <label>Agente <select name="agent" required></select></label>
-          <label>Proyecto <select name="project"><option value="">(sin proyecto)</option></select></label>
-        </div>
-        <div class="grid2">
-          <label>Motor <select name="engine"></select></label>
-          <label>Modo <select name="mode"><option value="edit">Puede hacer todo (editar archivos)</option><option value="read">Solo lectura / plan</option><option value="infra">Infraestructura — opera el servidor (lo fuerte te lo pregunta)</option></select></label>
-        </div>
-        <label id="stream-model-row" hidden>Modelo (opcional)
-          <input name="model" placeholder="" autocomplete="off" maxlength="100">
-          <select name="model_pick" hidden></select>
-        </label>
-        <fieldset class="skin-pick"><legend>Skin del agente especial</legend><div id="stream-skins"></div></fieldset>
-        <p class="hint" id="stream-infra-hint" hidden></p>
-        <p class="mode-hint" id="stream-edit-hint" hidden>⚠ Podrá modificar archivos del proyecto en cada ciclo (en una copia aislada; tú aplicas o descartas los cambios). Te pediremos confirmación.</p>
-        <p class="form-error error" role="alert"></p>
-      </div>
-      <div class="modal-foot">
-        <button type="button" data-close>Cancelar</button>
-        <button type="submit" class="primary">Crear y lanzar ciclo 1</button>
-      </div>
-    </form>
-  </dialog>
 
   <dialog id="routine-dialog" aria-labelledby="routine-title">
     <form id="routine-form" method="dialog">

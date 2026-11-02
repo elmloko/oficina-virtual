@@ -600,51 +600,6 @@ test('revisión cruzada: si falla el presupuesto de un revisor, la misión origi
   db.raw.close();
 });
 
-test('Nueva tarea: el primer ciclo arranca solo; los siguientes esperan tu instrucción hasta que finalizas', async () => {
-  const sinObj = await call('POST', '/api/streams', { title: 'Vigilar errores', agent: 'backend' });
-  assert.equal(sinObj.status, 400);
-  const edit = await call('POST', '/api/streams', { title: 'T', goal: 'G', agent: 'backend', project: 'proj', mode: 'edit' });
-  assert.equal(edit.status, 409); assert.equal(edit.body.needsConfirm, true); // pueden editar: confirmación explícita
-
-  const made = await call('POST', '/api/streams', { title: 'Vigilar errores', goal: 'Que no haya fallos nuevos', agent: 'backend', engine: 'claude', skin: 'forjador' });
-  assert.equal(made.status, 201);
-  const id = made.body.id;
-  const view = async () => (await call('GET', '/api/streams')).body.streams.find((s) => s.id === id);
-  let s = await view();
-  assert.equal(s.skin, 'forjador');
-  assert.equal(s.cycles.length, 1); // ciclo 1 sin pedirlo
-  assert.match(s.cycles[0].title, /ciclo 1/);
-  await new Promise((r) => setTimeout(r, 300));
-  s = await view();
-  assert.equal(s.state, 'waiting'); // terminó y espera instrucciones: no lanza el 2 solo
-  assert.equal(s.cycles.length, 1);
-
-  const prevCalls = apiCalls.length;
-  assert.equal((await call('POST', `/api/streams/${id}/next`, { instruction: 'Enfócate en el login' })).status, 202);
-  assert.match(apiCalls[prevCalls].input, /INSTRUCCIÓN DEL USUARIO.*login/);
-  assert.match(apiCalls[prevCalls].input, /Ciclo 1: /); // recibe lo que ya entregó (el claude falso contesta un plan porque el texto lleva «OBJETIVO»)
-  await new Promise((r) => setTimeout(r, 300));
-  s = await view();
-  assert.equal(s.cycles.length, 2);
-  assert.equal(s.cycles[1].cycle, 2);
-
-  assert.equal((await call('DELETE', `/api/streams/${id}`)).status, 409); // primero se finaliza
-  assert.equal((await call('POST', `/api/streams/${id}/finish`)).body.state, 'finished');
-  assert.equal((await call('POST', `/api/streams/${id}/next`, {})).status, 409);
-  assert.equal((await call('DELETE', `/api/streams/${id}`)).status, 200);
-  assert.equal((await call('GET', '/api/streams')).body.streams.some((x) => x.id === id), false);
-});
-
-test('Nueva tarea: con agente «auto» el despachador elige el agente de cada ciclo', async () => {
-  const made = await call('POST', '/api/streams', { title: 'Revisar la seguridad de la API y los permisos', goal: 'Encontrar vulnerabilidades de autenticación', agent: 'auto', engine: 'claude' });
-  assert.equal(made.status, 201);
-  assert.equal(made.body.agent, 'auto');
-  const s = (await call('GET', '/api/streams')).body.streams.find((x) => x.id === made.body.id);
-  assert.ok(s.cycles[0].agent && s.cycles[0].agent !== 'auto'); // ciclo 1 ya con un agente real
-  assert.ok(listAgents().some((a) => a.name === s.cycles[0].agent));
-  await call('POST', `/api/streams/${s.id}/finish`); await call('DELETE', `/api/streams/${s.id}`);
-});
-
 test('Modo infraestructura: servidores sin secretos, destino «srv:», el agente solo planifica', async () => {
   assert.equal((await call('PUT', '/api/servers', { servers: [{ name: 'web 1', host: 'bad host!' }] })).status, 400);
   assert.equal((await call('PUT', '/api/servers', { servers: [{ name: 'a', host: 'x.com' }, { name: 'A', host: 'y.com' }] })).status, 400); // repetido

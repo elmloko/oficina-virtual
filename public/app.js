@@ -83,8 +83,6 @@ function showView(v) {
   for (const s of document.querySelectorAll('.view')) s.hidden = s.id !== `view-${v}`;
   requestAnimationFrame(fitOffice);
   if (v === 'costs') refreshCosts();
-  clearInterval(showView.timer2);
-  if (v === 'streams') { refreshStreams(); showView.timer2 = setInterval(refreshStreams, 3000); }
   clearInterval(showView.timer);
   if (v === 'system') { refreshSystem(); showView.timer = setInterval(refreshSystem, 2000); }
   render();
@@ -92,7 +90,7 @@ function showView(v) {
 
 // ---------- Servidores (modo infraestructura): el agente planifica y tú entras a ejecutar ----------
 const ENV_ES = { prod: 'producción', staging: 'pruebas', dev: 'desarrollo' };
-/** Grupo «Servidores» para el selector de proyecto de Nueva misión / Nueva tarea. */
+/** Grupo «Servidores» para el selector de proyecto de Nueva misión. */
 const serverOptions = () => (state.servers?.length
   ? [el('optgroup', { label: '🖥 Servidores (infraestructura)' }, ...state.servers.map((s) => el('option', { value: `srv:${s.name}`, textContent: `${s.name} · ${ENV_ES[s.env] ?? s.env}` })))]
   : []);
@@ -213,94 +211,6 @@ function setupApprovals() {
   $('#approvals-btn').onclick = showApproval;
   $('#approval-dialog').addEventListener('close', () => {});
   refreshApprovals(); setInterval(refreshApprovals, 4000);
-}
-
-// ---------- Nueva tarea: agentes especiales que trabajan por ciclos hasta que los finalices ----------
-const GLYPH = { centinela: '◉', forjador: '✦', espectro: '☄', vigia: '◈' };
-async function refreshStreams() {
-  try {
-    const d = await api('/api/streams');
-    state.streamSkins = d.skins; state.streams = d.streams;
-    const waiting = d.streams.filter((s) => s.state === 'waiting').length;
-    const b = $('#streams-badge'); b.hidden = !waiting; b.textContent = String(waiting);
-    if (state.view === 'streams') renderStreams();
-  } catch { /* sin conexión: se reintenta */ }
-}
-const STREAM_STATE = { running: (s) => `ciclo ${s.cycles.at(-1)?.cycle ?? 1} en curso…`, waiting: () => 'esperando tus instrucciones', finished: () => 'finalizada' };
-function renderStreams() {
-  const list = state.streams ?? [];
-  const draft = new Map([...document.querySelectorAll('.stream textarea')].map((t) => [t.dataset.id, t.value])); // no pierdas lo que escribías
-  const head = JSON.stringify(list.map((s) => [s.id, s.state, s.cycles.map((c) => [c.id, c.status])]));
-  if (renderStreams.last === head && $('#streams-list').children.length) return;
-  renderStreams.last = head;
-  $('#streams-list').replaceChildren(...(list.length ? list.map((s) => {
-    const done = s.cycles.filter((c) => c.result).at(-1);
-    const instr = el('textarea', { placeholder: 'Instrucciones para el siguiente ciclo (opcional)…', maxLength: 2000 });
-    instr.dataset.id = String(s.id); instr.value = draft.get(String(s.id)) ?? '';
-    const cycle = guard(async () => {
-      if (s.mode === 'edit' && !(await confirmDialog('Siguiente ciclo', 'Este ciclo puede editar archivos del proyecto (en una copia aislada que luego aplicas o descartas). ¿Lanzarlo?'))) return;
-      await post(`/api/streams/${s.id}/next`, { instruction: instr.value, confirm: true });
-      instr.value = ''; await refreshStreams();
-    });
-    const finish = guard(async () => {
-      if (!(await confirmDialog('Finalizar tarea', 'El agente deja de trabajar en esta tarea (se cancela el ciclo en curso). Podrás ver el historial y borrarla.'))) return;
-      await post(`/api/streams/${s.id}/finish`); await refreshStreams();
-    });
-    const remove = guard(async () => {
-      if (!(await confirmDialog('Borrar tarea', 'Se borra la tarea y todas las misiones de sus ciclos. No se puede deshacer.'))) return;
-      await api(`/api/streams/${s.id}`, { method: 'DELETE' }); await refreshStreams();
-    });
-    const skinName = state.streamSkins?.find((k) => k.id === s.skin)?.name ?? '';
-    return el('article', { className: `stream skin-${s.skin} ${s.state}` },
-      el('div', { className: 'stream-head' }, el('div', { className: 'emblem' }, el('span', { textContent: GLYPH[s.skin] ?? '✦' })),
-        el('div', {}, el('div', { className: 'ribbon', textContent: `especial · ${skinName}` }), el('h3', { textContent: s.title }),
-          el('span', { className: 'muted', textContent: `${s.agent === 'auto' ? `🤖 auto${s.cycles.at(-1)?.agent ? ` → ${s.cycles.at(-1).agent}` : ''}` : s.agent} · ${s.engine}${s.mode === 'edit' ? ' · edita' : ' · lee'}${s.project ? ` · ${s.project}` : ''} · ${s.cycles.length} ciclos · ${money(s.cost_usd)}` })),
-        el('span', { className: 'state', textContent: STREAM_STATE[s.state](s) })),
-      el('p', { className: 'goal', textContent: `Objetivo: ${s.goal}` }),
-      el('div', { className: 'cyc' }, ...s.cycles.map((c) => el('button', { className: c.status, title: c.title, textContent: `#${c.cycle}`, onclick: () => openDrawer(c.id) }))),
-      done ? el('div', { className: 'last', textContent: `Última entrega (ciclo ${done.cycle}):\n${done.result.slice(0, 900)}` }) : el('p', { className: 'hint', textContent: s.state === 'running' ? 'Trabajando en la primera entrega…' : 'Aún sin entregas.' }),
-      ...(s.state === 'waiting' && s.cycles.at(-1)?.status === 'failed' ? [el('p', { className: 'error', textContent: `✕ El ciclo ${s.cycles.at(-1).cycle} falló: ${s.cycles.at(-1).error ?? 'error desconocido'}. Puedes lanzar otro ciclo o cambiar lo que pides.` })] : []),
-      ...(s.state === 'waiting' ? [instr, el('div', { className: 'row' }, el('button', { className: 'primary', textContent: `Lanzar ciclo ${s.cycles.length + 1}`, onclick: cycle }), el('button', { className: 'danger', textContent: 'Finalizar', onclick: finish }))]
-        : s.state === 'running' ? [el('div', { className: 'row' }, el('button', { className: 'danger', textContent: 'Finalizar (cancela el ciclo)', onclick: finish }))]
-          : [el('div', { className: 'row' }, el('button', { className: 'danger', textContent: 'Borrar', onclick: remove }))]));
-  }) : [el('p', { className: 'hint', textContent: 'Aún no hay tareas. Crea una con «✦ Nueva tarea».' })]));
-}
-function setupStreams() {
-  const f = $('#stream-form');
-  const sync = () => {
-    // solo Claude Code edita archivos; los demás motores (Codex, Ollama, LM Studio, internet) únicamente leen
-    const canEdit = ['auto', 'claude'].includes(f.engine.value);
-    f.mode.options[0].disabled = !canEdit; if (!canEdit && f.mode.value === 'edit') f.mode.value = 'read';
-    applyServerMode(f);
-    if (String(f.project.value).startsWith('srv:')) f.mode.options[0].disabled = true;
-    $('#stream-edit-hint').hidden = f.mode.value !== 'edit';
-    infraHint($('#stream-infra-hint'), f);
-    const prov = state.providers.find((p) => p.name === f.engine.value);
-    const pick = PICK_ENGINES.includes(f.engine.value) ? f.engine.value : null;
-    $('#stream-model-row').hidden = !prov && !pick;
-    f.model.hidden = !prov || !!pick; f.model_pick.hidden = !pick;
-    f.model.placeholder = prov ? `por defecto: ${prov.model}` : '';
-    if (pick) { const keep = f.model_pick.value; f.model_pick.replaceChildren(...modelOptions(pick, '')); f.model_pick.value = [...f.model_pick.options].some((o) => o.value === keep) ? keep : ''; }
-  };
-  const fill = () => {
-    f.agent.replaceChildren(el('option', { value: 'auto', textContent: '🤖 Automático — el sistema elige en cada ciclo (y crea uno si hace falta)' }), ...state.agents.map((a) => el('option', { value: a.name, textContent: `${a.name} — ${a.description}`.slice(0, 80) })));
-    f.project.replaceChildren(el('option', { value: '', textContent: '(sin proyecto)' }), ...state.projects.map((p) => el('option', { value: p.name, textContent: p.docs ? '📄 Documentos — carpeta nueva por tema' : p.name })), ...serverOptions());
-    f.engine.replaceChildren(...[...$('#new-form').engine.options].map((o) => el('option', { value: o.value, textContent: o.textContent })));
-    $('#stream-skins').replaceChildren(...(state.streamSkins ?? []).map((k, i) => el('label', { style: `--c:${k.color}` },
-      el('input', { type: 'radio', name: 'skin', value: k.id, checked: i === 0 }), el('span', { textContent: ` ${GLYPH[k.id] ?? '✦'} ${k.name}` }))));
-    sync();
-  };
-  f.engine.onchange = sync; f.mode.onchange = sync; f.project.onchange = sync;
-  openStreamDialog = wireDialog('#stream-dialog', '#stream-form', async (form) => {
-    const fd = Object.fromEntries(new FormData(form));
-    const body = { title: fd.title, goal: fd.goal, agent: fd.agent, project: fd.project || null, engine: fd.engine, mode: fd.mode, skin: fd.skin, model: (PICK_ENGINES.includes(fd.engine) ? fd.model_pick : fd.model) || null };
-    const liveInfra = body.mode === 'infra' && String(body.project ?? '').startsWith('srv:') && ['auto', 'claude'].includes(body.engine);
-    if ((body.mode === 'edit' || liveInfra) && !(await confirmDialog('Tarea con acciones reales', body.mode === 'edit' ? 'En cada ciclo el agente podrá modificar archivos del proyecto (en una copia aislada; tú aplicas o descartas). El primer ciclo arranca ya. ¿Continuar?' : 'En cada ciclo el agente podrá operar el servidor por SSH (lo de solo lectura corre solo; lo fuerte te lo pregunta). El primer ciclo arranca ya. ¿Continuar?'))) throw new Error('Cancelado');
-    await post('/api/streams', { ...body, confirm: true });
-    await refreshStreams(); showView('streams');
-  });
-  $('#stream-btn').onclick = async () => { await refreshStreams(); openStreamDialog(fill); };
-  refreshStreams(); setInterval(refreshStreams, 10_000); // el aviso de «esperando instrucciones» se mantiene al día
 }
 
 /** Ajusta el mapa para que quepa entero en la ventana (sin scroll), conservando su proporción. */
@@ -513,17 +423,9 @@ async function openDrawer(id) {
   loadAtts(id);
 }
 
-/** Lo que pediste: en una misión, el título y la descripción; en un objetivo, el objetivo; en un ciclo de «Nueva tarea», la tarea, el objetivo y tu instrucción de ese ciclo. */
+/** Lo que pediste: en una misión, el título y la descripción; en un objetivo, el objetivo. */
 function instructionBlocks(t) {
   const block = (label, text) => el('div', {}, el('h4', { textContent: label }), el('div', { className: 'it', textContent: text }));
-  if (t.kind === 'cycle') {
-    const pick = (re) => (t.description.match(re)?.[1] ?? '').trim();
-    const tarea = pick(/TAREA PERMANENTE: (.*)/);
-    const objetivo = pick(/\nOBJETIVO: ([\s\S]*?)\n\n/);
-    const instr = pick(/INSTRUCCIÓN DEL USUARIO PARA ESTE CICLO: ([\s\S]*?)\n\nHaz /);
-    return [block('Tarea', tarea || t.title), block('Objetivo', objetivo || '—'),
-      block(`Tu instrucción para el ciclo ${t.cycle ?? ''}`, instr || (t.cycle === 1 ? '(ninguna: el primer ciclo arranca solo)' : '(ninguna: lo dejaste a criterio del agente)'))];
-  }
   if (t.kind === 'objective') return [block('Objetivo', t.title), block('Detalles', t.description?.trim() || '(sin detalles)')];
   const desc = t.description?.trim();
   return desc ? [block('Instrucciones (lo que hace el agente)', desc), block('Título (solo etiqueta)', t.title)] : [block('Instrucciones (sin descripción: se usa el título)', t.title)];
@@ -1023,7 +925,7 @@ function wireDialog(dialogSel, formSel, submit) {
   return (setup) => { f.querySelector('.form-error').textContent = ''; setup?.(f); d.showModal(); };
 }
 
-let openTaskDialog, openObjDialog, openRoutineDialog, openStreamDialog;
+let openTaskDialog, openObjDialog, openRoutineDialog;
 const newFiles = [];
 
 function setupForms() {
@@ -1057,7 +959,6 @@ function setupForms() {
     await post(`/api/tasks/${o.id}/run`).catch((e) => toast(e.message));
     openDrawer(o.id);
   });
-  setupStreams();
   setupServers();
   setupApprovals();
   setupDrawerSize();
