@@ -126,3 +126,17 @@ test('API: medir, ver resultado y recomendación, guardarlo, y no medir si Ollam
     assert.ok(db.auditLog(10).some((a) => a.action === 'ollama.benchmark'));
   } finally { app.server.close(); app.server.closeAllConnections?.(); }
 });
+
+test('misión con Ollama apagado: el error dice cómo encenderlo (no «fetch failed»)', async () => {
+  const db = openDb(':memory:');
+  const fetchFn = async (url) => {
+    if (url.endsWith('/api/tags')) return { json: async () => ({ models: [{ name: 'gemma3:4b', size: 3 * GB }] }) };
+    throw new TypeError('fetch failed'); // servidor apagado: la conexión se rechaza
+  };
+  const registry = { listAgents: () => [{ name: 'summarizer', description: 's' }], listProjects: () => [] };
+  const runner = createRunner(db, () => {}, { fetchFn, registry });
+  const t = db.createTask({ title: 'x', agent: 'summarizer', engine: 'ollama' });
+  runner.enqueue(t.id);
+  await waitFor(() => db.getTask(t.id).status === 'failed');
+  assert.match(db.getTask(t.id).error, /Ollama no responde.*Encender servidor/);
+});

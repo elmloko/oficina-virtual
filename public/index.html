@@ -77,13 +77,20 @@
   </section>
 
   <section id="view-costs" class="view" hidden>
-    <div class="panel">
+    <div class="panel usage">
       <h2>Uso y auditoría</h2>
-      <p class="hint">Cuántas misiones se hacen y cómo les va a los agentes. Los límites se editan en la pestaña Sistema.</p>
-      <div id="costs-summary"></div>
-      <h3>Rendimiento por agente</h3><div id="costs-agents"></div>
-      <h3>Últimos días</h3><div id="costs-days"></div>
-      <h3>Auditoría reciente</h3><div id="audit"></div>
+      <p class="hint">Cuántas misiones se hacen, con qué motor y cómo les va a los agentes. Los límites se editan en Sistema → Ajustes.</p>
+      <div id="costs-kpi" class="kpis"></div>
+      <div class="u-cols">
+        <div><h3>Por agente</h3><div id="costs-agents"></div></div>
+        <div><h3>Por motor y modelo</h3><div id="costs-engines"></div></div>
+      </div>
+      <h3>Últimos 14 días</h3><div id="costs-days"></div>
+      <h3 class="audit-h">Auditoría reciente
+        <span class="audit-filter" id="audit-filter" role="group" aria-label="Filtrar auditoría">
+          <button data-f="all" aria-pressed="true">Todo</button><button data-f="task" aria-pressed="false">Misiones</button><button data-f="sys" aria-pressed="false">Sistema</button>
+        </span></h3>
+      <div id="audit"></div>
     </div>
   </section>
 
@@ -95,10 +102,6 @@
       <span class="chip" id="chip-codex">codex</span>
       <span class="chip" id="chip-lmstudio">LM Studio</span>
       <span class="chip" id="chip-apis">proveedores</span>
-      <span class="sys-actions">
-        <button id="queue-toggle">Pausar cola</button>
-        <button id="cancel-all" class="danger">Cancelar todo</button>
-      </span>
     </div>
     <nav class="sys-tabs" role="tablist" aria-label="Secciones de Sistema">
       <button role="tab" data-tab="resumen" aria-selected="true">Resumen</button>
@@ -107,9 +110,12 @@
       <button role="tab" data-tab="registro" aria-selected="false">Registro</button>
     </nav>
     <div class="sys-grid">
-      <article class="card-sys" id="card-health" data-g="resumen"><h2>Estado</h2><div id="sys-health"></div></article>
-      <article class="card-sys" id="card-queue" data-g="resumen"><h2>Cola en vivo</h2><div id="sys-queue"></div></article>
-      <article class="card-sys" id="card-activity" data-g="resumen"><h2>Actividad de hoy</h2><div id="sys-activity"></div></article>
+      <article class="card-sys wide" id="card-kpi" data-g="resumen"><div id="sys-kpi" class="kpis"></div></article>
+      <article class="card-sys" id="card-motors" data-g="resumen"><h2>Motores <button type="button" class="mini-link" id="goto-engines">Configurar →</button></h2><div id="sys-motors"></div></article>
+      <article class="card-sys" id="card-queue" data-g="resumen"><h2>Cola en vivo <span class="q-actions"><button id="queue-toggle" title="Las misiones en curso terminan; las que esperan no arrancan">Pausar cola</button><button id="cancel-all" class="danger" title="Detiene lo que corre y vacía la espera">Cancelar todo</button></span></h2><div id="sys-queue"></div></article>
+      <article class="card-sys" id="card-health" data-g="resumen"><h2>Entorno</h2><div id="sys-health"></div></article>
+      <article class="card-sys span2" id="card-recent" data-g="resumen"><h2>Últimas misiones</h2><div id="sys-recent"></div></article>
+      <article class="card-sys" id="card-activity" data-g="resumen"><h2>Hoy por motor</h2><div id="sys-activity"></div></article>
       <article class="card-sys wide" id="card-providers" data-g="motores"><h2>Motores y modelos</h2>
         <p class="hint">Apaga con el interruptor lo que no quieras usar: las misiones no lo tocarán y tus claves se conservan (viven en <code>.env</code>; solo se ve su final).</p>
         <div id="sys-engines"></div></article>
@@ -169,7 +175,8 @@
       </div>
       <div class="modal-foot">
         <button type="button" data-close>Cancelar</button>
-        <button type="submit" class="primary">Crear misión</button>
+        <button type="submit" id="new-save" title="Queda en el Hangar (pendientes) del Tablero hasta que la lances">Solo crear</button>
+        <button type="submit" id="new-run" class="primary" title="La crea y la pone en cola de inmediato">Crear y lanzar</button>
       </div>
     </form>
   </dialog>

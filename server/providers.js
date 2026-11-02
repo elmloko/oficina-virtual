@@ -39,7 +39,8 @@ export function loadProviders(env = process.env) {
 }
 
 /** Datos seguros para la UI: nunca incluye la clave. */
-export const publicProviders = (providers) => Object.values(providers).map(({ name, kind, model }) => ({ name, kind, model }));
+/** Lo que ve la web de cada proveedor activo (nunca la clave). `local` = corre en este equipo y el texto no sale a internet. */
+export const publicProviders = (providers) => Object.values(providers).map(({ name, kind, model, local, baseUrl }) => ({ name, kind, model, local: !!local || /^https?:\/\/(127\.0\.0\.1|localhost)/.test(baseUrl ?? '') }));
 
 /** Nombres de variables con secretos de proveedores: se quitan del entorno de los procesos hijos. */
 export function secretEnvNames(env = process.env) {

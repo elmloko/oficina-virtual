@@ -196,6 +196,7 @@ test('collectSystem: estructura completa y sin ningún secreto', async () => {
   const env = { GROQ_API_KEY: SECRET };
   db.createSchedule({ name: 'diaria', spec: { type: 'daily', time: '08:30' }, agent: 'backend', title: 't' });
   const sys = await collectSystem({ db, runner, probe, config, startedAt: new Date(Date.now() - 65_000), env });
+  assert.ok(sys.memory.total_gb > 0 && sys.memory.free_gb >= 0 && sys.memory.free_gb <= sys.memory.total_gb, 'RAM libre y total para decidir qué modelo local cabe');
   for (const k of ['server', 'db', 'claude', 'ollama', 'providers', 'paths', 'queue', 'schedules', 'activity', 'failures', 'settings']) assert.ok(k in sys, k);
   assert.ok(sys.server.uptime_s >= 65);
   const groq = sys.providers.find((p) => p.name === 'groq');

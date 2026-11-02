@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { existsSync, statSync } from 'node:fs';
+import { freemem, totalmem } from 'node:os';
 import { nextRun } from './scheduler.js';
 import { knownProviders, secretEnvNames } from './providers.js';
 import { listProjects } from './registry.js';
@@ -75,6 +76,7 @@ export async function collectSystem({ db, runner, probe, config, startedAt, env 
   const [claude, ollama, codex] = await Promise.all([probe.claude(), probe.ollama(), probe.codex?.() ?? { ok: false, error: 'sin sonda' }]);
   return {
     server: { uptime_s: Math.round((now - startedAt) / 1000), started_at: startedAt.toISOString(), node: process.version, pid: process.pid, platform: process.platform, host: config.host, port: config.port },
+    memory: { free_gb: Math.round((freemem() / 1e9) * 10) / 10, total_gb: Math.round((totalmem() / 1e9) * 10) / 10 },
     db: { file: config.dbFile, size_bytes: fileSize(config.dbFile), tasks: db.countsByStatus() },
     claude: { ...claude, enabled: !db.disabledEngines().includes('claude') },
     ollama: { ...ollama, enabled: !db.disabledEngines().includes('ollama') },

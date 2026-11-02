@@ -71,6 +71,7 @@ test('publicProviders nunca incluye la clave; secretEnvNames lista las variables
   const pub = publicProviders(loadProviders({ OPENAI_API_KEY: SECRET }));
   assert.equal(JSON.stringify(pub).includes(SECRET), false);
   assert.deepEqual(pub.map((p) => p.name), ['openai', 'lmstudio']);
+  assert.deepEqual(pub.map((p) => p.local), [false, true], 'LM Studio se marca local (no «en internet»)');
   const names = secretEnvNames({ CUSTOM_LLM: 'mio|http://h/v1|MI_CLAVE|m' });
   for (const n of ['OPENAI_API_KEY', 'OFICINA_ANTHROPIC_API_KEY', 'GEMINI_API_KEY', 'MI_CLAVE']) assert.ok(names.includes(n), n);
 });

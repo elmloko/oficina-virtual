@@ -209,3 +209,29 @@ test('el controlador real tiene encender y apagar para Ollama y LM Studio (sin e
     assert.equal(typeof defaultServerCtl.stop?.[e], 'function', `apagar ${e}`);
   }
 });
+
+test('API: probar Ollama hace una pregunta mínima al modelo en uso y explica los fallos', async () => {
+  const calls = [];
+  let reply = { message: { content: 'listo' } };
+  const fetchFn = async (url, init) => { calls.push({ url, body: JSON.parse(init.body) }); return { ok: true, status: 200, json: async () => reply }; };
+  const probe = { claude: async () => ({ ok: true }), codex: async () => ({ ok: true }), ollama: async () => ({ ok: true, models: [{ name: 'gemma3:4b', size: 3.4e9 }, { name: 'bge-m3:latest', size: 1e9 }], loaded: [] }) };
+  const db = openDb(':memory:');
+  const app = createApp({ db, probe, providers: {}, ollamaFetch: fetchFn });
+  await new Promise((r) => app.server.listen(0, '127.0.0.1', r));
+  const post = async (path) => { const r = await fetch(`http://127.0.0.1:${app.server.address().port}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); return { status: r.status, body: await r.json() }; };
+  try {
+    const a = await post('/api/system/ollama/test');
+    assert.equal(a.status, 200);
+    assert.deepEqual([a.body.ok, a.body.model, a.body.text], [true, 'gemma3:4b', 'listo']);
+    assert.equal(calls[0].body.keep_alive, 0, 'no deja el modelo cargado en memoria');
+    assert.ok(db.auditLog(5).some((x) => x.action === 'ollama.test'));
+    db.setEngineModel('ollama', 'llama3.2:3b'); // si elegiste un modelo, prueba ese
+    assert.equal((await post('/api/system/ollama/test')).body.model, 'llama3.2:3b');
+    reply = { message: { content: '' } }; // un modelo que «piensa» y no responde
+    const empty = await post('/api/system/ollama/test');
+    assert.equal(empty.body.ok, false);
+    assert.match(empty.body.error, /no devolvió texto/);
+    db.setEngineEnabled('ollama', false);
+    assert.equal((await post('/api/system/ollama/test')).status, 400);
+  } finally { app.server.close(); app.server.closeAllConnections?.(); }
+});

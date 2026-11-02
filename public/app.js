@@ -722,6 +722,15 @@ async function renderAgent() {
 }
 
 // ---------- formularios ----------
+const provName = (p) => (p.name === 'lmstudio' ? 'LM Studio' : p.name);
+/** Motores locales cuyo servidor está apagado: no se pueden elegir (la misión fallaría). */
+function serversDown() {
+  const down = new Set();
+  if (state.modelInfo?.ollama_up === false) down.add('ollama');
+  if (state.modelInfo?.lmstudio_up === false) down.add('lmstudio');
+  return down;
+}
+
 function fillSelects() {
   const f = $('#new-form');
   const keepAgent = f.agent.value;
@@ -730,10 +739,12 @@ function fillSelects() {
   const projectOptions = () => [el('option', { value: '', textContent: '(sin proyecto)' }), ...state.projects.map((p) => el('option', { value: p.name, textContent: p.docs ? '📄 Documentos — carpeta nueva por tema' : p.name }))];
   f.project.replaceChildren(...projectOptions());
   const offE = state.enginesOff ?? [];
-  const engines = [['auto', 'Auto (el router decide)'], ...(offE.includes('claude') ? [] : [['claude', 'Claude Code (suscripción)']]), ...(offE.includes('ollama') ? [] : [['ollama', 'Ollama (local)']]), ...(offE.includes('codex') ? [] : [['codex', 'Codex (ChatGPT · solo lectura)']]), ...state.providers.map((p) => [p.name, `${p.name} · ${p.local ? 'en este equipo' : 'en internet'} (${p.model})`])];
+  const engines = [['auto', 'Auto (el router decide)'], ...(offE.includes('claude') ? [] : [['claude', 'Claude Code (suscripción)']]), ...(offE.includes('ollama') ? [] : [['ollama', 'Ollama (local)']]), ...(offE.includes('codex') ? [] : [['codex', 'Codex (ChatGPT · solo lectura)']]), ...state.providers.map((p) => [p.name, `${provName(p)} · ${p.local ? 'en este equipo' : 'en internet'} (${p.model})`])];
+  const down = serversDown();
   const keep = f.engine.value;
-  f.engine.replaceChildren(...engines.map(([v, t]) => el('option', { value: v, textContent: t })));
-  if (engines.some(([v]) => v === keep)) f.engine.value = keep;
+  const shown = engines.filter(([v]) => !down.has(v)); // los de servidor apagado no se muestran
+  f.engine.replaceChildren(...shown.map(([v, t]) => el('option', { value: v, textContent: t })));
+  f.engine.value = shown.some(([v]) => v === keep) ? keep : 'auto'; // si el elegido se apagó, vuelve a Auto
   $('#routine-form').project.replaceChildren(...projectOptions());
   $('#routine-form').template.replaceChildren(...state.templates.map((t) => el('option', { value: t.id, textContent: `${t.name}${t.needsProject ? ' (requiere proyecto)' : ''}` })));
   const names = new Set(state.agents.map((a) => a.name));
@@ -751,10 +762,12 @@ function wireDialog(dialogSel, formSel, submit) {
     e.preventDefault();
     const err = f.querySelector('.form-error');
     err.textContent = '';
-    const btn = f.querySelector('button[type=submit], button.primary:not([type=button])');
+    const all = [...f.querySelectorAll('button[type=submit], button.primary:not([type=button])')];
+    const btn = e.submitter ?? all[0];
     const label = btn?.textContent;
-    if (btn) { btn.disabled = true; btn.textContent = 'Procesando…'; } // elegir agente automáticamente puede tardar unos segundos
-    try { await submit(f); f.reset(); d.close(); } catch (x) { err.textContent = x.message; } finally { if (btn) { btn.disabled = false; btn.textContent = label; } }
+    for (const b of all) b.disabled = true; // evita crear dos veces con un doble clic
+    if (btn) btn.textContent = 'Procesando…'; // elegir agente automáticamente puede tardar unos segundos
+    try { await submit(f); f.reset(); d.close(); } catch (x) { err.textContent = x.message; } finally { for (const b of all) b.disabled = false; if (btn) btn.textContent = label; }
   };
   return (setup) => { f.querySelector('.form-error').textContent = ''; setup?.(f); d.showModal(); };
 }
@@ -773,11 +786,21 @@ function setupForms() {
     const body = { ...Object.fromEntries(fd), review: fd.getAll('review') };
     if (PICK_ENGINES.includes(body.engine)) body.model = body.model_pick || ''; // '' = el predeterminado del motor
     delete body.model_pick;
+    const runNow = document.activeElement?.id === 'new-run' || f.dataset.run === '1';
+    delete f.dataset.run;
     const task = await post('/api/tasks', body);
     if (task.auto) toast(`${task.auto.created ? 'Agente nuevo creado: ' : 'Agente elegido: '}${task.agent} — ${task.auto.reason.length > 110 ? task.auto.reason.slice(0, 110) + '…' : task.auto.reason}`, false);
     const errs = await uploadFiles(task.id, newFiles);
     if (errs.length) toast(`La misión se creó, pero fallaron adjuntos: ${errs.join(' · ')}`);
+    if (runNow) {
+      try {
+        const r = await withConfirm(`/api/tasks/${task.id}/run`, 'Esta misión puede editar archivos de tu proyecto. ¿Permitirlo?');
+        toast(r ? 'Misión lanzada' : 'Misión creada en el Hangar (no se lanzó)', false);
+      } catch (x) { toast(`La misión se creó pero no pudo lanzarse: ${x.message}`); }
+    }
   });
+  $('#new-run').addEventListener('click', () => { $('#new-form').dataset.run = '1'; });
+  $('#new-save').addEventListener('click', () => { delete $('#new-form').dataset.run; });
   openObjDialog = wireDialog('#obj-dialog', '#obj-form', async (f) => {
     const o = await post('/api/objectives', Object.fromEntries(new FormData(f)));
     await post(`/api/tasks/${o.id}/run`).catch((e) => toast(e.message));
@@ -805,7 +828,9 @@ function setupForms() {
     if (pick) { const keep = taskForm.model_pick.value; taskForm.model_pick.replaceChildren(...modelOptions(pick, '')); taskForm.model_pick.value = [...taskForm.model_pick.options].some((o) => o.value === keep) ? keep : ''; }
     const hint = $('#engine-hint');
     hint.hidden = !prov;
-    if (prov) hint.textContent = `☁ El texto de la misión (título, descripción y resultados de pasos previos) se enviará a ${prov.name}. No ve archivos del proyecto y no puede editarlos.`;
+    if (prov) hint.textContent = prov.local
+      ? `🖥 ${provName(prov)} corre en tu equipo: el texto de la misión no sale de aquí. No ve archivos del proyecto y no puede editarlos.`
+      : `☁ El texto de la misión (título, descripción y resultados de pasos previos) se enviará a ${prov.name}. No ve archivos del proyecto y no puede editarlos.`;
   };
   state.syncHint = syncHint;
   taskForm.mode.onchange = syncHint;
@@ -823,7 +848,7 @@ function setupForms() {
   for (const d of document.querySelectorAll('dialog:not(#confirm-dialog)')) {
     d.addEventListener('mousedown', (e) => { if (e.target === d) d.close(); });
   }
-  $('#new-btn').onclick = () => openTaskDialog(syncHint);
+  $('#new-btn').onclick = () => { refreshModels(); openTaskDialog(syncHint); }; // al abrir se comprueba qué servidores siguen encendidos
   $('#obj-btn').onclick = () => openObjDialog();
   $('#new-routine').onclick = () => openRoutineDialog(syncTpl);
   setupSystem();
@@ -835,6 +860,8 @@ function setupForms() {
     toast(state.settings.collab > 0 ? 'Colaboración entre agentes activada' : 'Colaboración apagada: los agentes ya no se piden ayuda', false);
     renderComms();
   });
+  for (const b of document.querySelectorAll('#audit-filter button')) b.onclick = () => { state.auditFilter = b.dataset.f; renderAudit(); };
+  $('#goto-engines').onclick = () => setSysTab('motores');
   $('#goto-routines').onclick = () => document.querySelector('[data-view="routines"]').click();
   $('#settings-form').onsubmit = guard(async (e) => {
     e.preventDefault();
@@ -877,28 +904,115 @@ function table(container, headers, rows) {
   container.append(t);
 }
 
+const FINISHED_ST = new Set(['review', 'done', 'failed']);
+const ENG_NAMES = { claude: 'Claude Code', ollama: 'Ollama', codex: 'Codex', lmstudio: 'LM Studio' };
+const engBadge = (e) => el('em', { className: `eng eng-${ENG_NAMES[e] ? e : 'api'}`, textContent: ENG_NAMES[e] ?? e ?? '—' });
+const barCell = (rate) => el('td', { className: rate == null ? '' : rate < 0.5 ? 'bad' : rate >= 0.9 ? 'good' : '' },
+  el('div', { className: 'ubar' }, el('i', { style: `width:${(rate ?? 0) * 100}%` })), span(rate == null ? '—' : ` ${Math.round(rate * 100)} %`));
+
 function renderMetrics() {
+  const all = [...state.tasks.values()].filter((t) => t.kind !== 'objective' && t.finished_at && FINISHED_ST.has(t.status));
+  const secsOf = (t) => (t.started_at ? (parseTs(t.finished_at) - parseTs(t.started_at)) / 1000 : null);
+  const avg = (xs) => { const v = xs.filter((x) => Number.isFinite(x) && x >= 0); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; };
+  const dayKey = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const okN = all.filter((t) => t.status !== 'failed').length;
   const rows = agentMetrics([...state.tasks.values()]);
-  const box = $('#costs-agents');
-  table(box, ['Agente', 'Misiones', 'Éxito', 'Fallidas', 'Aprobadas', 'Tiempo medio'], rows.map((r) => [
-    r.agent, r.tasks, r.rate == null ? '—' : `${Math.round(r.rate * 100)} %`, r.failed, r.approved, fmtDur(r.avgSecs)]));
-  for (const tr of box.querySelectorAll('tbody tr')) { // resalta los agentes con mala tasa de éxito
-    const r = rows[[...tr.parentNode.children].indexOf(tr)];
-    if (r?.rate != null && r.tasks >= 3) tr.children[2].className = r.rate < 0.5 ? 'bad' : r.rate >= 0.9 ? 'good' : '';
+  const todayK = dayKey(new Date());
+  const todayN = all.filter((t) => dayKey(parseTs(t.finished_at)) === todayK).length;
+
+  // motor y modelo
+  const byEng = new Map();
+  for (const t of all) {
+    const k = `${t.engine ?? '—'}|${t.used_model ?? ''}`;
+    const g = byEng.get(k) ?? { engine: t.engine, model: t.used_model, n: 0, ok: 0, secs: [] };
+    g.n++; if (t.status !== 'failed') g.ok++; g.secs.push(secsOf(t));
+    byEng.set(k, g);
   }
-  if (rows.length) box.append(el('p', { className: 'hint', textContent: 'Éxito = misiones que llegaron a «por revisar» o «completada» frente a las fallidas. Se calcula con las misiones que siguen en el tablero.' }));
+  const engRows = [...byEng.values()].sort((a, b) => b.n - a.n);
+  const topEng = engRows[0];
+
+  const kpi = (label, value, cls = '') => el('div', { className: `kpi ${cls}` }, el('b', { textContent: value }), span(label));
+  $('#costs-kpi').replaceChildren(
+    kpi('misiones terminadas', String(all.length)),
+    kpi('hoy', String(todayN), todayN ? 'hot' : ''),
+    kpi('éxito', all.length ? `${Math.round((okN / all.length) * 100)}%` : '—'),
+    kpi('tiempo medio', fmtDur(avg(all.map(secsOf)))),
+    kpi('agente más activo', rows[0]?.agent ?? '—'),
+    kpi('motor más usado', topEng ? (ENG_NAMES[topEng.engine] ?? topEng.engine) : '—'));
+
+  const none = (txt) => el('p', { className: 'hint', textContent: txt });
+  const agentsBox = $('#costs-agents');
+  agentsBox.replaceChildren(rows.length
+    ? el('table', {}, el('thead', {}, el('tr', {}, ...['Agente', 'Misiones', 'Éxito', 'Fallidas', 'Tiempo medio'].map((h) => el('th', { textContent: h })))),
+      el('tbody', {}, ...rows.map((r) => el('tr', {}, el('td', { textContent: r.agent }), el('td', { textContent: String(r.tasks) }), barCell(r.rate), el('td', { textContent: String(r.failed) }), el('td', { textContent: fmtDur(r.avgSecs) })))))
+    : none('Aún no hay misiones terminadas.'));
+  $('#costs-engines').replaceChildren(engRows.length
+    ? el('table', {}, el('thead', {}, el('tr', {}, ...['Motor', 'Modelo', 'Misiones', 'Éxito', 'Tiempo medio'].map((h) => el('th', { textContent: h })))),
+      el('tbody', {}, ...engRows.map((g) => el('tr', {}, el('td', {}, engBadge(g.engine)), el('td', { className: 'snip', title: g.model ?? '', textContent: g.model ?? '(sin registrar)' }), el('td', { textContent: String(g.n) }), barCell(g.n ? g.ok / g.n : null), el('td', { textContent: fmtDur(avg(g.secs)) })))))
+    : none('Aún no hay misiones terminadas.'));
+
+  // últimos 14 días: barras apiladas (correctas en verde, fallidas en rojo)
+  const days = [];
+  for (let i = 13; i >= 0; i--) { const d = new Date(); d.setDate(d.getDate() - i); days.push({ key: dayKey(d), d, ok: 0, bad: 0 }); }
+  const idx = new Map(days.map((x) => [x.key, x]));
+  for (const t of all) { const x = idx.get(dayKey(parseTs(t.finished_at))); if (x) { if (t.status === 'failed') x.bad++; else x.ok++; } }
+  const maxD = Math.max(1, ...days.map((x) => x.ok + x.bad));
+  $('#costs-days').replaceChildren(el('div', { className: 'days' }, ...days.map((x) => el('div', { className: `day${x.key === todayK ? ' today' : ''}`, title: `${x.d.toLocaleDateString(undefined, { day: 'numeric', month: 'long' })}: ${x.ok + x.bad} misión(es)${x.bad ? ` (${x.bad} fallidas)` : ''}` },
+    el('div', { className: 'col' }, el('i', { className: 'bad', style: `height:${(x.bad / maxD) * 100}%` }), el('i', { className: 'ok', style: `height:${(x.ok / maxD) * 100}%` })),
+    el('span', { className: 'n', textContent: x.ok + x.bad ? String(x.ok + x.bad) : '' }),
+    el('span', { className: 'd', textContent: String(x.d.getDate()) })))));
+}
+
+// auditoría en lenguaje normal: etiqueta, categoría y detalle legible
+const ENGINE_ES = { ollama: 'Ollama', lmstudio: 'LM Studio', claude: 'Claude Code', codex: 'Codex' };
+function auditInfo(a) {
+  const [head, ...rest] = a.action.split('.');
+  const tail = rest.join('.');
+  const eng = ENGINE_ES[head];
+  const detail = a.detail ?? '';
+  const TASK = {
+    create: 'Misión creada', run: 'Misión lanzada', reply: 'Respuesta enviada', cancel: 'Misión cancelada', delete: 'Misión borrada', apply: 'Cambios aplicados', discard: 'Cambios descartados',
+    move: `Movida a «${STATUS_ES[detail] ?? detail}»`,
+  };
+  if (head === 'task' && TASK[tail]) return { label: TASK[tail], cat: 'task', detail: tail === 'move' ? '' : detail };
+  if (eng && tail === 'server.start') return { label: `${eng}: servidor encendido`, cat: 'sys', detail: detail === 'ok' ? '' : detail };
+  if (eng && tail === 'server.stop') return { label: `${eng}: servidor apagado`, cat: 'sys', detail: detail === 'ok' ? '' : detail };
+  if (eng && tail === 'benchmark') return { label: `${eng}: medición de modelos`, cat: 'sys', detail };
+  if (eng && tail === 'test') return { label: `${eng}: prueba`, cat: 'sys', detail };
+  const OTHER = {
+    'objective.create': ['Objetivo creado', 'task'], 'plan.created': ['Plan creado', 'task'], 'plan.launch': ['Plan lanzado', 'task'], 'review.chain': ['Revisión encadenada', 'task'], 'consult.create': ['Consulta entre agentes', 'task'],
+    'schedule.create': ['Rutina creada', 'task'], 'schedule.delete': ['Rutina borrada', 'task'], 'schedule.run': ['Rutina ejecutada', 'task'], 'attachment.add': ['Archivo adjuntado', 'task'], 'attachment.delete': ['Adjunto borrado', 'task'], 'agent.create': ['Agente creado', 'sys'],
+    'queue.pause': ['Cola en pausa', 'sys'], 'queue.resume': ['Cola reanudada', 'sys'], 'queue.cancel_all': ['Se canceló todo', 'sys'],
+    'settings.update': ['Ajustes guardados', 'sys'], 'engine.enabled': ['Motor encendido', 'sys'], 'engine.disabled': ['Motor apagado', 'sys'], 'engine.model': ['Modelo cambiado', 'sys'],
+    'provider.enabled': ['Proveedor encendido', 'sys'], 'provider.disabled': ['Proveedor apagado', 'sys'], 'provider.key_set': ['Clave guardada', 'sys'], 'provider.key_removed': ['Clave quitada', 'sys'],
+  };
+  const o = OTHER[a.action];
+  if (o) return { label: o[0], cat: o[1], detail: a.action === 'settings.update' ? 'límites y topes' : detail };
+  return { label: a.action, cat: 'sys', detail };
+}
+
+function renderAudit() {
+  const f = state.auditFilter ?? 'all';
+  for (const b of document.querySelectorAll('#audit-filter button')) b.setAttribute('aria-pressed', String(b.dataset.f === f));
+  const rows = (state.audit ?? []).map((a) => ({ a, i: auditInfo(a) })).filter((r) => f === 'all' || r.i.cat === f);
+  const shown = rows.slice(0, state.auditMore ? 150 : 25);
+  const box = $('#audit');
+  if (!rows.length) { box.replaceChildren(el('p', { className: 'hint', textContent: 'Sin movimientos todavía.' })); return; }
+  box.replaceChildren(
+    el('table', { className: 'audit-t' }, el('thead', {}, el('tr', {}, ...['Cuándo', 'Qué pasó', 'Detalle', 'Misión'].map((h) => el('th', { textContent: h })))),
+      el('tbody', {}, ...shown.map(({ a, i }) => el('tr', {},
+        el('td', { className: 'when', title: parseTs(a.ts).toLocaleString(), textContent: since(a.ts) }),
+        el('td', {}, el('em', { className: `cat cat-${i.cat}`, textContent: i.cat === 'task' ? 'misión' : 'sistema' }), span(` ${i.label}`)),
+        el('td', { className: 'snip', title: i.detail, textContent: i.detail }),
+        el('td', {}, a.task_id && state.tasks.has(a.task_id) ? el('button', { className: 'mini-link', textContent: `#${a.task_id}`, onclick: () => openDrawer(a.task_id) }) : span(a.task_id ? `#${a.task_id}` : '')))))),
+    ...(rows.length > shown.length ? [el('button', { className: 'eng-toggle', textContent: `Mostrar más (${rows.length - shown.length})`, onclick: () => { state.auditMore = true; renderAudit(); } })] : []));
 }
 
 async function refreshCosts() {
-  const [costs, audit] = await Promise.all([api('/api/costs'), api('/api/audit')]);
-  state.costs = costs;
-  const f = $('#settings-form');
+  state.audit = await api('/api/audit');
   fillSettings();
-  const today = costs.byDay.find((d) => d.day === new Date().toISOString().slice(0, 10));
-  $('#costs-summary').textContent = `Hoy: ${today?.tasks ?? 0} misión(es) terminadas`;
   renderMetrics();
-  table($('#costs-days'), ['Día', 'Misiones'], costs.byDay.map((d) => [d.day, d.tasks]));
-  table($('#audit'), ['Hora', 'Acción', 'Tarea', 'Detalle'], audit.slice(0, 40).map((a) => [a.ts, a.action, a.task_id ?? '', a.detail]));
+  renderAudit();
 }
 
 // ---------- sistema ----------
@@ -957,17 +1071,57 @@ function renderSystem() {
   setChip('#chip-apis', `${on} modelo(s) extra activos`, on ? 'ok' : 'warn');
   $('#queue-toggle').textContent = s.queue.paused ? 'Reanudar cola' : 'Pausar cola';
   $('#queue-toggle').className = s.queue.paused ? 'primary' : '';
+  $('#cancel-all').disabled = !(s.queue.running.length || s.queue.waiting.length); // nada que cancelar
 
-  // estado general
+  // entorno
+  const pathRow = (ok, path, note) => el('span', { className: 'pathrow', title: path }, el('span', { className: 'pr-top' }, dot(ok), el('span', { className: 'path', textContent: path })), ...(note ? [el('em', { className: 'muted', textContent: note })] : []));
+  const nTasks = Object.values(s.db.tasks).reduce((a, v) => a + v, 0);
   $('#sys-health').replaceChildren(kv([
-    ['Servidor', span(`en línea hace ${fmtDur(s.server.uptime_s)} · Node ${s.server.node} · pid ${s.server.pid}`)],
-    ['Base de datos', span(`${fmtBytes(s.db.size_bytes)} · ${Object.entries(s.db.tasks).map(([k, v]) => `${v} ${k}`).join(', ') || 'vacía'}`)],
-    ['Claude Code', el('span', {}, dot(s.claude.ok), span(s.claude.ok ? s.claude.version : s.claude.error))],
-    ['Ollama', el('span', {}, dot(s.ollama.ok), span(s.ollama.ok ? `${s.ollama.models.length} modelos · cargados: ${s.ollama.loaded.map((m) => `${m.name} (${fmtBytes(m.size)})`).join(', ') || 'ninguno'}` : s.ollama.error))],
-    ['Proyectos', el('span', {}, dot(s.paths.htdocs.exists), span(`${s.paths.htdocs.path} · ${s.paths.htdocs.projects} proyectos`))],
-    ...(s.paths.docs ? [['Documentos', el('span', {}, dot(s.paths.docs.exists), span(`${s.paths.docs.path} (+Documentos: una carpeta nueva por tema)`))]] : []),
-    ...s.paths.extra.map((e) => [`@${e.name.slice(1)}`, el('span', {}, dot(e.exists), span(`${e.path} (solo lectura)`))]),
+    ['Servidor', span(`en línea hace ${fmtDur(s.server.uptime_s)}`)],
+    ['Base de datos', span(`${fmtBytes(s.db.size_bytes)} · ${nTasks ? Object.entries(s.db.tasks).map(([k, v]) => `${v} ${k}`).join(', ') : 'sin tareas guardadas'}`)],
+    ['Proyectos', pathRow(s.paths.htdocs.exists, s.paths.htdocs.path, `${s.paths.htdocs.projects} proyectos`)],
+    ...(s.paths.docs ? [['Documentos', pathRow(s.paths.docs.exists, s.paths.docs.path, 'una carpeta por tema')]] : []),
+    ...s.paths.extra.map((e) => [e.name.replace(/^@/, ''), pathRow(e.exists, e.path, 'solo lectura')]),
   ]));
+
+  // motores: una línea por motor, con su estado; al hacer clic se abre «Motores y modelos»
+  const lmState = lmStatus();
+  const lmP = s.providers.find((p) => p.name === 'lmstudio');
+  const netOn = s.providers.filter((p) => p.needsKey && p.enabled).length;
+  const loaded = s.ollama.ok && s.ollama.loaded?.length ? ` · cargado: ${s.ollama.loaded.map((m) => m.name).join(', ')}` : '';
+  const motor = (name, state, text, detail, startEngine = null) => {
+    const b = el('div', { className: 'motor', role: 'button', tabIndex: 0, title: 'Abrir Motores y modelos' },
+      el('span', { className: `dot-${state === 'ok' ? 'ok' : state === 'off' ? 'off' : 'bad'}` }), el('strong', { textContent: name }),
+      el('span', { className: `pill ${state}`, textContent: text }), el('span', { className: 'muted', textContent: detail }));
+    if (startEngine) {
+      const go = serverButton(startEngine); const run = go.onclick;
+      go.textContent = 'Encender'; go.className = 'mini-primary'; go.onclick = (e) => { e.stopPropagation(); return run(e); };
+      b.append(go);
+    }
+    b.onclick = () => setSysTab('motores');
+    b.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSysTab('motores'); } };
+    return b;
+  };
+  const eng = (name, info, okText, detail, startEngine = null) => (!info.enabled ? motor(name, 'off', 'apagado', '') : info.ok ? motor(name, 'ok', okText, detail) : motor(name, 'bad', 'sin servicio', startEngine ? '' : 'revisa la instalación', startEngine));
+  $('#sys-motors').replaceChildren(
+    eng('Claude Code', s.claude, 'activo', s.claude.ok ? s.claude.version.split(' ')[0] : ''),
+    eng('Codex', s.codex, 'activo', s.codex.ok ? s.codex.version.replace(/^codex-cli\s*/, '') : ''),
+    eng('Ollama', s.ollama, 'activo', s.ollama.ok ? `${s.ollama.models.length} modelos${loaded}` : '', 'ollama'),
+    !lmP || !lmP.enabled ? motor('LM Studio', 'off', 'apagado', '') : lmState === 'activo' ? motor('LM Studio', 'ok', 'activo', 'servidor local') : motor('LM Studio', 'bad', 'sin servidor', '', 'lmstudio'),
+    netOn ? motor('Internet', 'ok', `${netOn} activos`, s.providers.filter((p) => p.needsKey && p.enabled).map((p) => p.name).join(', ')) : motor('Internet', 'off', 'ninguno', ''));
+
+  // cifras del día
+  const a0 = s.activity;
+  const qq = s.queue;
+  const kpi = (label, value, cls = '') => el('div', { className: `kpi ${cls}` }, el('b', { textContent: value }), span(label));
+  const ramLow = s.memory && s.memory.free_gb < 3;
+  $('#sys-kpi').replaceChildren(
+    kpi('en curso', String(qq.running.length), qq.running.length ? 'hot' : ''),
+    kpi('en espera', String(qq.waiting.length), qq.waiting.length ? 'warn' : ''),
+    kpi('terminadas hoy', String(a0.total)),
+    kpi('éxito', a0.successRate == null ? '—' : `${Math.round(a0.successRate * 100)}%`),
+    kpi('duración media', fmtDur(a0.avgSeconds)),
+    ...(s.memory ? [kpi(`RAM libre de ${s.memory.total_gb} GB`, `${s.memory.free_gb} GB`, ramLow ? 'warn' : '')] : []));
 
   // cola
   const q = s.queue;
@@ -985,7 +1139,7 @@ function renderSystem() {
     gauge('Ollama', q.active.ollama ?? 0, q.limit.ollama, waitOf((e) => e === 'ollama'), qoff.includes('ollama')),
     gauge('Codex', q.active.codex ?? 0, q.limit.codex ?? 1, waitOf((e) => e === 'codex'), qoff.includes('codex')),
     gauge('LM Studio', q.active.lmstudio ?? 0, q.limit.lmstudio ?? 1, waitOf((e) => e === 'lmstudio'), lmStatus() === 'apagado'),
-    gauge('Otros modelos', apiUsed, q.limit.api, waitOf(isApi), false));
+    gauge('Internet', apiUsed, q.limit.api, waitOf(isApi), false));
   const list = el('div', { className: 'mini-list' });
   const engTag = (e) => el('em', { className: `eng eng-${isApi(e) ? 'api' : e}`, textContent: engLabel(e) });
   for (const t of q.running) { const b = el('button', { className: 'mini' }, el('span', {}, engTag(t.engine), span(` #${t.id} ${t.title}`)), el('span', { className: 'muted', textContent: `${t.agent} · ${fmtDur(Math.max(0, (Date.now() - parseTs(t.started_at)) / 1000))}` })); b.onclick = () => openDrawer(t.id); list.append(b); }
@@ -993,17 +1147,28 @@ function renderSystem() {
   if (!list.children.length) list.append(el('p', { className: 'hint', textContent: 'Nada en curso.' }));
   $('#sys-queue').replaceChildren(rows, list);
 
-  // actividad
+  // hoy por motor
   const a = s.activity;
-  const act = el('div', {}, el('div', { className: 'stat-row' },
-    el('div', { className: 'stat' }, el('b', { textContent: String(a.total) }), span('tareas terminadas')),
-    el('div', { className: 'stat' }, el('b', { textContent: a.successRate == null ? '—' : `${Math.round(a.successRate * 100)}%` }), span('éxito')),
-    el('div', { className: 'stat' }, el('b', { textContent: fmtDur(a.avgSeconds) }), span('duración media')),
-    el('div', { className: 'stat' }, el('b', { textContent: String(q.running.length) }), span('en curso'))));
-  const byEngine = el('div', { className: 'mini-list' }, ...a.byEngine.map((e) => el('div', { className: 'mini' }, span(engLabel(e.engine)), el('span', { className: 'muted', textContent: `${e.ok} ok · ${e.failed} fallos` }))));
+  const maxN = Math.max(1, ...a.byEngine.map((e) => e.ok + e.failed));
+  const byEngine = a.byEngine.length
+    ? el('div', { className: 'by-engine' }, ...a.byEngine.map((e) => el('div', { className: 'be-row' },
+      el('strong', { textContent: engLabel(e.engine) }),
+      el('div', { className: 'be-bar' }, el('i', { className: 'ok', style: `width:${(e.ok / maxN) * 100}%` }), el('i', { className: 'bad', style: `width:${(e.failed / maxN) * 100}%` })),
+      el('span', { className: 'muted', textContent: `${e.ok} ok${e.failed ? ` · ${e.failed} fallos` : ''}` }))))
+    : el('p', { className: 'hint', textContent: 'Aún no hay tareas terminadas hoy.' });
   const fails = el('div', { className: 'mini-list' }, ...(s.failures.length ? [el('h3', { textContent: 'Fallos recientes' })] : []),
     ...s.failures.map((f) => { const b = el('button', { className: 'mini err' }, span(`#${f.id} ${f.title}`), el('span', { className: 'muted', textContent: (f.error || '').slice(0, 60) })); b.onclick = () => openDrawer(f.id); return b; }));
-  $('#sys-activity').replaceChildren(act, byEngine, fails);
+  $('#sys-activity').replaceChildren(byEngine, fails);
+
+  // últimas misiones: las 6 más recientes, con su estado
+  const recent = [...state.tasks.values()].sort((x, y) => y.id - x.id).slice(0, 6);
+  $('#sys-recent').replaceChildren(...(recent.length ? recent.map((t) => {
+    const b = el('button', { className: `mini rec ${t.status}` },
+      el('span', {}, engTag(t.engine ?? 'claude'), span(` #${t.id} ${t.title}`)),
+      el('span', { className: 'muted', textContent: [STATUS_ES[t.status] ?? t.status, since(t.finished_at ?? t.updated_at)].filter(Boolean).join(' · ') }));
+    b.onclick = () => openDrawer(t.id);
+    return b;
+  }) : [el('p', { className: 'hint', textContent: 'Aún no hay misiones. Crea una con «+ Nueva misión» o desde un objetivo.' })]));
 
   // rutinas
   $('#sys-schedules').replaceChildren(...(s.schedules.length ? s.schedules : [null]).map((r) => r
@@ -1030,7 +1195,9 @@ function modelOptions(engine, current) {
 
 async function refreshModels() {
   try {
+    const before = JSON.stringify([...serversDown()]);
     state.modelInfo = await api('/api/models');
+    if (openTaskDialog && JSON.stringify([...serversDown()]) !== before) { fillSelects(); state.syncHint?.(); }
     state.syncHint?.();
     if (state.view === 'system' && state.system) renderSystem();
     render();
@@ -1080,15 +1247,32 @@ const serverButton = (engine) => el('button', { className: 'primary', textConten
     toast(`${BENCH_LABEL[engine]} encendido`, false);
   } finally { await refreshModels(); await refreshSystem(); }
 }) });
-/** Apaga el servidor local (libera la RAM). Pide confirmación; el servidor la rechaza si hay una misión usándolo. */
-const stopButton = (engine) => el('button', { className: 'danger', textContent: 'Apagar servidor', title: `Apaga ${BENCH_LABEL[engine]} en este equipo y libera su memoria`, disabled: !!state.benches?.[engine]?.running, onclick: guard(async (e) => {
-  if (!(await confirmDialog(`Apagar el servidor de ${BENCH_LABEL[engine]}`, `Se cerrará ${BENCH_LABEL[engine]} y se liberará la memoria que usa. Puedes volver a encenderlo con un clic.`))) return;
-  e.target.disabled = true; e.target.textContent = 'Apagando…';
-  try {
-    await post(`/api/system/${engine}/server/stop`);
-    toast(`${BENCH_LABEL[engine]} apagado`, false);
-  } finally { await refreshModels(); await refreshSystem(); }
-}) });
+/**
+ * Un solo interruptor para Ollama y LM Studio: ENCENDIDO = activo en Sistema + servidor funcionando.
+ * Encender abre el servidor; apagar lo cierra (libera la RAM) y lo desactiva. El servidor rechaza apagarlo si una misión lo usa.
+ */
+const serverSwitch = (engine, enabled, up, toggleUrl) => {
+  const on = enabled && up;
+  const name = BENCH_LABEL[engine];
+  const setEnabled = (value) => api(toggleUrl, { method: 'PUT', body: JSON.stringify({ enabled: value }) });
+  const btn = switchBtn(on, on ? `Apagar ${name}: cierra su servidor, libera la memoria y deja de usarse` : `Encender ${name}: abre su servidor y lo activa`, async () => {
+    if (on && !(await confirmDialog(`Apagar ${name}`, `Se cerrará el servidor de ${name}, se liberará la memoria que usa y las misiones dejarán de usarlo. Puedes volver a encenderlo con este mismo interruptor.`))) return;
+    btn.disabled = true;
+    try {
+      if (on) {
+        await post(`/api/system/${engine}/server/stop`); // si hay una misión usándolo, el servidor lo rechaza y no se toca nada
+        await setEnabled(false);
+        toast(`${name} apagado`, false);
+      } else {
+        if (!enabled) await setEnabled(true);
+        toast(`Encendiendo ${name}…${engine === 'ollama' ? ' puede tardar hasta un minuto' : ''}`, false);
+        await post(`/api/system/${engine}/server`);
+        toast(`${name} encendido`, false);
+      }
+    } finally { btn.disabled = false; await refreshModels(); await refreshState(); await refreshSystem(); }
+  });
+  return btn;
+};
 const benchButton = (engine) => el('button', { textContent: state.benches?.[engine]?.running ? 'Midiendo…' : 'Medir modelos', disabled: !!state.benches?.[engine]?.running, title: 'Prueba cada modelo instalado y te dice cuál rinde mejor en esta computadora', onclick: guard(() => startBench(engine)) });
 
 /** Tabla de la última medición (o de la que está corriendo) con «Usar este». */
@@ -1132,19 +1316,39 @@ function engineItem({ name, kind, kindClass, on, ok, detail, model, actions, pan
     el('div', { className: 'c-state', title: detail }, el('span', { className: on && ok ? 'dot-ok' : on ? 'dot-bad' : 'dot-off' }), span(detail)),
     el('div', { className: 'c-model' }, model),
     el('div', { className: 'c-act' }, ...actions));
+  // mismo orden en todos los motores: encender · probar · medir · apagar (lo destructivo al final)
+  const rank = (b) => (/Encend/.test(b.textContent) ? 0 : /Prob/.test(b.textContent) ? 1 : /Med/.test(b.textContent) ? 2 : 3);
+  tools = [...tools].sort((x, y) => rank(x) - rank(y));
   const bar = panel || tools.length ? [el('div', { className: 'eng-tools' }, ...(panel ? [panel] : []), ...(tools.length ? [el('div', { className: 'tools-btns' }, ...tools)] : []))] : [];
   return el('div', { className: 'eng-item' }, line, ...bar, el('div', { className: 'eng-more' }, ...more));
 }
 
+/** «Probar» de Ollama: una pregunta mínima al modelo en uso; el resultado queda bajo la fila. */
+function ollamaTester() {
+  const res = el('div', { className: 'res' });
+  const button = el('button', { textContent: 'Probar', title: 'Le hace una pregunta mínima al modelo que usas y mide cuánto tarda (la primera vez carga el modelo en memoria)', onclick: guard(async (e) => {
+    e.target.disabled = true; e.target.textContent = 'Probando…';
+    res.className = 'res'; res.textContent = 'Cargando el modelo y esperando respuesta… puede tardar hasta un minuto.';
+    try {
+      const r = await post('/api/system/ollama/test');
+      res.className = `res ${r.ok ? 'ok' : 'bad'}`;
+      res.textContent = r.ok ? `✓ ${r.model} respondió «${r.text}» en ${(r.ms / 1000).toFixed(1)} s` : `✕ ${r.error}`;
+    } finally { e.target.disabled = false; e.target.textContent = 'Probar'; }
+  }) });
+  return { button, res };
+}
+
 /** Claude Code, Codex y Ollama: motores locales que se encienden y apagan sin tocar nada más. */
 function localEngineItem(key, label, info, detail, kind, kindClass) {
+  const probarOllama = key === 'ollama' ? ollamaTester() : {};
   return engineItem({
-    name: label, kind, kindClass, on: info.enabled, ok: info.ok,
-    detail: info.enabled ? (detail ?? '') : `apagado · ${detail ?? ''}`,
+    name: label, kind, kindClass, on: key === 'ollama' ? info.enabled && info.ok : info.enabled, ok: info.ok,
+    detail: !info.enabled ? `apagado · ${detail ?? ''}` : key === 'ollama' && !info.ok ? 'servidor apagado: usa el interruptor para encenderlo' : (detail ?? ''),
     model: modelSelect(key, label),
     panel: key === 'ollama' && info.enabled ? benchPanel('ollama') : null,
-    tools: key !== 'ollama' || !info.enabled ? [] : info.ok ? [benchButton('ollama'), stopButton('ollama')] : [serverButton('ollama')],
-    actions: [switchBtn(info.enabled, info.enabled ? `Apagar ${label}: las misiones dejan de usarlo` : `Encender ${label}`, async () => {
+    tools: key === 'ollama' && info.enabled && info.ok ? [benchButton('ollama'), probarOllama.button] : [],
+    more: key === 'ollama' && info.enabled ? [probarOllama.res] : [],
+    actions: [key === 'ollama' ? serverSwitch('ollama', info.enabled, info.ok, '/api/system/engines/ollama/toggle') : switchBtn(info.enabled, info.enabled ? `Apagar ${label}: las misiones dejan de usarlo` : `Encender ${label}`, async () => {
       if (info.enabled && key === 'claude' && !(await confirmDialog('Apagar Claude Code', 'Sin Claude Code no se pueden editar archivos ni correr agentes de código; solo quedarán Ollama, Codex y los modelos extra (que únicamente leen). Puedes encenderlo cuando quieras.'))) return;
       await api(`/api/system/engines/${key}/toggle`, { method: 'PUT', body: JSON.stringify({ enabled: !info.enabled }) });
       toast(`${label} ${info.enabled ? 'apagado' : 'encendido'}`, false);
@@ -1176,8 +1380,7 @@ function providerItem(p) {
   });
   const actions = [];
   const tools = [];
-  if (lm && p.enabled && lmUp) tools.push(benchButton('lmstudio'), stopButton('lmstudio'));
-  if (lm && p.enabled && lmUp === false) tools.push(serverButton('lmstudio'));
+  if (lm && p.enabled && lmUp) tools.push(benchButton('lmstudio'));
   if (p.configured && !(lm && lmUp === false)) { // con el servidor de LM Studio apagado no hay nada que probar
     (lm ? tools : actions).push(el('button', { textContent: 'Probar', onclick: guard(async () => {
       res.className = 'res'; res.textContent = 'Probando…';
@@ -1186,16 +1389,17 @@ function providerItem(p) {
     }) }));
   }
   if (p.needsKey) actions.push(el('button', { className: p.configured ? '' : 'primary', textContent: p.configured ? 'Clave' : 'Poner clave', onclick: () => { keyform.hidden = !keyform.hidden; if (!keyform.hidden) input.focus(); } }));
-  if (p.configured) actions.push(switchBtn(p.enabled, p.enabled ? `Apagar ${p.name} (la clave se conserva)` : `Encender ${p.name}`, async () => {
+  if (p.configured && lm) actions.push(serverSwitch('lmstudio', p.enabled, lmUp !== false, `/api/system/providers/${p.name}/toggle`));
+  else if (p.configured) actions.push(switchBtn(p.enabled, p.enabled ? `Apagar ${p.name} (la clave se conserva)` : `Encender ${p.name}`, async () => {
     await api(`/api/system/providers/${p.name}/toggle`, { method: 'PUT', body: JSON.stringify({ enabled: !p.enabled }) });
     toast(`${p.name} ${p.enabled ? 'apagado: no se usará hasta que lo enciendas' : 'encendido'}`, false);
     await refreshState(); await refreshSystem();
   }));
-  const detail = lm ? (!p.enabled ? 'apagado' : lmUp === false ? 'servidor local apagado: abre LM Studio y activa su servidor' : 'servidor local encendido · sin clave')
+  const detail = lm ? (!p.enabled ? 'apagado' : lmUp === false ? 'servidor apagado: usa el interruptor para encenderlo' : 'servidor local encendido · sin clave')
     : !p.configured ? 'sin clave' : p.enabled ? `activo · clave ${p.keyHint}` : `apagado · clave ${p.keyHint} guardada`;
   return engineItem({
     name: lm ? 'LM Studio' : p.name, kind: lm ? 'Local' : 'Internet', kindClass: lm ? 'k-local' : 'k-net',
-    on: p.enabled, ok: lm ? lmUp !== false : true, detail,
+    on: lm ? p.enabled && lmUp !== false : p.enabled, ok: lm ? lmUp !== false : true, detail,
     model: lm && p.enabled ? modelSelect('lmstudio', 'LM Studio') : el('span', { className: 'muted', textContent: p.configured || lm ? p.model : `modelo: ${p.model}` }),
     actions, panel: lm && p.enabled ? benchPanel('lmstudio') : null, tools, more: [res, keyform],
   });

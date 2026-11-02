@@ -47,7 +47,7 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     const task = db.getTask(id);
     if (!task) throw new Error('Tarea no existe');
     if (['queued', 'running'].includes(task.status)) throw new Error('La tarea ya está en curso');
-    const plan = route(task, db.disabledEngines());
+    const plan = route(task, db.disabledEngines(), downEngines);
     if (plan.blocked) throw new Error(plan.blocked);
     const { daily_budget_usd: budget } = db.settings();
     if (plan.engine === 'claude' && budget > 0 && db.costToday() >= budget) {
@@ -210,7 +210,7 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     const task = db.getTask(id);
     if (!state || !task || task.status !== 'running') return;
     log(id, 'consult', answersPrompt(state.answers));
-    const plan = route(task, db.disabledEngines());
+    const plan = route(task, db.disabledEngines(), downEngines);
     const { daily_budget_usd: budget } = db.settings();
     if (plan.blocked) {
       log(id, 'error', plan.blocked); carry.delete(id); replySnaps.delete(id);
@@ -542,7 +542,7 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
       method: 'POST',
       signal: ctrl.signal,
       body: JSON.stringify({ model, stream: true, messages: [{ role: 'system', content: sys }, { role: 'user', content: await buildPrompt(task) }] }),
-    });
+    }).catch((e) => { throw ctrl.signal.aborted || e.name === 'AbortError' ? e : new Error('Ollama no responde: enciende su servidor en Sistema → Motores y modelos (botón «Encender servidor»)'); });
     if (!res.ok) throw new Error(`Ollama respondió ${res.status}`);
     let text = '';
     let buf = '';
@@ -582,7 +582,10 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     let model = task.model || (engine === 'lmstudio' ? db.engineModels().lmstudio : '') || undefined; // sin elección: el modelo por defecto del proveedor
     if (engine === 'lmstudio') model = await lmstudioModel(model, provider, task.id);
     patch(task.id, { used_model: model || provider.model });
-    const out = await chat(provider, { model, system: sys, prompt: await buildPrompt(task), signal: ctrl.signal, fetchFn });
+    const out = await chat(provider, { model, system: sys, prompt: await buildPrompt(task), signal: ctrl.signal, fetchFn }).catch((e) => {
+      if (provider.local && !ctrl.signal.aborted && /fetch failed|ECONNREFUSED/i.test(`${e.message} ${e.cause?.code ?? ''}`)) throw new Error(`${provider.name === 'lmstudio' ? 'LM Studio' : provider.name} no responde: enciende su servidor en Sistema → Motores y modelos (botón «Encender servidor»)`);
+      throw e;
+    });
     log(task.id, 'text', out.text);
     log(task.id, 'info', `${provider.name}/${out.model}: ${out.usage.input} tokens de entrada, ${out.usage.output} de salida (costo no calculado)`);
     return { result: out.text, cost: 0 };
@@ -623,6 +626,9 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     return ids.size;
   }
 
+  /** Motores locales con el servidor apagado (lo actualiza el monitor de index.js); Auto los esquiva. */
+  let downEngines = [];
+  const setDown = (list) => { downEngines = [...list]; };
   function setPaused(value) {
     paused = !!value;
     logger.warn(paused ? 'Cola en pausa: no se iniciarán tareas nuevas' : 'Cola reanudada');
@@ -651,5 +657,5 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     };
   }
 
-  return { enqueue, reply, cancel, changes: changesOf, applyChanges, discardChanges, cancelAll, setPaused, snapshot, kick: pump, stats: () => ({ active: { ...active }, limit: limits(), waiting: waiting.length, paused, off: db.disabledEngines() }) };
+  return { setDown, down: () => [...downEngines], enqueue, reply, cancel, changes: changesOf, applyChanges, discardChanges, cancelAll, setPaused, snapshot, kick: pump, stats: () => ({ active: { ...active }, limit: limits(), waiting: waiting.length, paused, off: db.disabledEngines() }) };
 }

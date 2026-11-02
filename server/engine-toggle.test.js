@@ -96,8 +96,31 @@ test('modelos de Ollama y LM Studio: lista sin embeddings, gemma3:4b recomendado
     assert.deepEqual(m.ollama.map((x) => x.value), ['gemma3:4b']);
     assert.equal(m.defaults.ollama, 'gemma3:4b');
     assert.equal(m.lmstudio_up, false); // LM Studio apagado: lista vacía, sin romper nada
+    assert.equal(m.ollama_up, true, 'el formulario deshabilita los motores locales sin servidor');
     assert.equal((await call('PUT', '/api/system/engines/ollama/model', { model: 'llama3.2:3b' })).status, 200);
     assert.equal((await call('PUT', '/api/system/engines/lmstudio/model', { model: 'qwen2.5-7b' })).status, 200);
     assert.deepEqual(db.engineModels(), { claude: '', codex: '', ollama: 'llama3.2:3b', lmstudio: 'qwen2.5-7b' });
   } finally { app.server.close(); app.server.closeAllConnections?.(); }
+});
+
+test('route: Auto esquiva un motor encendido cuyo servidor está apagado; elegido a mano no se desvía', () => {
+  assert.equal(route({ agent: 'summarizer' }, [], ['ollama']).engine, 'claude'); // ligero → iría a Ollama, pero su servidor está caído
+  assert.equal(route({ agent: 'summarizer' }, [], ['ollama']).blocked, null);
+  assert.equal(route({ agent: 'backend' }, ['claude'], ['ollama']).engine, 'claude'); // no cae en un Ollama caído
+  assert.match(route({ agent: 'backend' }, ['claude'], ['ollama']).blocked, /Claude Code está desactivado/);
+  assert.equal(route({ agent: 'summarizer' }, [], []).engine, 'ollama'); // con el servidor arriba, sigue igual
+  assert.equal(route({ agent: 'x', engine: 'ollama' }, [], ['ollama']).engine, 'ollama'); // a mano: lo intenta y falla con mensaje claro
+});
+
+test('refreshDown: el runner conoce si Ollama está sin servidor y lo olvida al volver', async () => {
+  let up = false;
+  const probe = { claude: async () => ({ ok: true, version: '1' }), codex: async () => ({ ok: false }), ollama: async () => ({ ok: up, models: [] }) };
+  const { db, runner, refreshDown, server } = createApp({ db: openDb(':memory:'), probe });
+  assert.deepEqual(await refreshDown(), ['ollama']);
+  assert.deepEqual(runner.down(), ['ollama']);
+  up = true;
+  assert.deepEqual(await refreshDown(), []);
+  up = false; db.setEngineEnabled('ollama', false); // apagado a propósito: no cuenta como «caído»
+  assert.deepEqual(await refreshDown(), []);
+  server.close();
 });

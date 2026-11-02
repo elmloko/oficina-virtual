@@ -426,6 +426,8 @@ header.hd #stats { flex: 0 1 auto; margin: 0 0 8px; padding: 2px 10px; border: 1
 #sys-engines, #sys-local, #sys-providers { display: block; }
 @media (max-width: 900px) {
   #view-system[data-tab=resumen] .sys-grid, #view-system[data-tab=ajustes] .sys-grid, .eng-cols { grid-template-columns: 1fr; }
+  .card-sys.span2 { grid-column: auto; }
+  #sys-queue .gauges { grid-template-columns: 1fr; }
   .sys-tabs { overflow-x: auto; }
 }
 #sys-providers .prov-row.has-key { grid-template-columns: 96px 1fr; }
@@ -477,6 +479,39 @@ em.kind.k-net { color: var(--blue); border-color: var(--blue); }
 .switch.on { border-color: var(--green); }
 .switch.on i { left: 21px; background: var(--green); }
 .eng-more:empty { display: none; }
+/* Resumen */
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; }
+.kpi { padding: 4px 10px; border-left: 3px solid var(--line); display: flex; flex-direction: column; gap: 2px; }
+.kpi b { font-size: 22px; line-height: 1.1; color: var(--text, #e6f0ff); }
+.kpi span { font-size: 11px; color: var(--muted); }
+.kpi.hot { border-left-color: var(--green); } .kpi.hot b { color: var(--green); }
+.kpi.warn { border-left-color: var(--gold); } .kpi.warn b { color: var(--gold); }
+.motor { display: grid; grid-template-columns: 14px 92px auto 1fr; gap: 8px; align-items: center; width: 100%; padding: 6px 4px; background: none; border: 0; border-bottom: 1px solid var(--line); text-align: left; font-size: 12px; color: inherit; cursor: pointer; }
+.motor:hover { background: rgba(255,255,255,.04); }
+.motor .muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.pill { font-size: 10px; letter-spacing: .5px; text-transform: uppercase; padding: 0 6px; border: 1px solid var(--line); color: var(--muted); }
+.pill.ok { color: var(--green); border-color: var(--green); } .pill.bad { color: var(--red); border-color: var(--red); }
+.card-sys.span2 { grid-column: span 2; }
+#sys-queue .gauges { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 16px; }
+.g-head { white-space: nowrap; gap: 6px; }
+.motor { grid-template-columns: 14px 92px auto minmax(0, 1fr) auto; }
+.motor:focus-visible { outline: 2px solid var(--blue, #7cc8ff); outline-offset: -2px; }
+.mini-primary { padding: 2px 9px; font-size: 11px; background: var(--blue, #7cc8ff); color: #04121f; border: 0; cursor: pointer; font-weight: bold; }
+.mini-primary:disabled { opacity: .6; }
+#sys-recent .mini { width: 100%; }
+#sys-recent .mini.failed { border-left: 3px solid var(--red); }
+#sys-recent .mini.done { border-left: 3px solid var(--green); }
+#sys-recent .mini.running { border-left: 3px solid var(--gold); }
+.switch:disabled { opacity: .5; cursor: wait; }
+.pathrow { display: flex; flex-direction: column; min-width: 0; }
+.pathrow .pr-top { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.pathrow .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.pathrow em { font-style: normal; font-size: 11px; padding-left: 14px; }
+.kv dd { min-width: 0; }
+.by-engine { display: flex; flex-direction: column; gap: 6px; }
+.be-row { display: grid; grid-template-columns: 110px 1fr 150px; gap: 10px; align-items: center; font-size: 12px; }
+.be-bar { display: flex; height: 8px; background: #0a1220; border: 1px solid var(--line); }
+.be-bar i.ok { background: var(--green); } .be-bar i.bad { background: var(--red); }
 .eng-tools { display: flex; gap: 10px; align-items: flex-start; padding: 0 6px 8px; }
 .eng-tools > .bench, .eng-tools > .hint { flex: 1 1 0; min-width: 0; margin: 0; }
 .eng-tools > .hint { align-self: center; }
@@ -511,3 +546,36 @@ em.kind.k-net { color: var(--blue); border-color: var(--blue); }
 .bench td.good { color: var(--green); } .bench td.bad { color: var(--red); }
 .bench td.snip { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
 .bench button { padding: 2px 8px; font-size: 11px; }
+
+/* Pausar y cancelar viven en la tarjeta de la cola */
+.q-actions { display: flex; gap: 6px; text-transform: none; letter-spacing: 0; }
+.q-actions button { padding: 2px 9px; font-size: 11px; }
+.q-actions button:disabled { opacity: .45; cursor: default; }
+.tools-btns .danger { margin-left: 8px; }
+
+/* Uso */
+.panel.usage { max-width: 1200px; }
+.usage h3 { margin: 16px 0 6px; font-size: 12px; letter-spacing: 1px; text-transform: uppercase; color: var(--gold); }
+.u-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 0 28px; align-items: start; }
+.usage table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.usage th { text-align: left; font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: var(--muted); padding: 2px 6px; }
+.usage td { padding: 4px 6px; border-top: 1px solid var(--line); vertical-align: middle; }
+.usage td.snip { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.ubar { display: inline-block; width: 60px; height: 6px; background: #0a1220; border: 1px solid var(--line); vertical-align: middle; margin-right: 6px; }
+.ubar i { display: block; height: 100%; background: var(--green); }
+td.bad .ubar i { background: var(--red); }
+.days { display: grid; grid-template-columns: repeat(14, 1fr); gap: 6px; align-items: end; height: 120px; }
+.day { display: flex; flex-direction: column; align-items: center; height: 100%; justify-content: flex-end; gap: 2px; font-size: 10px; color: var(--muted); }
+.day .col { display: flex; flex-direction: column; justify-content: flex-end; width: 100%; max-width: 34px; flex: 1; min-height: 0; background: rgba(255,255,255,.03); }
+.day .col i.ok { background: var(--green); } .day .col i.bad { background: var(--red); }
+.day.today .d { color: var(--gold); font-weight: bold; }
+.day .n { height: 12px; color: var(--text, #cfe); }
+.audit-h { display: flex; align-items: center; gap: 12px; }
+.audit-filter { display: inline-flex; gap: 4px; text-transform: none; letter-spacing: 0; }
+.audit-filter button { padding: 1px 9px; font-size: 11px; }
+.audit-filter button[aria-pressed=true] { background: var(--blue, #7cc8ff); color: #04121f; border-color: var(--blue, #7cc8ff); }
+.audit-t .when { white-space: nowrap; color: var(--muted); width: 110px; }
+.audit-t td.snip { max-width: 360px; }
+em.cat { font-style: normal; font-size: 9px; letter-spacing: .5px; text-transform: uppercase; padding: 0 5px; border: 1px solid var(--line); color: var(--muted); }
+em.cat-task { color: var(--gold); border-color: var(--gold); } em.cat-sys { color: var(--blue); border-color: var(--blue); }
+@media (max-width: 900px) { .u-cols { grid-template-columns: 1fr; } .days { gap: 3px; } }

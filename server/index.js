@@ -220,10 +220,34 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
         claude: CLAUDE_MODELS,
         codex: await (probe.codexModels?.() ?? Promise.resolve([])).catch(() => []),
         ollama: ol.ok ? ollamaChatModels(ol.models, ollamaDefault) : [],
-        lmstudio: lm ?? [], lmstudio_up: lm !== null,
+        lmstudio: lm ?? [], lmstudio_up: lm !== null, ollama_up: !!ol.ok,
         engine_models: db.engineModels(), default_seen: db.defaultSeen(),
         defaults: { claude: db.defaultSeen().claude, ollama: ollamaDefault, codex: null, lmstudio: null },
       });
+    }
+    // --- probar Ollama: una pregunta mínima al modelo que usas (carga el modelo, así que puede tardar) ---
+    if (method === 'POST' && m(/^\/api\/system\/ollama\/test$/)) {
+      if (db.disabledEngines().includes('ollama')) return send(res, 400, { error: 'Ollama está apagado: enciéndelo primero' });
+      if ((runner.stats().active.ollama ?? 0) > 0) return send(res, 409, { error: 'Ollama está ocupado con una misión: espera a que termine para probarlo' });
+      const info = await probe.ollama();
+      if (!info.ok) return send(res, 200, { ok: false, error: info.error ?? 'Ollama no responde: enciende su servidor' });
+      const model = db.engineModels().ollama || pickDefault(info.models ?? [], db.engineBench('ollama'));
+      if (!model) return send(res, 200, { ok: false, error: 'No hay ningún modelo de chat instalado (prueba: ollama pull gemma3:4b)' });
+      const t0 = Date.now();
+      try {
+        const r = await ollamaFetch(`${config.ollamaUrl}/api/chat`, {
+          method: 'POST', signal: AbortSignal.timeout(120_000),
+          body: JSON.stringify({ model, stream: false, keep_alive: 0, options: { num_predict: 12, temperature: 0 }, messages: [{ role: 'user', content: 'Responde solo con la palabra: listo' }] }),
+        });
+        if (!r.ok) return send(res, 200, { ok: false, model, error: `Ollama respondió ${r.status}` });
+        const j = await r.json();
+        const text = String(j.message?.content ?? '').trim();
+        const ms = Date.now() - t0;
+        db.audit('ollama.test', null, `${model} ${ms} ms`);
+        return send(res, 200, text ? { ok: true, model, ms, text: text.slice(0, 80) } : { ok: false, model, ms, error: `${model} no devolvió texto (¿es un modelo que «piensa» sin responder?)` });
+      } catch (e) {
+        return send(res, 200, { ok: false, model, error: e.name === 'TimeoutError' ? `${model} tardó más de 2 min en responder` : e.message });
+      }
     }
     // --- apagar el servidor local de Ollama o de LM Studio ---
     if (method === 'POST' && (r = m(/^\/api\/system\/(ollama|lmstudio)\/server\/stop$/))) {
@@ -240,6 +264,7 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
       let down = false;
       for (let i = 0; i < 12 && !down; i++) { down = !(await up()); if (!down) await new Promise((r2) => setTimeout(r2, 500)); }
       db.audit(`${engine}.server.stop`, null, down ? 'ok' : 'sigue respondiendo');
+      await refreshDown();
       logger.info(`Servidor de ${label}: ${down ? 'apagado' : 'sigue encendido'}`);
       if (!down) return send(res, 504, { error: `${label} sigue respondiendo tras intentar apagarlo` });
       return send(res, 200, { ok: true, already: false });
@@ -257,6 +282,7 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
       let ok = false;
       for (let i = 0; i < 60 && !ok; i++) { ok = await up(); if (!ok) await new Promise((r2) => setTimeout(r2, 500)); }
       db.audit(`${engine}.server.start`, null, ok ? 'ok' : 'sin respuesta');
+      await refreshDown();
       logger.info(`Servidor de ${label}: ${ok ? 'encendido' : 'no respondió a tiempo'}`);
       if (!ok) return send(res, 504, { error: `${label} no respondió tras encenderlo (revisa que esté instalado)` });
       return send(res, 200, { ok: true, already: false });
@@ -568,13 +594,21 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
   const wss = new WebSocketServer({ server, path: '/ws', verifyClient: ({ req }) => trusted(req) });
   wss.on('connection', (ws) => { sockets.add(ws); ws.on('close', () => sockets.delete(ws)); });
 
-  return { server, db, runner, scheduler, logger };
+  /** Comprueba qué motores locales tienen el servidor apagado y se lo pasa al runner (Auto los esquiva). */
+  async function refreshDown() {
+    const ol = await probe.ollama().catch(() => ({ ok: false }));
+    runner.setDown(db.disabledEngines().includes('ollama') || ol.ok ? [] : ['ollama']);
+    return runner.down();
+  }
+
+  return { server, db, runner, scheduler, logger, refreshDown };
 }
 
 if (import.meta.url === `file:///${process.argv[1].replace(/\\/g, '/')}`) {
-  const { server, scheduler, logger } = createApp({ logger: createLogger({ echo: true }) });
+  const { server, scheduler, logger, refreshDown } = createApp({ logger: createLogger({ echo: true }) });
   server.listen(config.port, config.host, () => {
     scheduler.start();
+    refreshDown(); setInterval(refreshDown, 15_000).unref(); // monitor de servidores locales (solo en producción, no en tests)
     // Bot de Telegram opcional: habla con esta misma API por localhost, así reutiliza todas sus validaciones.
     const local = async (method, path, body) => {
       const res = await fetch(`http://127.0.0.1:${config.port}${path}`, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
