@@ -359,46 +359,50 @@ export function createApp({ db = openDb(), lmsCtl = defaultLmsCtl, runnerOpts = 
       const bench = benchOf(engine);
       if (method === 'GET') return send(res, 200, benchView(engine));
       if (method === 'POST') {
-        if (bench.running) return send(res, 409, { error: 'Ya hay una medición en curso' });
+        if (bench.running || bench.starting) return send(res, 409, { error: 'Ya hay una medición en curso' });
         if (runner.stats().active[engine] > 0) return send(res, 409, { error: `${label} está ocupado con una misión: espera a que termine para medir` });
-        const force = (await readJson(req).catch(() => ({}))).force === true; // «medir también los omitidos»
-        let models; let baseUrl; let fetchFn; let measureFn;
-        let reclaim = 0; // bytes de modelos ya cargados que se descargan antes de medir
-        if (engine === 'ollama') {
-          const ol = await probe.ollama().catch(() => ({ ok: false }));
-          if (!ol.ok) return send(res, 400, { error: ol.error ?? 'Ollama no responde (¿está iniciado?)' });
-          models = ol.models; baseUrl = config.ollamaUrl; fetchFn = ollamaFetch;
-        } else {
-          const lm = providers.lmstudio;
-          if (!lm) return send(res, 400, { error: 'LM Studio está apagado en Sistema: enciéndelo primero' });
-          try { models = await listLmStudio({ url: lm.baseUrl, fetchFn: ollamaFetch }); } catch { return send(res, 400, { error: 'LM Studio no responde: abre la app y activa su servidor local (pestaña Developer)' }); }
-          const sizes = await lmsCtl.sizes(); // tamaño real en disco: el nombre engaña (un «27b» cuantizado puede ocupar menos de 5 GB)
-          if (sizes) models = models.map((x) => (sizes.has(x.name) ? { ...x, size: sizes.get(x.name), size_est: false } : x));
-          reclaim = models.filter((x) => x.state === 'loaded').reduce((a, x) => a + (x.size ?? 0), 0);
-          baseUrl = lm.baseUrl; fetchFn = ollamaFetch;
-          // como `keep_alive: 0` en Ollama: al terminar cada uno se descarga para dejar la RAM al siguiente
-          measureFn = async (x, opts) => { const out = await measureLmStudio(x, opts); await lmsCtl.unload(x.name); return out; };
-        }
-        const freeGb = (freeMem() + reclaim) / 1e9;
-        const { candidates, skipped } = benchCandidates(models, freeGb, { force });
-        if (!candidates.length) {
-          // hay modelos pero ninguno se puede medir ahora: decir por qué en vez de «no hay modelos»
-          if (skipped.length) return send(res, 400, { can_force: true, error: `No hay ningún modelo que se pueda medir ahora: ${skipped.map((s) => `${s.name} (${s.reason})`).join(' · ')}. Cierra programas para liberar memoria o descarga un modelo más pequeño.` });
-          return send(res, 400, { error: engine === 'ollama' ? 'No hay modelos de chat que medir (descarga uno, p. ej. «ollama pull gemma3:4b»)' : 'LM Studio no tiene modelos de chat descargados' });
-        }
-        if (engine === 'lmstudio' && reclaim) { await lmsCtl.unload(); logger.info('LM Studio: modelos descargados de la memoria para poder medir'); }
-        Object.assign(bench, { running: true, current: null, total: candidates.length, results: [], skipped, free_gb: Math.round(freeGb * 10) / 10, abort: new AbortController() });
-        db.audit(`${engine}.benchmark`, null, `${candidates.length} modelos`);
-        logger.info(`Midiendo ${candidates.length} modelos de ${label}`);
-        runBenchmark(candidates, { url: baseUrl, fetchFn, measureFn, signal: bench.abort.signal, onProgress: (results, current) => { bench.results = [...results]; bench.current = current; } })
-          .then((results) => {
-            const done = { at: new Date().toISOString(), free_gb: bench.free_gb, skipped, results, best: recommend(results) };
-            db.setEngineBench(engine, done);
-            logger.info(`Medición de ${label} terminada. Recomendado: ${done.best ?? 'ninguno'}`);
-          })
-          .catch((e) => logger.warn(`Medición de ${label} falló: ${e.message}`))
-          .finally(() => { bench.running = false; bench.current = null; });
-        return send(res, 202, benchView(engine));
+        // se marca ya: preparar tarda (listar, tamaños, descargar) y un doble clic lanzaba dos mediciones que se pisaban los modelos
+        bench.starting = true;
+        try {
+          const force = (await readJson(req).catch(() => ({}))).force === true; // «medir también los omitidos»
+          let models; let baseUrl; let fetchFn; let measureFn;
+          let reclaim = 0; // bytes de modelos ya cargados que se descargan antes de medir
+          if (engine === 'ollama') {
+            const ol = await probe.ollama().catch(() => ({ ok: false }));
+            if (!ol.ok) return send(res, 400, { error: ol.error ?? 'Ollama no responde (¿está iniciado?)' });
+            models = ol.models; baseUrl = config.ollamaUrl; fetchFn = ollamaFetch;
+          } else {
+            const lm = providers.lmstudio;
+            if (!lm) return send(res, 400, { error: 'LM Studio está apagado en Sistema: enciéndelo primero' });
+            try { models = await listLmStudio({ url: lm.baseUrl, fetchFn: ollamaFetch }); } catch { return send(res, 400, { error: 'LM Studio no responde: abre la app y activa su servidor local (pestaña Developer)' }); }
+            const sizes = await lmsCtl.sizes(); // tamaño real en disco: el nombre engaña (un «27b» cuantizado puede ocupar menos de 5 GB)
+            if (sizes) models = models.map((x) => (sizes.has(x.name) ? { ...x, size: sizes.get(x.name), size_est: false } : x));
+            reclaim = models.filter((x) => x.state === 'loaded').reduce((a, x) => a + (x.size ?? 0), 0);
+            baseUrl = lm.baseUrl; fetchFn = ollamaFetch;
+            // como `keep_alive: 0` en Ollama: al terminar cada uno se descarga para dejar la RAM al siguiente
+            measureFn = async (x, opts) => { const out = await measureLmStudio(x, opts); await lmsCtl.unload(x.name); return out; };
+          }
+          const freeGb = (freeMem() + reclaim) / 1e9;
+          const { candidates, skipped } = benchCandidates(models, freeGb, { force });
+          if (!candidates.length) {
+            // hay modelos pero ninguno se puede medir ahora: decir por qué en vez de «no hay modelos»
+            if (skipped.length) return send(res, 400, { can_force: true, error: `No hay ningún modelo que se pueda medir ahora: ${skipped.map((s) => `${s.name} (${s.reason})`).join(' · ')}. Cierra programas para liberar memoria o descarga un modelo más pequeño.` });
+            return send(res, 400, { error: engine === 'ollama' ? 'No hay modelos de chat que medir (descarga uno, p. ej. «ollama pull gemma3:4b»)' : 'LM Studio no tiene modelos de chat descargados' });
+          }
+          if (engine === 'lmstudio' && reclaim) { await lmsCtl.unload(); logger.info('LM Studio: modelos descargados de la memoria para poder medir'); }
+          Object.assign(bench, { running: true, current: null, total: candidates.length, results: [], skipped, free_gb: Math.round(freeGb * 10) / 10, abort: new AbortController() });
+          db.audit(`${engine}.benchmark`, null, `${candidates.length} modelos`);
+          logger.info(`Midiendo ${candidates.length} modelos de ${label}`);
+          runBenchmark(candidates, { url: baseUrl, fetchFn, measureFn, signal: bench.abort.signal, onProgress: (results, current) => { bench.results = [...results]; bench.current = current; } })
+            .then((results) => {
+              const done = { at: new Date().toISOString(), free_gb: bench.free_gb, skipped, results, best: recommend(results) };
+              db.setEngineBench(engine, done);
+              logger.info(`Medición de ${label} terminada. Recomendado: ${done.best ?? 'ninguno'}`);
+            })
+            .catch((e) => logger.warn(`Medición de ${label} falló: ${e.message}`))
+            .finally(() => { bench.running = false; bench.current = null; });
+          return send(res, 202, benchView(engine));
+        } finally { bench.starting = false; }
       }
       if (method === 'DELETE') { bench.abort?.abort(); return send(res, 200, benchView(engine)); }
     }

@@ -1512,7 +1512,10 @@ const scanButton = (engine) => el('button', { textContent: 'Buscar modelos', tit
     toast(!found.length ? `${BENCH_LABEL[engine]}: no hay modelos de chat instalados` : `${BENCH_LABEL[engine]}: ${found.length} modelo${found.length === 1 ? '' : 's'} encontrado${found.length === 1 ? '' : 's'}${added.length ? ` · nuevos: ${added.join(', ')}` : ''}`, false);
   } finally { e.target.disabled = false; e.target.textContent = 'Buscar modelos'; }
 }) });
-const benchButton = (engine) => el('button', { textContent: state.benches?.[engine]?.running ? 'Midiendo…' : 'Medir modelos', disabled: !!state.benches?.[engine]?.running, title: 'Prueba cada modelo instalado y te dice cuál rinde mejor en esta computadora', onclick: guard(() => startBench(engine)) });
+const benchButton = (engine) => el('button', { textContent: state.benches?.[engine]?.running ? 'Midiendo…' : 'Medir modelos', disabled: !!state.benches?.[engine]?.running, title: 'Prueba cada modelo instalado y te dice cuál rinde mejor en esta computadora', onclick: guard(async (e) => {
+  e.target.disabled = true; // evita lanzar dos mediciones con un doble clic
+  try { await startBench(engine); } finally { e.target.disabled = !!state.benches?.[engine]?.running; }
+}) });
 
 /** Tabla de la última medición (o de la que está corriendo) con «Usar este». */
 function benchPanel(engine) {

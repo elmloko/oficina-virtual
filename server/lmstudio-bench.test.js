@@ -177,6 +177,31 @@ test('API: medir LM Studio con poca RAM usa el tamaño real, cuenta la RAM de lo
   } finally { tight.server.close(); tight.server.closeAllConnections?.(); }
 });
 
+test('API: dos clics seguidos en «Medir» lanzan una sola medición; el error de LM Studio trae su motivo', async () => {
+  const fake = fakeLm({ models: MODELS });
+  const lmsCtl = { sizes: async () => { await new Promise((r) => setTimeout(r, 50)); return null; }, unload: async () => {} }; // preparar tarda, como `lms ls`
+  const probe = { claude: async () => ({ ok: true }), codex: async () => ({ ok: true }), ollama: async () => ({ ok: false }) };
+  const providers = { lmstudio: { name: 'lmstudio', kind: 'openai', baseUrl: URL, key: '', model: 'local-model' } };
+  const app = createApp({ db: openDb(':memory:'), probe, providers, lmsCtl, ollamaFetch: fake.fetchFn, freeMem: () => 32e9 });
+  await new Promise((r) => app.server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${app.server.address().port}`;
+  const start = () => fetch(`${base}/api/system/lmstudio/benchmark`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).then((r) => r.status);
+  try {
+    assert.deepEqual((await Promise.all([start(), start()])).sort(), [202, 409]);
+    for (let i = 0; i < 150; i++) { if (!(await (await fetch(`${base}/api/system/lmstudio/benchmark`)).json()).running) break; await new Promise((r) => setTimeout(r, 20)); }
+    assert.equal(await start(), 202, 'al terminar se puede volver a medir');
+  } finally { app.server.close(); app.server.closeAllConnections?.(); }
+
+  const failing = async () => ({ ok: false, status: 400, json: async () => ({ error: { message: 'Failed to load model: insufficient system resources' } }) });
+  const r = await measureLmStudio({ name: 'google/gemma-4-12b-qat', size: 7e9 }, { url: URL, fetchFn: failing });
+  assert.equal(r.ok, false);
+  assert.match(r.error, /^LM Studio respondió 400: Failed to load model: insufficient system resources$/);
+
+  const slow = async () => { throw new DOMException('The operation was aborted due to timeout', 'TimeoutError'); };
+  const t = await measureLmStudio({ name: 'prism-ml/bonsai-27b', size: 4.7e9 }, { url: URL, fetchFn: slow });
+  assert.match(t.error, /demasiado lento/, 'el tiempo agotado se explica en español');
+});
+
 test('misión con LM Studio: si el modelo elegido no existe en esta PC, usa el recomendado o el cargado y lo avisa', async () => {
   const db = openDb(':memory:');
   db.setEngineModel('lmstudio', 'modelo-de-otra-pc');

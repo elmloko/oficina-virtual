@@ -76,7 +76,7 @@ export async function measure(model, { url, fetchFn = fetch, signal, timeoutMs =
       error: ok ? null : (j.message?.thinking ? 'se quedó «pensando» sin llegar a responder' : 'respuesta vacía o demasiado corta'),
     };
   } catch (e) {
-    const aborted = e.name === 'AbortError' || signal?.aborted;
+    const aborted = e.name === 'AbortError' || e.name === 'TimeoutError' || signal?.aborted; // TimeoutError = superó el tiempo máximo
     return { name: model.name, size: model.size, ok: false, tps: 0, tokens: 0, seconds: Math.round((Date.now() - t0) / 100) / 10, load_seconds: 0, text: '', error: aborted ? 'cancelado o demasiado lento (más de 3 min)' : e.message };
   }
 }
@@ -107,7 +107,10 @@ export async function measureLmStudio(model, { url, fetchFn = fetch, signal, tim
     const body = JSON.stringify({ model: model.name, stream: false, max_tokens: maxTokens, temperature: 0, messages: [{ role: 'user', content: BENCH_PROMPT }] });
     let res = await fetchFn(`${lmNative(url)}/api/v0/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal: sig });
     if (res.status === 404) res = await fetchFn(`${url}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal: sig });
-    if (!res.ok) throw new Error(`LM Studio respondió ${res.status}`);
+    if (!res.ok) { // el motivo viene en el cuerpo (p. ej. «no hay memoria para cargar el modelo»): sin él, «400» no dice nada
+      const why = await res.json().then((j) => j?.error?.message ?? j?.error ?? j?.message ?? '').catch(() => '');
+      throw new Error(`LM Studio respondió ${res.status}${why ? `: ${String(why).slice(0, 200)}` : ''}`);
+    }
     return res.json();
   };
   try {
@@ -128,7 +131,7 @@ export async function measureLmStudio(model, { url, fetchFn = fetch, signal, tim
       text: text.slice(0, 220), error: ok ? null : (thinks(j) ? 'se quedó «pensando» sin llegar a responder' : 'respuesta vacía o demasiado corta'),
     };
   } catch (e) {
-    const aborted = e.name === 'AbortError' || signal?.aborted;
+    const aborted = e.name === 'AbortError' || e.name === 'TimeoutError' || signal?.aborted; // TimeoutError = superó el tiempo máximo
     return { name: model.name, size: model.size, size_est: model.size_est ?? true, ok: false, tps: 0, tokens: 0, seconds: Math.round((Date.now() - t0) / 100) / 10, load_seconds: 0, text: '', error: aborted ? 'cancelado o demasiado lento (más de 4 min)' : e.message };
   }
 }
