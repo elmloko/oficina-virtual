@@ -251,6 +251,7 @@ export function openDb(file = config.dbFile) {
         const n = Number(v);
         if (!Number.isFinite(n) || n < 0) throw new Error(`Valor inválido para ${k}`);
         if (LIMIT_KEYS.has(k) && !(Number.isInteger(n) && n >= 1 && n <= 16)) throw new Error(`${k} debe ser un entero entre 1 y 16`);
+        if (k === 'task_timeout_min' && n <= 0) throw new Error('El tiempo máximo por tarea debe ser mayor que 0'); // 0 mataría cada misión al empezar
         q.setSetting.run(k, String(n));
       }
       return this.settings();
