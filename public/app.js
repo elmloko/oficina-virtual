@@ -441,7 +441,7 @@ function setupDrawerSize() {
     try { localStorage.setItem(DRAWER_KEY, full ? '1' : '0'); } catch { /* sin almacenamiento */ }
   };
 }
-function logLine(ev) { appendLine($('#d-log'), ev); }
+function logLine(ev) { appendLine($('#d-log'), ev, state.tasks.get(state.open)); }
 
 function drawer(t) {
   if (!t) { $('#drawer').hidden = true; state.open = null; return; }
@@ -694,9 +694,31 @@ function renderAtts(t) {
 const agentTasks = (name) => [...state.tasks.values()].filter((t) => t.agent === name && t.kind !== 'objective').sort((a, b) => b.id - a.id);
 const taskSecs = (t) => (t.started_at && t.finished_at ? (parseTs(t.finished_at) - parseTs(t.started_at)) / 1000 : null);
 
-function appendLine(box, ev) {
+/** Quién habla en el registro: el agente y el modelo que usó (o el motor si aún no se sabe). */
+const speaker = (t) => (t ? `${t.agent}${t.used_model || t.model ? ` · ${t.used_model || t.model}` : t.engine ? ` · ${t.engine}` : ''}` : 'agente');
+
+/** Pone un mensaje tuyo anterior en el campo de respuesta más cercano para reutilizarlo. */
+function reuseMessage(from, text) {
+  const ta = from.closest('#drawer, .h-body, #agent-panel')?.querySelector('.reply textarea');
+  if (!ta) { toast('Esta misión aún no admite respuestas: espera a que termine', false); return; }
+  ta.value = text;
+  ta.dispatchEvent(new Event('input')); // guarda el borrador
+  ta.focus();
+}
+
+/** Una línea del registro. Lo que escribiste tú y lo que dice el agente van rotulados para distinguirlos; `t` = la misión. */
+function appendLine(box, ev, t = null) {
   if (ev.kind === 'answer') return; // copia interna de la respuesta anterior; ya se ve como resultado
-  box.append(el('div', { className: ev.kind, textContent: ev.kind === 'tool' ? `⚙ ${ev.text}` : ev.kind === 'user' ? `Tú: ${ev.text}` : ev.kind === 'consult' ? `🤝 ${ev.text}` : ev.text }));
+  if (ev.kind === 'user') {
+    const line = el('div', { className: 'user', title: 'Clic para reutilizar este mensaje', tabIndex: 0 }, el('b', { className: 'who', textContent: 'TÚ' }), span(ev.text));
+    line.onclick = () => reuseMessage(line, ev.text);
+    line.onkeydown = (e) => { if (e.key === 'Enter') reuseMessage(line, ev.text); };
+    box.append(line);
+  } else if (ev.kind === 'text') {
+    box.append(el('div', { className: 'text' }, el('b', { className: 'who', textContent: speaker(t) }), span(ev.text)));
+  } else {
+    box.append(el('div', { className: ev.kind, textContent: ev.kind === 'tool' ? `⚙ ${ev.text}` : ev.kind === 'consult' ? `🤝 ${ev.text}` : ev.text }));
+  }
   box.scrollTop = box.scrollHeight;
 }
 
@@ -718,7 +740,7 @@ async function fillHistoryBody(body, t) {
   parts.push(el('h3', { textContent: 'Resultado' }), el('pre', { className: 'h-result', textContent: t.result || 'Sin resultado.' }));
   if (events.length) {
     const log = el('div', { className: 'h-log' });
-    for (const ev of events.slice(-40)) appendLine(log, ev);
+    for (const ev of events.slice(-40)) appendLine(log, ev, t);
     parts.push(el('h3', { textContent: events.length > 40 ? `Registro (últimas 40 de ${events.length} líneas)` : 'Registro' }), log);
   }
   const full = el('button', { type: 'button', textContent: 'Abrir misión completa' });
@@ -748,13 +770,51 @@ function historyItem(t) {
 
 const FINISHED = new Set(['review', 'done', 'failed']);
 
+/** Tus mensajes anteriores (de todas las misiones), el más reciente primero. Se pide una vez y se completa al enviar. */
+const sentHistory = { list: null, loading: null };
+function loadSentHistory() {
+  sentHistory.loading ??= api('/api/replies/history').then((l) => { sentHistory.list = l; return l; }).catch(() => { sentHistory.loading = null; return sentHistory.list ?? []; });
+  return sentHistory.loading;
+}
+function rememberSent(text) {
+  if (sentHistory.list) sentHistory.list = [text, ...sentHistory.list.filter((x) => x !== text)];
+}
+
+/**
+ * ↑/↓ en el campo de respuesta recorren lo que escribiste antes, como en una terminal.
+ * Solo actúan con el cursor en la primera línea (↑) o en la última (↓), para no estorbar al editar un texto largo.
+ */
+function attachHistoryKeys(ta) {
+  let pos = -1; // -1 = lo que estás escribiendo ahora
+  let typing = '';
+  ta.addEventListener('input', () => { pos = -1; });
+  ta.addEventListener('keydown', async (e) => {
+    if ((e.key !== 'ArrowUp' && e.key !== 'ArrowDown') || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return;
+    if (ta.selectionStart !== ta.selectionEnd) return;
+    const up = e.key === 'ArrowUp';
+    if (up ? ta.value.slice(0, ta.selectionStart).includes('\n') : ta.value.slice(ta.selectionEnd).includes('\n')) return;
+    if (!up && pos === -1) return;
+    e.preventDefault();
+    const list = sentHistory.list ?? await loadSentHistory();
+    if (!list.length) return;
+    if (pos === -1) typing = ta.value;
+    pos = up ? Math.min(pos + 1, list.length - 1) : pos - 1;
+    ta.value = pos === -1 ? typing : list[pos];
+    agentUi.drafts.set(Number(ta.dataset.task), ta.value);
+    const end = up ? 0 : ta.value.length; // como en la terminal: ↑ deja el cursor arriba para seguir subiendo
+    ta.setSelectionRange(end, end);
+  });
+}
+
 /** Campo para responder al agente: la misión continúa con la conversación como contexto. El borrador sobrevive a los refrescos. */
 function replyForm(t) {
   const form = el('form', { className: 'reply' });
   const recovered = !agentUi.drafts.has(t.id) && !!t.reply_text; // mensaje cancelado: vuelve al campo para corregirlo
-  const ta = el('textarea', { rows: 3, maxLength: 4000, placeholder: 'Responde al agente o dale otra indicación… (Ctrl+Enter para enviar)', value: agentUi.drafts.get(t.id) ?? t.reply_text ?? '' });
+  const ta = el('textarea', { rows: 3, maxLength: 4000, placeholder: 'Responde al agente o dale otra indicación… (Ctrl+Enter para enviar · ↑ tus mensajes anteriores)', value: agentUi.drafts.get(t.id) ?? t.reply_text ?? '' });
   ta.setAttribute('aria-label', `Responder a #${t.id}`);
+  ta.dataset.task = t.id;
   ta.oninput = () => agentUi.drafts.set(t.id, ta.value);
+  attachHistoryKeys(ta);
   ta.onkeydown = (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); form.requestSubmit(); } };
   if (!agentUi.files.has(t.id)) agentUi.files.set(t.id, []);
   const picker = filePicker(agentUi.files.get(t.id), { pasteTarget: ta });
@@ -773,7 +833,7 @@ function replyForm(t) {
         picker.clear(); attsCache.delete(t.id);
       }
       const r = await withConfirm(`/api/tasks/${t.id}/reply`, 'Esta misión puede editar archivos de tu proyecto o actuar sobre un servidor (lo fuerte te lo preguntará antes). ¿Permitirlo?', { text });
-      if (r) { agentUi.drafts.delete(t.id); ta.value = ''; toast('Respuesta enviada: el agente sigue trabajando', false); }
+      if (r) { rememberSent(text); agentUi.drafts.delete(t.id); ta.value = ''; toast('Respuesta enviada: el agente sigue trabajando', false); }
     } catch (x) { err.textContent = x.message; } finally { send.disabled = false; }
   };
   if (recovered) form.prepend(el('div', { className: 'reply-note', textContent: 'Cancelaste este mensaje: edítalo y reenvíalo.' }));
@@ -818,7 +878,7 @@ async function renderAgent() {
     if (current) {
       const id = current.id;
       const events = await api(`/api/tasks/${id}/events`).catch(() => []);
-      if (state.agentLive === id && state.agentOpen === name) for (const ev of events) appendLine(box, ev);
+      if (state.agentLive === id && state.agentOpen === name) for (const ev of events) appendLine(box, ev, state.tasks.get(id));
     }
     if (state.agentOpen !== name) return;
     ({ mine, current, last } = view()); // mientras esperábamos pudo llegar otro cambio: no pintar con datos viejos
@@ -1676,7 +1736,7 @@ function connect() {
       handleTransition(prevStatus, m.task);
       if (m.message) onMessage(m.message);
       if (m.event && state.open === m.task.id) logLine(m.event);
-      if (m.event && state.agentLive === m.task.id) appendLine($('#a-log'), m.event);
+      if (m.event && state.agentLive === m.task.id) appendLine($('#a-log'), m.event, state.tasks.get(m.task.id));
       render();
     } else if (m.type === 'log') {
       pushLog(m.entry);

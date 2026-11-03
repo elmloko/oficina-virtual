@@ -402,6 +402,25 @@ test('API: carpetas extra rechazan edición y la plantilla de Excel usa @Descarg
   await call('DELETE', `/api/schedules/${s.body.id}`);
 });
 
+test('API: historial de lo que escribiste (para ↑): el más reciente primero, sin repetidos y solo tus mensajes', async () => {
+  const db = openDb(':memory:');
+  const a = db.createTask({ title: 'a', agent: 'analyst' });
+  const b = db.createTask({ title: 'b', agent: 'analyst' });
+  db.addEvent(a.id, 'user', 'revisa el login');
+  db.addEvent(a.id, 'text', 'lo reviso'); // del agente: no entra
+  db.addEvent(b.id, 'user', 'hazlo en español');
+  db.addEvent(b.id, 'answer', 'ok');
+  db.addEvent(b.id, 'user', 'revisa el login'); // repetido: sube al principio y sale una vez
+  assert.deepEqual(db.userHistory(), ['revisa el login', 'hazlo en español']);
+  assert.deepEqual(db.userHistory(1), ['revisa el login']);
+  const h = createApp({ db, probe: { claude: async () => ({ ok: true }), ollama: async () => ({ ok: false }) }, providers: {} });
+  await new Promise((r) => h.server.listen(0, '127.0.0.1', r));
+  try {
+    const r = await fetch(`http://127.0.0.1:${h.server.address().port}/api/replies/history`);
+    assert.deepEqual([r.status, await r.json()], [200, ['revisa el login', 'hazlo en español']]);
+  } finally { h.server.close(); h.server.closeAllConnections?.(); }
+});
+
 test('API: responder a un agente continúa la misma misión con la conversación como contexto', async () => {
   const t = (await call('POST', '/api/tasks', { title: 'Revisar tarifas', agent: 'analyst' })).body;
   assert.equal((await call('POST', `/api/tasks/${t.id}/reply`, { text: 'hola' })).status, 409); // aún no se ejecutó

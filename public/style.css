@@ -68,6 +68,13 @@ h3 { color: var(--gold); font-size: 12px; letter-spacing: 2px; text-transform: u
 #d-log .tool { color: var(--blue); }
 #d-log .error { color: var(--red); }
 #d-log .info { color: var(--gold); }
+/* quién habla: tú (verde, a la derecha, clic para reutilizar) y el agente (con su nombre y modelo) */
+#d-log .who, #a-log .who, .h-log .who { display: block; font-size: 10px; letter-spacing: 1px; margin-bottom: 2px; }
+#d-log .text .who, #a-log .text .who, .h-log .text .who { color: var(--violet); }
+#d-log .user, #a-log .user, .h-log .user { justify-self: end; max-width: 85%; color: var(--text); background: #0f2a1a; border: 1px solid var(--green); border-radius: 6px 6px 0 6px; padding: 4px 8px; margin: 4px 0; cursor: pointer; }
+#d-log .user .who, #a-log .user .who, .h-log .user .who { color: var(--green); text-align: right; }
+#d-log .user:hover, #d-log .user:focus-visible, #a-log .user:hover, .h-log .user:hover { background: #154027; outline: none; }
+#d-log .text, #a-log .text, .h-log .text { border-left: 2px solid var(--violet); padding-left: 6px; }
 #d-result { white-space: pre-wrap; overflow-wrap: anywhere; background: #000; border: 2px solid var(--line); padding: 8px; margin: 0; max-height: 40vh; overflow: auto; }
 
 @media (max-width: 700px) { header { flex-wrap: wrap; } #board { grid-template-columns: repeat(6, 80vw); } }

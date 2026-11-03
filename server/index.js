@@ -239,6 +239,7 @@ export function createApp({ db = openDb(), lmsCtl = defaultLmsCtl, runnerOpts = 
         messages: db.messages(150),
       });
     }
+    if (method === 'GET' && url.pathname === '/api/replies/history') return send(res, 200, db.userHistory(Math.min(500, Number(url.searchParams.get('limit')) || 100)));
     if (method === 'GET' && url.pathname === '/api/messages') return send(res, 200, db.messages(Math.min(500, Number(url.searchParams.get('limit')) || 150)));
     if (method === 'GET' && url.pathname === '/api/costs') return send(res, 200, costs());
     if (method === 'GET' && url.pathname === '/api/audit') return send(res, 200, db.auditLog(200));

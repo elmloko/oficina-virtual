@@ -149,6 +149,7 @@ export function openDb(file = config.dbFile) {
     delAtt: db.prepare('DELETE FROM attachments WHERE id = ?'),
     addEvent: db.prepare('INSERT INTO events (task_id, kind, text) VALUES (?, ?, ?) RETURNING *'),
     events: db.prepare('SELECT * FROM events WHERE task_id = ? ORDER BY id'),
+    userHistory: db.prepare(`SELECT text, MAX(id) AS last FROM events WHERE kind = 'user' GROUP BY text ORDER BY last DESC LIMIT ?`),
     delEvent: db.prepare('DELETE FROM events WHERE id = ?'),
     costToday: db.prepare(`SELECT COALESCE(SUM(cost_usd), 0) AS c FROM tasks WHERE date(finished_at, 'localtime') = date('now', 'localtime')`),
     costByAgent: db.prepare(`SELECT agent, COUNT(*) AS tasks, ROUND(SUM(cost_usd), 4) AS cost_usd FROM tasks
@@ -203,6 +204,8 @@ export function openDb(file = config.dbFile) {
     addAttachment: (taskId, name, mime, size) => q.addAtt.get(taskId, name, mime, size),
     deleteAttachment: (id) => q.delAtt.run(id).changes > 0,
     events: (id) => q.events.all(id),
+    /** Lo que escribiste a los agentes (de todas las misiones), el más reciente primero y sin repetidos: para recuperarlo con ↑. */
+    userHistory: (limit = 100) => q.userHistory.all(limit).map((r) => r.text),
     deleteEvent: (id) => q.delEvent.run(id).changes > 0,
     addEvent: (id, kind, text) => q.addEvent.get(id, kind, String(text).slice(0, 20000)),
     /** Actualiza solo columnas conocidas; evita SQL dinámico con claves externas. */
