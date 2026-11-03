@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { openDb } from './db.js';
 import { createRunner } from './runner.js';
 import { createApp, defaultServerCtl } from './index.js';
-import { paramsB, listLmStudio, measureLmStudio, runBenchmark, recommend } from './ollama-models.js';
+import { paramsB, listLmStudio, measureLmStudio, runBenchmark, recommend, THINKING_MAX_TOKENS } from './ollama-models.js';
 
 const URL = 'http://127.0.0.1:1234/v1';
 const GOOD = 'Las copias de seguridad protegen tus datos frente a fallos. Permiten recuperarlos si algo sale mal.';
@@ -67,12 +67,38 @@ test('measureLmStudio: usa tokens/s nativos; sin ellos mide el reloj y lo marca 
   assert.equal(recommend(results), 'llama-3.2-3b-instruct'); // el de 7B va a 3 tok/s: por debajo de lo usable
 });
 
+test('measureLmStudio: si el modelo razona y se queda sin tokens, repite con margen; si aun así no responde, lo explica', async () => {
+  const m = { name: 'qwen/qwen3-4b', size: 2.2e9 };
+  const fakeThinking = (answerWith) => {
+    const budgets = [];
+    const fetchFn = async (url, opts) => {
+      const { max_tokens } = JSON.parse(opts.body);
+      budgets.push(max_tokens);
+      const content = max_tokens >= answerWith ? GOOD : '';
+      return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content, reasoning_content: 'Okay, the user wants…' }, finish_reason: content ? 'stop' : 'length' }], usage: { completion_tokens: max_tokens }, stats: { tokens_per_second: 9.8 } }) };
+    };
+    return { fetchFn, budgets };
+  };
+  const ok = fakeThinking(1000);
+  const r = await measureLmStudio(m, { url: URL, fetchFn: ok.fetchFn });
+  assert.deepEqual([r.ok, r.tps, r.text.startsWith('Las copias')], [true, 9.8, true]);
+  assert.deepEqual(ok.budgets, [200, THINKING_MAX_TOKENS]);
+  const never = fakeThinking(Infinity);
+  const bad = await measureLmStudio(m, { url: URL, fetchFn: never.fetchFn });
+  assert.equal(bad.ok, false);
+  assert.match(bad.error, /pensando/);
+  const plain = fakeLm({ models: MODELS }); // un modelo normal no hace la segunda petición
+  await measureLmStudio({ name: 'llama-3.2-3b-instruct', size: 1.65e9 }, { url: URL, fetchFn: plain.fetchFn });
+  assert.equal(plain.calls.filter((u) => u.endsWith('/chat/completions')).length, 1);
+});
+
 test('API: medir LM Studio; apagado o sin servidor da un error claro', async () => {
   const fake = fakeLm({ models: MODELS });
   const probe = { claude: async () => ({ ok: true }), codex: async () => ({ ok: true }), ollama: async () => ({ ok: false }) };
   const db = openDb(':memory:');
   const providers = { lmstudio: { name: 'lmstudio', kind: 'openai', baseUrl: URL, key: '', model: 'local-model' } };
-  const app = createApp({ db, probe, providers, ollamaFetch: fake.fetchFn, freeMem: () => 32e9 }); // RAM fija: el test no depende de la del equipo
+  const lmsCtl = { sizes: async () => null, unload: async () => {} }; // nunca el `lms` real: no toca los modelos de este equipo
+  const app = createApp({ db, probe, providers, lmsCtl, ollamaFetch: fake.fetchFn, freeMem: () => 32e9 }); // RAM fija: el test no depende de la del equipo
   await new Promise((r) => app.server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${app.server.address().port}`;
   const call = async (method, path, body) => { const r = await fetch(base + path, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }); return { status: r.status, body: await r.json() }; };
@@ -90,7 +116,7 @@ test('API: medir LM Studio; apagado o sin servidor da un error claro', async () 
   } finally { app.server.close(); app.server.closeAllConnections?.(); }
 
   // sin proveedor activo (apagado): error claro
-  const app2 = createApp({ db: openDb(':memory:'), probe, providers: {}, ollamaFetch: fake.fetchFn });
+  const app2 = createApp({ db: openDb(':memory:'), probe, providers: {}, lmsCtl, ollamaFetch: fake.fetchFn });
   await new Promise((r) => app2.server.listen(0, '127.0.0.1', r));
   try {
     const r = await fetch(`http://127.0.0.1:${app2.server.address().port}/api/system/lmstudio/benchmark`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
@@ -99,13 +125,56 @@ test('API: medir LM Studio; apagado o sin servidor da un error claro', async () 
   } finally { app2.server.close(); app2.server.closeAllConnections?.(); }
 
   // servidor sin responder: error claro
-  const app3 = createApp({ db: openDb(':memory:'), probe, providers, ollamaFetch: fakeLm({ down: true, models: [] }).fetchFn });
+  const app3 = createApp({ db: openDb(':memory:'), probe, providers, lmsCtl, ollamaFetch: fakeLm({ down: true, models: [] }).fetchFn });
   await new Promise((r) => app3.server.listen(0, '127.0.0.1', r));
   try {
     const r = await fetch(`http://127.0.0.1:${app3.server.address().port}/api/system/lmstudio/benchmark`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
     assert.equal(r.status, 400);
     assert.match((await r.json()).error, /no responde/);
   } finally { app3.server.close(); app3.server.closeAllConnections?.(); }
+});
+
+test('API: medir LM Studio con poca RAM usa el tamaño real, cuenta la RAM de los cargados, los descarga y permite forzar', async () => {
+  const GBy = 1e9;
+  const models = [
+    { id: 'qwen/qwen3-4b', type: 'llm', state: 'loaded' },
+    { id: 'prism-ml/bonsai-27b', type: 'llm', state: 'not-loaded' }, // «27b» por nombre serían ~15 GB; en disco ocupa 4,7
+    { id: 'qwen/qwen3.8-27b', type: 'llm', state: 'not-loaded' },
+  ];
+  const unloaded = [];
+  const lmsCtl = {
+    sizes: async () => new Map([['qwen/qwen3-4b', 2.5 * GBy], ['prism-ml/bonsai-27b', 4.7 * GBy], ['qwen/qwen3.8-27b', 17.7 * GBy]]),
+    unload: async (id) => { unloaded.push(id ?? '*'); },
+  };
+  const probe = { claude: async () => ({ ok: true }), codex: async () => ({ ok: true }), ollama: async () => ({ ok: false }) };
+  const providers = { lmstudio: { name: 'lmstudio', kind: 'openai', baseUrl: URL, key: '', model: 'local-model' } };
+  const app = createApp({ db: openDb(':memory:'), probe, providers, lmsCtl, ollamaFetch: fakeLm({ models }).fetchFn, freeMem: () => 3 * GBy }); // 3 libres + 2,5 del cargado = 5,5
+  await new Promise((r) => app.server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${app.server.address().port}`;
+  const call = async (method, path, body) => { const r = await fetch(base + path, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }); return { status: r.status, body: await r.json() }; };
+  const finish = async () => { let v; for (let i = 0; i < 150; i++) { v = (await call('GET', '/api/system/lmstudio/benchmark')).body; if (!v.running) break; await new Promise((r) => setTimeout(r, 20)); } return v; };
+  try {
+    const start = await call('POST', '/api/system/lmstudio/benchmark', {});
+    assert.equal(start.status, 202);
+    assert.deepEqual(start.body.skipped.map((s) => s.name), ['qwen/qwen3.8-27b']); // solo el que de verdad no cabe
+    const view = await finish();
+    assert.deepEqual(view.results.map((r) => [r.name, r.ok, r.size_est]), [['qwen/qwen3-4b', true, false], ['prism-ml/bonsai-27b', true, false]]);
+    assert.deepEqual(unloaded, ['*', 'qwen/qwen3-4b', 'prism-ml/bonsai-27b']); // libera todo antes y cada uno al terminar
+
+    const all = await call('POST', '/api/system/lmstudio/benchmark', { force: true });
+    assert.deepEqual([all.status, all.body.total, all.body.skipped.length], [202, 3, 0]);
+    await finish();
+  } finally { app.server.close(); app.server.closeAllConnections?.(); }
+
+  // ninguno cabe: el error lo explica y permite forzar
+  const tight = createApp({ db: openDb(':memory:'), probe, providers, lmsCtl, ollamaFetch: fakeLm({ models: models.slice(1) }).fetchFn, freeMem: () => 1 * GBy });
+  await new Promise((r) => tight.server.listen(0, '127.0.0.1', r));
+  try {
+    const r = await fetch(`http://127.0.0.1:${tight.server.address().port}/api/system/lmstudio/benchmark`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    const body = await r.json();
+    assert.deepEqual([r.status, body.can_force], [400, true]);
+    assert.match(body.error, /no cabe en la RAM libre/);
+  } finally { tight.server.close(); tight.server.closeAllConnections?.(); }
 });
 
 test('misión con LM Studio: si el modelo elegido no existe en esta PC, usa el recomendado o el cargado y lo avisa', async () => {

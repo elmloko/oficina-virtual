@@ -25,13 +25,17 @@ export function pickDefault(models, bench = null) {
   return [...chat].sort((a, b) => (a.size ?? 0) - (b.size ?? 0))[0].name;
 }
 
-/** Modelos que vale la pena medir: de chat, no especializados y que caben en la RAM libre. */
-export function benchCandidates(models, freeGb) {
+/**
+ * Modelos que vale la pena medir: de chat, no especializados y que caben en la RAM libre (uno ya cargado no necesita más RAM).
+ * `force`: el usuario pidió medirlos todos; solo se quitan los que no conversan (embeddings).
+ */
+export function benchCandidates(models, freeGb, { force = false } = {}) {
   const out = []; const skipped = [];
   for (const m of chatModels(models)) {
     const gb = (m.size ?? 0) / 1e9;
-    if (SPECIALIZED.test(m.name)) skipped.push({ name: m.name, size: m.size, reason: 'especializado (código, visión o razonamiento)' });
-    else if (freeGb != null && gb > freeGb * 0.9) skipped.push({ name: m.name, size: m.size, reason: `no cabe en la RAM libre (${freeGb.toFixed(1)} GB)` });
+    if (force) out.push(m);
+    else if (SPECIALIZED.test(m.name)) skipped.push({ name: m.name, size: m.size, reason: 'especializado (código, visión o razonamiento)' });
+    else if (m.state !== 'loaded' && freeGb != null && gb > freeGb * 0.9) skipped.push({ name: m.name, size: m.size, reason: `no cabe en la RAM libre (${freeGb.toFixed(1)} GB)` });
     else out.push(m);
   }
   return { candidates: out, skipped };
@@ -92,29 +96,40 @@ export async function listLmStudio({ url, fetchFn = fetch }) {
     .map((m) => ({ name: m.id, size: Math.round(paramsB(m.id) * 0.55e9), size_est: true, state: m.state ?? null }));
 }
 
+/** Tokens de margen para los modelos que razonan antes de responder (Qwen3, DeepSeek-R1…): con 200 se quedan a medio pensar. */
+export const THINKING_MAX_TOKENS = 1200;
+
 /** Igual que measure() pero contra LM Studio: usa sus estadísticas nativas si las trae; si no, mide el reloj (aproximado). */
 export async function measureLmStudio(model, { url, fetchFn = fetch, signal, timeoutMs = 240_000 }) {
   const t0 = Date.now();
-  const body = JSON.stringify({ model: model.name, stream: false, max_tokens: 200, temperature: 0, messages: [{ role: 'user', content: BENCH_PROMPT }] });
   const sig = signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs);
-  try {
+  const ask = async (maxTokens) => {
+    const body = JSON.stringify({ model: model.name, stream: false, max_tokens: maxTokens, temperature: 0, messages: [{ role: 'user', content: BENCH_PROMPT }] });
     let res = await fetchFn(`${lmNative(url)}/api/v0/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal: sig });
     if (res.status === 404) res = await fetchFn(`${url}/chat/completions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body, signal: sig });
     if (!res.ok) throw new Error(`LM Studio respondió ${res.status}`);
-    const j = await res.json();
-    const text = String(j.choices?.[0]?.message?.content ?? '').trim();
+    return res.json();
+  };
+  try {
+    let tAsk = t0;
+    let j = await ask(200);
+    const thinks = (r) => String(r.choices?.[0]?.message?.reasoning_content ?? '').trim().length > 0;
+    const answer = (r) => String(r.choices?.[0]?.message?.content ?? '').trim();
+    if (answer(j).length < 30 && thinks(j)) { tAsk = Date.now(); j = await ask(THINKING_MAX_TOKENS); } // razonó y se quedó sin tokens: otra vez con margen
+    const text = answer(j);
     const tokens = j.usage?.completion_tokens ?? 0;
     const seconds = Math.round(((Date.now() - t0) / 1000) * 10) / 10;
+    const askSeconds = (Date.now() - tAsk) / 1000; // la velocidad aproximada se calcula solo con la última petición
     const native = j.stats?.tokens_per_second;
-    const tps = native ?? (tokens && seconds ? tokens / seconds : 0);
+    const tps = native ?? (tokens && askSeconds ? tokens / askSeconds : 0);
     const ok = text.length >= 30;
     return {
-      name: model.name, size: model.size, size_est: true, ok, tps: Math.round(tps * 10) / 10, tokens, seconds, load_seconds: 0, approx: native == null,
-      text: text.slice(0, 220), error: ok ? null : 'respuesta vacía o demasiado corta',
+      name: model.name, size: model.size, size_est: model.size_est ?? true, ok, tps: Math.round(tps * 10) / 10, tokens, seconds, load_seconds: 0, approx: native == null,
+      text: text.slice(0, 220), error: ok ? null : (thinks(j) ? 'se quedó «pensando» sin llegar a responder' : 'respuesta vacía o demasiado corta'),
     };
   } catch (e) {
     const aborted = e.name === 'AbortError' || signal?.aborted;
-    return { name: model.name, size: model.size, size_est: true, ok: false, tps: 0, tokens: 0, seconds: Math.round((Date.now() - t0) / 100) / 10, load_seconds: 0, text: '', error: aborted ? 'cancelado o demasiado lento (más de 4 min)' : e.message };
+    return { name: model.name, size: model.size, size_est: model.size_est ?? true, ok: false, tps: 0, tokens: 0, seconds: Math.round((Date.now() - t0) / 100) / 10, load_seconds: 0, text: '', error: aborted ? 'cancelado o demasiado lento (más de 4 min)' : e.message };
   }
 }
 

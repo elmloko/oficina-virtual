@@ -77,7 +77,21 @@ export const defaultServerCtl = {
   },
 };
 
-export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loadProviders(), logger = createLogger(), envFile = config.envFile, probe = createProbe({ config }), attachmentsDir = config.attachmentsDir, dispatcher, docsRoot = config.docsRoot, openFolder = (dir) => spawnProc('explorer.exe', [dir], { detached: true, stdio: 'ignore' }).unref(), ollamaFetch = fetch, serverCtl = defaultServerCtl, freeMem = freemem, runSshFn = runSsh, runSsh2Fn = runSsh2, approvalWaitMs = 15 * 60_000 } = {}) {
+/** Modelos de LM Studio vía su CLI: tamaño real en disco y sacarlos de la memoria. Sin shell; el id es el que listó LM Studio. */
+export const defaultLmsCtl = {
+  /** Map id → bytes, o null si `lms` no está o falla (entonces se estima el tamaño por el nombre). */
+  sizes: () => new Promise((resolve) => execFile(config.lmsBin, ['ls', '--json'], { timeout: 15_000, windowsHide: true, maxBuffer: 4e6 }, (err, out) => {
+    if (err) return resolve(null);
+    try { resolve(new Map(JSON.parse(out).filter((m) => m.modelKey && m.sizeBytes > 0).map((m) => [m.modelKey, m.sizeBytes]))); } catch { resolve(null); }
+  })),
+  /** Sin id descarga todos. Nunca falla: si no estaba cargado no hay nada que hacer. */
+  unload: (id) => new Promise((resolve) => {
+    if (id && !MODEL_RE.test(id)) return resolve();
+    execFile(config.lmsBin, id ? ['unload', id] : ['unload', '--all'], { timeout: 30_000, windowsHide: true }, () => resolve());
+  }),
+};
+
+export function createApp({ db = openDb(), lmsCtl = defaultLmsCtl, runnerOpts = {}, now, providers = loadProviders(), logger = createLogger(), envFile = config.envFile, probe = createProbe({ config }), attachmentsDir = config.attachmentsDir, dispatcher, docsRoot = config.docsRoot, openFolder = (dir) => spawnProc('explorer.exe', [dir], { detached: true, stdio: 'ignore' }).unref(), ollamaFetch = fetch, serverCtl = defaultServerCtl, freeMem = freemem, runSshFn = runSsh, runSsh2Fn = runSsh2, approvalWaitMs = 15 * 60_000 } = {}) {
   const startedAt = new Date();
   const APPROVAL_WAIT_MS = approvalWaitMs;
   /** Contraseña guardada de un servidor (vive en .env, codificada); null = se usa tu llave SSH. */
@@ -252,6 +266,7 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
       return send(res, 200, { paused });
     }
     if (method === 'GET' && url.pathname === '/api/models') {
+      if (url.searchParams.has('fresh')) probe.ollama.reset?.(); // «Buscar modelos»: leer lo instalado ahora mismo
       const ol = await probe.ollama().catch(() => ({ ok: false }));
       const ollamaDefault = (ol.ok && pickDefault(ol.models, db.ollamaBench())) || OLLAMA_MODELS.light; // el mejor instalado EN ESTE equipo
       let lm = null; // LM Studio solo responde si su servidor local está encendido
@@ -310,6 +325,7 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
       try { await (serverCtl.stop ?? defaultServerCtl.stop)[engine](); } catch (e) { return send(res, 400, { error: e.message }); }
       let down = false;
       for (let i = 0; i < 12 && !down; i++) { down = !(await up()); if (!down) await new Promise((r2) => setTimeout(r2, 500)); }
+      if (engine === 'ollama') probe.ollama.reset?.(); // que la próxima consulta lo vea apagado ya, no a los 4 s
       db.audit(`${engine}.server.stop`, null, down ? 'ok' : 'sigue respondiendo');
       await refreshDown();
       logger.info(`Servidor de ${label}: ${down ? 'apagado' : 'sigue encendido'}`);
@@ -328,6 +344,7 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
       try { await serverCtl[engine](engine === 'lmstudio' ? new URL(base).port || 1234 : null); } catch (e) { return send(res, 400, { error: e.message }); }
       let ok = false;
       for (let i = 0; i < 60 && !ok; i++) { ok = await up(); if (!ok) await new Promise((r2) => setTimeout(r2, 500)); }
+      if (engine === 'ollama') probe.ollama.reset?.(); // que la próxima consulta lo vea encendido ya, no a los 4 s
       db.audit(`${engine}.server.start`, null, ok ? 'ok' : 'sin respuesta');
       await refreshDown();
       logger.info(`Servidor de ${label}: ${ok ? 'encendido' : 'no respondió a tiempo'}`);
@@ -343,7 +360,9 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
       if (method === 'POST') {
         if (bench.running) return send(res, 409, { error: 'Ya hay una medición en curso' });
         if (runner.stats().active[engine] > 0) return send(res, 409, { error: `${label} está ocupado con una misión: espera a que termine para medir` });
+        const force = (await readJson(req).catch(() => ({}))).force === true; // «medir también los omitidos»
         let models; let baseUrl; let fetchFn; let measureFn;
+        let reclaim = 0; // bytes de modelos ya cargados que se descargan antes de medir
         if (engine === 'ollama') {
           const ol = await probe.ollama().catch(() => ({ ok: false }));
           if (!ol.ok) return send(res, 400, { error: ol.error ?? 'Ollama no responde (¿está iniciado?)' });
@@ -352,11 +371,21 @@ export function createApp({ db = openDb(), runnerOpts = {}, now, providers = loa
           const lm = providers.lmstudio;
           if (!lm) return send(res, 400, { error: 'LM Studio está apagado en Sistema: enciéndelo primero' });
           try { models = await listLmStudio({ url: lm.baseUrl, fetchFn: ollamaFetch }); } catch { return send(res, 400, { error: 'LM Studio no responde: abre la app y activa su servidor local (pestaña Developer)' }); }
-          baseUrl = lm.baseUrl; fetchFn = ollamaFetch; measureFn = measureLmStudio;
+          const sizes = await lmsCtl.sizes(); // tamaño real en disco: el nombre engaña (un «27b» cuantizado puede ocupar menos de 5 GB)
+          if (sizes) models = models.map((x) => (sizes.has(x.name) ? { ...x, size: sizes.get(x.name), size_est: false } : x));
+          reclaim = models.filter((x) => x.state === 'loaded').reduce((a, x) => a + (x.size ?? 0), 0);
+          baseUrl = lm.baseUrl; fetchFn = ollamaFetch;
+          // como `keep_alive: 0` en Ollama: al terminar cada uno se descarga para dejar la RAM al siguiente
+          measureFn = async (x, opts) => { const out = await measureLmStudio(x, opts); await lmsCtl.unload(x.name); return out; };
         }
-        const freeGb = freeMem() / 1e9;
-        const { candidates, skipped } = benchCandidates(models, freeGb);
-        if (!candidates.length) return send(res, 400, { error: engine === 'ollama' ? 'No hay modelos de chat que medir (descarga uno, p. ej. «ollama pull gemma3:4b»)' : 'LM Studio no tiene modelos de chat descargados' });
+        const freeGb = (freeMem() + reclaim) / 1e9;
+        const { candidates, skipped } = benchCandidates(models, freeGb, { force });
+        if (!candidates.length) {
+          // hay modelos pero ninguno se puede medir ahora: decir por qué en vez de «no hay modelos»
+          if (skipped.length) return send(res, 400, { can_force: true, error: `No hay ningún modelo que se pueda medir ahora: ${skipped.map((s) => `${s.name} (${s.reason})`).join(' · ')}. Cierra programas para liberar memoria o descarga un modelo más pequeño.` });
+          return send(res, 400, { error: engine === 'ollama' ? 'No hay modelos de chat que medir (descarga uno, p. ej. «ollama pull gemma3:4b»)' : 'LM Studio no tiene modelos de chat descargados' });
+        }
+        if (engine === 'lmstudio' && reclaim) { await lmsCtl.unload(); logger.info('LM Studio: modelos descargados de la memoria para poder medir'); }
         Object.assign(bench, { running: true, current: null, total: candidates.length, results: [], skipped, free_gb: Math.round(freeGb * 10) / 10, abort: new AbortController() });
         db.audit(`${engine}.benchmark`, null, `${candidates.length} modelos`);
         logger.info(`Midiendo ${candidates.length} modelos de ${label}`);

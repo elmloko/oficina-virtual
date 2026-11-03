@@ -30,6 +30,10 @@ test('benchCandidates: salta especializados y los que no caben en la RAM libre',
   const { candidates, skipped } = benchCandidates(models, 5);
   assert.deepEqual(candidates.map((m) => m.name), ['gemma3:4b']);
   assert.deepEqual(skipped.map((s) => s.name).sort(), ['deepseek-r1:8b', 'qwen2.5-coder:7b', 'qwen3:8b']);
+  // uno ya cargado en memoria (LM Studio informa `state`) se mide aunque quede poca RAM libre
+  const lm = benchCandidates([{ name: 'qwen/qwen3-4b', size: 2.2 * GB, state: 'loaded' }, { name: 'nvidia/nemotron-3-nano-4b', size: 2.2 * GB, state: 'not-loaded' }], 1.2);
+  assert.deepEqual(lm.candidates.map((m) => m.name), ['qwen/qwen3-4b']);
+  assert.deepEqual(lm.skipped.map((s) => s.name), ['nvidia/nemotron-3-nano-4b']);
   assert.ok(skipped.find((s) => s.name === 'qwen3:8b').reason.includes('RAM'));
 });
 

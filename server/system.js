@@ -7,15 +7,22 @@ import { listProjects } from './registry.js';
 import { OLLAMA_MODELS } from './router.js';
 import { chatModels } from './ollama-models.js';
 
+/** `get.reset()` olvida lo guardado (p. ej. tras encender o apagar un servidor); una consulta que ya iba en curso no lo vuelve a guardar. */
 const cached = (ttlMs, fn) => {
   let at = 0;
   let value;
   let pending = null;
-  return () => {
+  let gen = 0;
+  const get = () => {
     if (Date.now() - at < ttlMs) return Promise.resolve(value);
-    pending ??= fn().then((v) => { value = v; at = Date.now(); return v; }).finally(() => { pending = null; });
+    if (!pending) {
+      const mine = gen;
+      pending = fn().then((v) => { if (mine === gen) { value = v; at = Date.now(); } return v; }).finally(() => { if (mine === gen) pending = null; });
+    }
     return pending;
   };
+  get.reset = () => { gen++; at = 0; pending = null; };
+  return get;
 };
 
 /** Modelos que acepta `claude --model` (alias que siempre apuntan al más reciente de su familia). */

@@ -222,6 +222,31 @@ test('probe: Ollama caído se reporta sin lanzar error; claude ausente también'
   assert.deepEqual(await up.claude(), { ok: true, version: '2.1.312 (Claude Code)' });
 });
 
+test('probe: la caché de Ollama se puede olvidar al encender o apagar el servidor', async () => {
+  let running = false;
+  const fetchFn = async () => { if (!running) throw new Error('ECONNREFUSED'); return { json: async () => ({ models: [{ name: 'qwen3:4b', size: 1 }] }) }; };
+  const probe = createProbe({ config, fetchFn, exec: (c, a, o, cb) => cb(new Error('ENOENT')) });
+  assert.equal((await probe.ollama()).ok, false);
+  running = true;
+  assert.equal((await probe.ollama()).ok, false, 'sin olvidar, sigue lo guardado (4 s)');
+  probe.ollama.reset();
+  assert.equal((await probe.ollama()).ok, true, 'tras encenderlo se ve al momento');
+
+  // una consulta que salió antes de encenderlo no deja guardado el «apagado»
+  const waiting = [];
+  let slowUp = false;
+  const slow = createProbe({ config, exec: (c, a, o, cb) => cb(new Error('ENOENT')), fetchFn: async () => {
+    if (slowUp) return { json: async () => ({ models: [] }) };
+    await new Promise((r) => waiting.push(r));
+    throw new Error('ECONNREFUSED');
+  } });
+  const stale = slow.ollama(); // sale con el servidor apagado y tarda
+  slowUp = true; slow.ollama.reset(); // mientras, se enciende
+  for (const r of waiting) r();
+  assert.equal((await stale).ok, false);
+  assert.equal((await slow.ollama()).ok, true, 'el resultado viejo no quedó en caché');
+});
+
 // ---------- API ----------
 test('API de sistema: estado, registro, pausa, cancelación total y ajustes', async () => {
   const logger = createLogger();
