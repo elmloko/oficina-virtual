@@ -53,6 +53,28 @@ export function recommend(results) {
   return [...valid].sort((a, b) => b.tps - a.tps)[0].name;
 }
 
+/**
+ * Une una medición con las anteriores: lo medido ahora reemplaza (por nombre) a lo de antes y el resto se conserva,
+ * así medir de nuevo o reintentar un modelo no borra los demás. `installed`: si se da, se olvidan los ya desinstalados.
+ * `changed_from`: el recomendado anterior si esta medición encontró uno mejor (null si no cambió o no había).
+ */
+export function mergeBench(prev, { results, skipped = [], at, free_gb, installed = null }) {
+  const keep = (n) => !installed || installed.includes(n);
+  const fresh = new Map(results.map((r) => [r.name, { ...r, at }]));
+  const old = (prev?.results ?? []).filter((r) => keep(r.name) && !fresh.has(r.name)).map((r) => ({ ...r, at: r.at ?? prev.at }));
+  const all = [...fresh.values(), ...old];
+  const measured = new Set(all.map((r) => r.name));
+  const touched = new Set([...fresh.keys(), ...skipped.map((s) => s.name)]);
+  const oldSkipped = (prev?.skipped ?? []).filter((s) => keep(s.name) && !touched.has(s.name));
+  const best = recommend(all);
+  const before = prev?.best ?? null;
+  return {
+    at, free_gb, results: all,
+    skipped: [...skipped, ...oldSkipped].filter((s) => !measured.has(s.name)),
+    best, changed_from: before && best && best !== before ? before : null,
+  };
+}
+
 /** Pregunta lo mismo a un modelo y mide. `keep_alive: 0` lo descarga después para no ocupar la RAM. */
 export async function measure(model, { url, fetchFn = fetch, signal, timeoutMs = 180_000 }) {
   const t0 = Date.now();

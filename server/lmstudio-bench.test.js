@@ -162,8 +162,10 @@ test('API: medir LM Studio con poca RAM usa el tamaño real, cuenta la RAM de lo
     assert.deepEqual(unloaded, ['*', 'qwen/qwen3-4b', 'prism-ml/bonsai-27b']); // libera todo antes y cada uno al terminar
 
     const all = await call('POST', '/api/system/lmstudio/benchmark', { force: true });
-    assert.deepEqual([all.status, all.body.total, all.body.skipped.length], [202, 3, 0]);
-    await finish();
+    assert.deepEqual([all.status, all.body.total], [202, 3]);
+    const forced = await finish();
+    assert.equal(forced.skipped.length, 0, 'el que estaba omitido ya se midió');
+    assert.equal(forced.results.length, 3);
   } finally { app.server.close(); app.server.closeAllConnections?.(); }
 
   // ninguno cabe: el error lo explica y permite forzar
@@ -200,6 +202,42 @@ test('API: dos clics seguidos en «Medir» lanzan una sola medición; el error d
   const slow = async () => { throw new DOMException('The operation was aborted due to timeout', 'TimeoutError'); };
   const t = await measureLmStudio({ name: 'prism-ml/bonsai-27b', size: 4.7e9 }, { url: URL, fetchFn: slow });
   assert.match(t.error, /demasiado lento/, 'el tiempo agotado se explica en español');
+});
+
+test('API: «Reintentar» mide solo ese modelo, conserva el resto y guarda tras cada modelo', async () => {
+  let slow7b = 2; // el de 7B primero va lento (3 tok/s); al reintentarlo ya va bien
+  const base = fakeLm({ models: MODELS }).fetchFn;
+  const fetchFn = async (url, opts) => {
+    const r = await base(url, opts);
+    if (!url.endsWith('/api/v0/chat/completions')) return r;
+    const j = await r.json();
+    if (JSON.parse(opts.body).model.includes('7b')) j.stats.tokens_per_second = slow7b > 0 ? 3 : 8;
+    return { ...r, json: async () => j };
+  };
+  const lmsCtl = { sizes: async () => null, unload: async () => { slow7b--; } };
+  const db = openDb(':memory:');
+  const probe = { claude: async () => ({ ok: true }), codex: async () => ({ ok: true }), ollama: async () => ({ ok: false }) };
+  const providers = { lmstudio: { name: 'lmstudio', kind: 'openai', baseUrl: URL, key: '', model: 'local-model' } };
+  const app = createApp({ db, probe, providers, lmsCtl, ollamaFetch: fetchFn, freeMem: () => 32e9 });
+  await new Promise((r) => app.server.listen(0, '127.0.0.1', r));
+  const base2 = `http://127.0.0.1:${app.server.address().port}`;
+  const call = async (method, path, body) => { const r = await fetch(base2 + path, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined }); return { status: r.status, body: await r.json() }; };
+  const finish = async () => { let v; for (let i = 0; i < 150; i++) { v = (await call('GET', '/api/system/lmstudio/benchmark')).body; if (!v.running) break; await new Promise((r) => setTimeout(r, 20)); } return v; };
+  try {
+    await call('POST', '/api/system/lmstudio/benchmark', {});
+    const first = await finish();
+    assert.equal(first.best, 'llama-3.2-3b-instruct'); // el de 7B va a 3 tok/s
+    assert.equal(first.changed_from, null);
+
+    const retry = await call('POST', '/api/system/lmstudio/benchmark', { models: ['qwen2.5-7b-instruct'] });
+    assert.deepEqual([retry.status, retry.body.total], [202, 1]);
+    const after = await finish();
+    assert.deepEqual(after.results.map((r) => r.name).sort(), ['llama-3.2-3b-instruct', 'qwen2.5-7b-instruct'], 'el otro resultado se conserva');
+    assert.deepEqual([after.best, after.changed_from], ['qwen2.5-7b-instruct', 'llama-3.2-3b-instruct'], 'ahora el de 7B rinde: es mejor y lo dice');
+    assert.equal(db.engineBench('lmstudio').best, 'qwen2.5-7b-instruct', 'queda guardado: las misiones lo usan');
+
+    assert.equal((await call('POST', '/api/system/lmstudio/benchmark', { models: ['no-existe'] })).status, 400);
+  } finally { app.server.close(); app.server.closeAllConnections?.(); }
 });
 
 test('misión con LM Studio: si el modelo elegido no existe en esta PC, usa el recomendado o el cargado y lo avisa', async () => {

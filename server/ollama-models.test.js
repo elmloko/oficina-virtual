@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { openDb } from './db.js';
 import { createRunner } from './runner.js';
 import { createApp } from './index.js';
-import { pickDefault, benchCandidates, recommend, runBenchmark, hasModel } from './ollama-models.js';
+import { pickDefault, benchCandidates, recommend, runBenchmark, hasModel, mergeBench } from './ollama-models.js';
 
 const GB = 1e9;
 const waitFor = async (fn, ms = 3000) => {
@@ -23,6 +23,28 @@ test('pickDefault: medición > preferido instalado > el más pequeño; ignora em
   assert.equal(pickDefault([]), null);
   assert.equal(hasModel([{ name: 'gemma3:4b' }], 'gemma3:4b'), true);
   assert.equal(hasModel([{ name: 'tinyllama:latest' }], 'tinyllama'), true);
+});
+
+test('mergeBench: reintentar uno conserva los demás, olvida los desinstalados y avisa si hay un recomendado mejor', () => {
+  const ok = (name, size, tps) => ({ name, size: size * GB, ok: true, tps });
+  const prev = {
+    at: 'ayer', best: 'qwen3:4b', changed_from: null,
+    results: [ok('qwen3:4b', 2.5, 11.5), { name: 'gemma:12b', size: 7 * GB, ok: false, tps: 0, error: 'demasiado lento' }, ok('viejo:1b', 1, 30)],
+    skipped: [{ name: 'grande:27b', size: 17 * GB, reason: 'no cabe' }],
+  };
+  const installed = ['qwen3:4b', 'gemma:12b', 'grande:27b'];
+  // reintento de gemma: ahora responde a buen ritmo y, por ser más grande, pasa a ser el recomendado
+  const m = mergeBench(prev, { results: [ok('gemma:12b', 7, 5.1)], at: 'hoy', free_gb: 8, installed });
+  assert.deepEqual(m.results.map((r) => [r.name, r.ok, r.at]), [['gemma:12b', true, 'hoy'], ['qwen3:4b', true, 'ayer']]); // viejo:1b ya no está instalado
+  assert.deepEqual([m.best, m.changed_from], ['gemma:12b', 'qwen3:4b']);
+  assert.deepEqual(m.skipped.map((s) => s.name), ['grande:27b'], 'lo omitido antes se conserva');
+  // otra medición sin cambio de recomendado: no hay aviso
+  const again = mergeBench(m, { results: [ok('qwen3:4b', 2.5, 12)], at: 'mañana', installed });
+  assert.deepEqual([again.best, again.changed_from], ['gemma:12b', null]);
+  // si al fin se mide el que estaba omitido, sale de «omitidos»
+  const big = mergeBench(again, { results: [{ name: 'grande:27b', size: 17 * GB, ok: false, tps: 0, error: 'x' }], at: 'luego', installed });
+  assert.deepEqual(big.skipped, []);
+  assert.equal(mergeBench(null, { results: [ok('a:1b', 1, 9)], at: 't' }).changed_from, null, 'primera medición: nada con qué comparar');
 });
 
 test('benchCandidates: salta especializados y los que no caben en la RAM libre', () => {

@@ -13,7 +13,7 @@ import { listAgents, listProjects, resolveProject, isExtraRoot, isServerRef } fr
 import { insideBase } from './workspace.js';
 import { CLAUDE_MODELS, ollamaChatModels } from './system.js';
 import { OLLAMA_MODELS } from './router.js';
-import { pickDefault, benchCandidates, runBenchmark, recommend, listLmStudio, measureLmStudio } from './ollama-models.js';
+import { pickDefault, benchCandidates, runBenchmark, mergeBench, chatModels, listLmStudio, measureLmStudio } from './ollama-models.js';
 import { freemem } from 'node:os';
 import { spawn as spawnProc, execFile } from 'node:child_process';
 import { loadProviders, publicProviders, knownProviders, testProvider, MODEL_RE } from './providers.js';
@@ -114,12 +114,13 @@ export function createApp({ db = openDb(), lmsCtl = defaultLmsCtl, runnerOpts = 
   // Medición de modelos (Ollama y LM Studio): una a la vez; el resultado queda guardado para comparar y elegir.
   const benches = {};
   const benchOf = (engine) => (benches[engine] ??= { running: false, current: null, total: 0, results: [], skipped: [], free_gb: null, abort: null });
+  // lo medido se guarda tras cada modelo y se une a lo anterior: medir de nuevo o reintentar uno no borra el resto
   const benchView = (engine) => {
     const bench = benchOf(engine);
     const last = db.engineBench(engine);
     return bench.running
-      ? { engine, running: true, current: bench.current, total: bench.total, results: bench.results, skipped: bench.skipped, best: null, at: null, free_gb: bench.free_gb }
-      : { engine, running: false, current: null, total: last?.results?.length ?? 0, results: last?.results ?? [], skipped: last?.skipped ?? [], best: last?.best ?? null, at: last?.at ?? null, free_gb: last?.free_gb ?? null };
+      ? { engine, running: true, current: bench.current, done: bench.results.length, total: bench.total, results: last?.results ?? [], skipped: last?.skipped ?? bench.skipped, best: last?.best ?? null, changed_from: null, at: last?.at ?? null, free_gb: bench.free_gb }
+      : { engine, running: false, current: null, total: last?.results?.length ?? 0, results: last?.results ?? [], skipped: last?.skipped ?? [], best: last?.best ?? null, changed_from: last?.changed_from ?? null, at: last?.at ?? null, free_gb: last?.free_gb ?? null };
   };
   const sockets = new Set();
   const broadcast = (msg) => { const s = JSON.stringify(msg); for (const ws of sockets) if (ws.readyState === 1) ws.send(s); };
@@ -364,7 +365,10 @@ export function createApp({ db = openDb(), lmsCtl = defaultLmsCtl, runnerOpts = 
         // se marca ya: preparar tarda (listar, tamaños, descargar) y un doble clic lanzaba dos mediciones que se pisaban los modelos
         bench.starting = true;
         try {
-          const force = (await readJson(req).catch(() => ({}))).force === true; // «medir también los omitidos»
+          const body = await readJson(req).catch(() => ({}));
+          // «Reintentar»: solo esos modelos, aunque no quepan en la RAM libre (lo pediste tú expresamente)
+          const only = Array.isArray(body.models) ? body.models.filter((n) => typeof n === 'string' && MODEL_RE.test(n)) : null;
+          const force = body.force === true || !!only?.length; // «medir también los omitidos»
           let models; let baseUrl; let fetchFn; let measureFn;
           let reclaim = 0; // bytes de modelos ya cargados que se descargan antes de medir
           if (engine === 'ollama') {
@@ -382,6 +386,11 @@ export function createApp({ db = openDb(), lmsCtl = defaultLmsCtl, runnerOpts = 
             // como `keep_alive: 0` en Ollama: al terminar cada uno se descarga para dejar la RAM al siguiente
             measureFn = async (x, opts) => { const out = await measureLmStudio(x, opts); await lmsCtl.unload(x.name); return out; };
           }
+          const installed = chatModels(models).map((x) => x.name);
+          if (only?.length) {
+            models = models.filter((x) => only.includes(x.name));
+            if (!models.length) return send(res, 400, { error: `Ese modelo ya no está instalado en ${label}` });
+          }
           const freeGb = (freeMem() + reclaim) / 1e9;
           const { candidates, skipped } = benchCandidates(models, freeGb, { force });
           if (!candidates.length) {
@@ -393,11 +402,20 @@ export function createApp({ db = openDb(), lmsCtl = defaultLmsCtl, runnerOpts = 
           Object.assign(bench, { running: true, current: null, total: candidates.length, results: [], skipped, free_gb: Math.round(freeGb * 10) / 10, abort: new AbortController() });
           db.audit(`${engine}.benchmark`, null, `${candidates.length} modelos`);
           logger.info(`Midiendo ${candidates.length} modelos de ${label}`);
-          runBenchmark(candidates, { url: baseUrl, fetchFn, measureFn, signal: bench.abort.signal, onProgress: (results, current) => { bench.results = [...results]; bench.current = current; } })
+          const base = db.engineBench(engine); // lo de antes: se conserva lo que esta medición no vuelva a medir
+          const save = (results) => {
+            const merged = mergeBench(base, { results, skipped, at: new Date().toISOString(), free_gb: bench.free_gb, installed });
+            db.setEngineBench(engine, merged);
+            return merged;
+          };
+          if (base?.results?.length) save([]); // ya refleja los desinstalados y los omitidos de ahora
+          runBenchmark(candidates, { url: baseUrl, fetchFn, measureFn, signal: bench.abort.signal, onProgress: (results, current) => {
+            bench.results = [...results]; bench.current = current;
+            if (results.length) save(results); // si el servidor se reinicia a mitad, lo ya medido no se pierde
+          } })
             .then((results) => {
-              const done = { at: new Date().toISOString(), free_gb: bench.free_gb, skipped, results, best: recommend(results) };
-              db.setEngineBench(engine, done);
-              logger.info(`Medición de ${label} terminada. Recomendado: ${done.best ?? 'ninguno'}`);
+              const done = save(results);
+              logger.info(`Medición de ${label} terminada. Recomendado: ${done.best ?? 'ninguno'}${done.changed_from ? ` (nuevo: mejor que ${done.changed_from})` : ''}`);
             })
             .catch((e) => logger.warn(`Medición de ${label} falló: ${e.message}`))
             .finally(() => { bench.running = false; bench.current = null; });

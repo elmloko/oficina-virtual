@@ -1442,28 +1442,46 @@ function modelSelect(key, label) {
 
 const BENCH_LABEL = { ollama: 'Ollama', lmstudio: 'LM Studio' };
 const benchTimers = {};
+/** Por qué el nuevo recomendado supera al anterior, con los datos de la medición. */
+function betterReason(b) {
+  const now = b.results.find((r) => r.name === b.best);
+  const was = b.results.find((r) => r.name === b.changed_from);
+  if (!now) return '';
+  if (!was) return `${b.changed_from} ya no está instalado`;
+  if (!was.ok) return `${b.changed_from} falló en la última medición`;
+  if (was.tps < 4 && now.tps >= was.tps) return `es más rápido (${now.tps} frente a ${was.tps} tok/s)`;
+  if ((now.size ?? 0) > (was.size ?? 0)) return `es más grande, así que suele responder mejor, y va a buen ritmo (${now.tps} tok/s; ${b.changed_from}: ${was.tps} tok/s)`;
+  return `${now.tps} tok/s frente a ${was.tps} tok/s de ${b.changed_from}`;
+}
+
 async function refreshBench(engine) {
   try {
     state.benches ??= {};
-    state.benches[engine] = await api(`/api/system/${engine}/benchmark`);
+    const wasRunning = !!state.benches[engine]?.running;
+    const b = state.benches[engine] = await api(`/api/system/${engine}/benchmark`);
     clearTimeout(benchTimers[engine]);
-    if (state.benches[engine].running) benchTimers[engine] = setTimeout(() => refreshBench(engine), 2000);
-    else if (state.benches[engine].best) await refreshModels(); // la recomendación cambia el «predeterminado» y la ★
+    if (b.running) benchTimers[engine] = setTimeout(() => refreshBench(engine), 2000);
+    else if (b.best) await refreshModels(); // la recomendación cambia el «predeterminado» y la ★
+    if (wasRunning && !b.running) { // acaba de terminar: decir el resultado, sobre todo si hay uno mejor
+      if (b.changed_from) toast(`★ Nuevo recomendado en ${BENCH_LABEL[engine]}: ${b.best}. Es mejor que ${b.changed_from}: ${betterReason(b)}.`, false);
+      else toast(`Medición de ${BENCH_LABEL[engine]} terminada. ${b.best ? `Recomendado: ★ ${b.best}` : 'Ningún modelo respondió bien: abre la tabla para ver por qué.'}`, false);
+    }
     if (state.system) renderSystem();
   } catch { /* el servidor puede estar reiniciando */ }
 }
 const FORCE_WARNING = 'Los que no caben en la memoria libre pueden ir muy lentos, tardar varios minutos cada uno o fallar al cargar. Mientras tanto la computadora puede ir lenta.';
-async function startBench(engine, force = false) {
+/** `models`: medir solo esos (botón «Reintentar» de una fila); el resto de resultados se conserva. */
+async function startBench(engine, force = false, models = null) {
   state.benches ??= {};
   try {
-    state.benches[engine] = await post(`/api/system/${engine}/benchmark`, { force });
+    state.benches[engine] = await post(`/api/system/${engine}/benchmark`, { force, ...(models ? { models } : {}) });
   } catch (e) {
     // ninguno cabe ahora: ofrecer medirlos igualmente en vez de quedarse en el error
     if (force || !e.data?.can_force) throw e;
     if (await confirmDialog('Medir de todos modos', `${e.message} ¿Quieres medirlos igualmente? ${FORCE_WARNING}`)) return startBench(engine, true);
     return;
   }
-  toast(`Midiendo ${force ? 'todos ' : ''}tus modelos de ${BENCH_LABEL[engine]}, de uno en uno. Tarda unos minutos y no hace falta que esperes aquí.`, false);
+  toast(models ? `Midiendo de nuevo ${models.join(', ')}. Los demás resultados se conservan.` : `Midiendo ${force ? 'todos ' : ''}tus modelos de ${BENCH_LABEL[engine]}, de uno en uno. Tarda unos minutos y no hace falta que esperes aquí.`, false);
   clearTimeout(benchTimers[engine]); benchTimers[engine] = setTimeout(() => refreshBench(engine), 2000);
   renderSystem();
 }
@@ -1517,45 +1535,99 @@ const benchButton = (engine) => el('button', { textContent: state.benches?.[engi
   try { await startBench(engine); } finally { e.target.disabled = !!state.benches?.[engine]?.running; }
 }) });
 
-/** Tabla de la última medición (o de la que está corriendo) con «Usar este». */
-function benchPanel(engine) {
+/** «hace 5 min», «hace 2 h», «hace 3 días». */
+function ago(iso) {
+  const s = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (!Number.isFinite(s)) return '';
+  if (s < 90) return 'hace un momento';
+  if (s < 3600) return `hace ${Math.round(s / 60)} min`;
+  if (s < 86400) return `hace ${Math.round(s / 3600)} h`;
+  const d = Math.round(s / 86400);
+  return `hace ${d} día${d === 1 ? '' : 's'}`;
+}
+
+/** Estado breve junto a los botones: cuántos modelos hay, cuál se recomienda y cuándo se midió. */
+function benchStatus(engine, up) {
+  if (!up) return el('span', { className: 'tb-status muted', textContent: 'Enciende el servidor con el interruptor de la derecha para buscar, probar o medir modelos.' });
+  const n = (state.modelInfo?.[engine] ?? []).length;
   const b = state.benches?.[engine];
-  if (!b || (!b.running && !b.results.length)) {
-    const off = engine === 'lmstudio' && state.modelInfo?.lmstudio_up === false;
-    return el('p', { className: 'hint', textContent: off ? 'Para medir tus modelos de LM Studio enciende primero su servidor con el botón «Encender servidor».' : 'Tip: «Medir modelos» prueba cada modelo instalado con la misma consigna y te recomienda el mejor para esta computadora.' });
-  }
+  const bits = [`${n} modelo${n === 1 ? '' : 's'} de chat`];
+  if (b?.running) bits.push(`midiendo ${b.done ?? 0}/${b.total}…`);
+  else if (b?.best) bits.push(`★ recomendado: ${b.best}`);
+  else if (!b?.results?.length) bits.push('aún sin medir');
+  if (!b?.running && b?.at) bits.push(`medido ${ago(b.at)}`);
+  return el('span', { className: 'tb-status' }, span(bits.join(' · ')));
+}
+
+/**
+ * Tabla con TODOS los modelos del motor: los medidos (con «Usar este» y «↻»), los omitidos con su motivo
+ * y los instalados que aún no se midieron, cada uno con su «Medir». `canRun`: el servidor está encendido.
+ */
+function benchPanel(engine, canRun = true) {
+  const b = state.benches?.[engine] ?? { results: [], skipped: [] };
+  const installed = (state.modelInfo?.[engine] ?? []).map((m) => m.value);
+  const measured = new Set(b.results.map((r) => r.name));
+  const pending = [
+    ...b.skipped.filter((s) => !measured.has(s.name)),
+    ...installed.filter((n) => !measured.has(n) && !b.skipped.some((s) => s.name === n)).map((name) => ({ name, reason: 'sin medir todavía' })),
+  ];
+  if (!b.running && !b.results.length && !pending.length) return null;
   const cur = state.modelInfo?.engine_models?.[engine] ?? '';
-  const approx = b.results.some((r) => r.approx);
-  const head = b.running ? `Midiendo… ${b.results.length}/${b.total}${b.current ? ` · ahora: ${b.current}` : ''}` : `Medición del ${new Date(b.at).toLocaleString()} · RAM libre ${b.free_gb} GB`;
-  const rows = b.results.map((r) => el('tr', { className: r.name === b.best ? 'best' : '' },
-    el('td', { textContent: `${r.name === b.best ? '★ ' : ''}${r.name}` }),
-    el('td', { textContent: r.size ? `${r.size_est ? '~' : ''}${(r.size / 1e9).toFixed(1)} GB` : '—' }),
-    el('td', { className: r.ok ? (r.tps >= 4 ? 'good' : 'bad') : 'bad', textContent: r.ok ? `${r.approx ? '~' : ''}${r.tps} tok/s` : '—' }),
-    el('td', { textContent: `${r.seconds} s` }),
-    el('td', { className: 'snip', title: r.text, textContent: r.ok ? r.text : `✕ ${r.error}` }),
-    el('td', {}, r.ok ? el('button', { textContent: cur === r.name ? '✓ en uso' : 'Usar este', disabled: cur === r.name, onclick: guard(async () => {
-      await api(`/api/system/engines/${engine}/model`, { method: 'PUT', body: JSON.stringify({ model: r.name }) });
-      toast(`${BENCH_LABEL[engine]} usará ${r.name} (aplica a las misiones nuevas)`, false);
-      await refreshModels();
-    }) }) : '')));
-  const forceBtn = !b.running ? el('button', { textContent: 'Medir también estos', title: 'Mide todos tus modelos, aunque no quepan en la memoria libre', onclick: guard(async () => {
-    if (await confirmDialog('Medir todos los modelos', `Se medirán también: ${b.skipped.map((s) => s.name).join(', ')}. ${FORCE_WARNING}`)) await startBench(engine, true);
-  }) }) : null;
-  const skipped = b.skipped.length ? el('p', { className: 'hint' }, span(`No medidos: ${b.skipped.map((s) => `${s.name} (${s.reason})`).join(' · ')} `), ...(forceBtn ? [forceBtn] : [])) : null;
-  const note = !b.running && b.best ? el('p', { className: 'hint', textContent: `★ = el más grande (mejor calidad) que responde a 4 tokens/s o más. Juzga tú la calidad leyendo la respuesta de cada uno.${engine === 'lmstudio' ? ' En LM Studio el tamaño se estima por el nombre del modelo (~)' : ''}${approx ? ' y la velocidad con ~ es aproximada (incluye cargar el modelo).' : '.'}` }) : null;
-  const stop = b.running ? el('button', { className: 'danger', textContent: 'Detener', onclick: guard(async () => { await api(`/api/system/${engine}/benchmark`, { method: 'DELETE' }); }) }) : null;
+  const busy = b.running || !canRun;
+  const measureOnly = (names, needsConfirm) => guard(async (e) => {
+    if (needsConfirm && !(await confirmDialog('Medir de todos modos', `${names.join(', ')}: ${FORCE_WARNING}`))) return;
+    e.target.disabled = true;
+    await startBench(engine, true, names);
+  });
+  const sizeCell = (x) => el('td', { className: 'num', textContent: x.size ? `${x.size_est ? '~' : ''}${(x.size / 1e9).toFixed(1)} GB` : '—' });
+  const nameCell = (name) => el('td', { className: 'm-name', title: name }, ...(name === b.best ? [el('b', { className: 'star', textContent: '★ ' })] : []), span(name), ...(name === cur ? [el('em', { className: 'in-use', textContent: 'en uso' })] : []));
+  const now = (name) => b.running && name === b.current;
+
+  const doneRows = b.results.map((r) => el('tr', { className: [r.name === b.best && 'best', now(r.name) && 'measuring', !r.ok && 'failed'].filter(Boolean).join(' ') },
+    nameCell(r.name), sizeCell(r),
+    el('td', { className: `num ${r.ok ? (r.tps >= 4 ? 'good' : 'bad') : 'bad'}`, textContent: r.ok ? `${r.approx ? '~' : ''}${r.tps} tok/s` : '—' }),
+    el('td', { className: 'num', textContent: `${r.seconds} s`, title: r.at ? `Medido el ${new Date(r.at).toLocaleString()}` : '' }),
+    el('td', { className: 'snip', title: now(r.name) ? '' : (r.text || r.error || '') }, now(r.name) ? el('span', { className: 'spin', textContent: '⏳ midiendo de nuevo…' }) : span(r.ok ? r.text : `✕ ${r.error}`)),
+    el('td', { className: 'bench-act' },
+      ...(r.ok && cur !== r.name ? [el('button', { textContent: 'Usar', title: `Que ${BENCH_LABEL[engine]} use ${r.name} en las misiones nuevas`, onclick: guard(async () => {
+        await api(`/api/system/engines/${engine}/model`, { method: 'PUT', body: JSON.stringify({ model: r.name }) });
+        toast(`${BENCH_LABEL[engine]} usará ${r.name} (aplica a las misiones nuevas)`, false);
+        await refreshModels();
+      }) })] : []),
+      el('button', { textContent: r.ok ? '↻' : 'Reintentar', title: `Medir de nuevo solo ${r.name} (lo demás se conserva)`, disabled: busy, onclick: measureOnly([r.name], false) }))));
+
+  const pendingRows = pending.map((s) => el('tr', { className: `pending${now(s.name) ? ' measuring' : ''}` },
+    nameCell(s.name), sizeCell(s),
+    el('td', { className: 'num', textContent: '—' }), el('td', { className: 'num', textContent: '—' }),
+    el('td', { className: 'snip', title: s.reason }, now(s.name) ? el('span', { className: 'spin', textContent: '⏳ midiendo…' }) : span(s.reason)),
+    el('td', { className: 'bench-act' }, el('button', { textContent: 'Medir', title: `Medir solo ${s.name}`, disabled: busy, onclick: measureOnly([s.name], /RAM/.test(s.reason)) }))));
+
   const okN = b.results.filter((r) => r.ok).length;
-  const summary = b.running ? head : `Medición del ${new Date(b.at).toLocaleDateString()} · ${okN ? `${okN} modelos medidos` : 'ningún modelo respondió (ábrela para ver por qué)'}${b.best ? ` · recomendado: ★ ${b.best}` : ''}`;
+  const failN = b.results.length - okN;
+  const pct = b.running && b.total ? Math.round(((b.done ?? 0) / b.total) * 100) : 0;
+  const summary = b.running
+    ? `Midiendo ${b.done ?? 0} de ${b.total}${b.current ? ` · ahora: ${b.current}` : ''}`
+    : [`${okN} medido${okN === 1 ? '' : 's'}`, failN && `${failN} con fallo`, pending.length && `${pending.length} sin medir`].filter(Boolean).join(' · ') + (b.best ? ` · ★ ${b.best}${b.changed_from ? ' (nuevo)' : ''}` : '');
+  const stop = b.running ? el('button', { className: 'danger', textContent: 'Detener', onclick: guard(async () => { await api(`/api/system/${engine}/benchmark`, { method: 'DELETE' }); }) }) : null;
+  const allPending = !b.running && pending.length > 1 ? el('button', { textContent: `Medir los ${pending.length} sin medir`, disabled: busy, onclick: measureOnly(pending.map((s) => s.name), pending.some((s) => /RAM/.test(s.reason))) }) : null;
+  const better = !b.running && b.changed_from && b.best ? el('div', { className: 'better', textContent: `★ Nuevo recomendado: ${b.best}. Es mejor que ${b.changed_from} (el anterior): ${betterReason(b)}. Las misiones sin modelo elegido ya lo usan.` }) : null;
+  const meta = !b.running && b.at ? `Última medición: ${new Date(b.at).toLocaleString()}${b.free_gb != null ? ` · RAM libre entonces: ${b.free_gb} GB` : ''}` : 'Los resultados anteriores se conservan mientras mide.';
+  const estimated = b.results.some((r) => r.size_est);
+  const legend = `★ recomendado = el más grande que responde a 4 tok/s o más; lee las respuestas para juzgar la calidad.${estimated ? ' «~» = estimado.' : ''} ↻ mide de nuevo solo ese modelo.`;
+
   state.benchOpen ??= {};
-  return el('details', { className: 'bench', open: state.benchOpen[engine] ?? b.running, ontoggle: (e) => { state.benchOpen[engine] = e.target.open; } },
-    el('summary', {}, span(summary), ...(stop ? [stop] : [])),
-    el('div', { className: 'bench-head' }, span(head)),
-    el('table', {}, el('thead', {}, el('tr', {}, ...['Modelo', 'Tamaño', 'Velocidad', 'Tiempo', 'Respuesta', ''].map((t) => el('th', { textContent: t })))), el('tbody', {}, ...rows)),
-    ...(skipped ? [skipped] : []), ...(note ? [note] : []));
+  return el('details', { className: 'bench', open: state.benchOpen[engine] ?? (b.running || !!b.changed_from), ontoggle: (e) => { state.benchOpen[engine] = e.target.open; } },
+    el('summary', {}, el('b', { className: 'b-title', textContent: 'Modelos y mediciones' }), span(summary), ...(stop ? [stop] : [])),
+    ...(b.running ? [el('div', { className: 'progress', title: `${pct} %` }, el('i', { style: `width:${pct}%` }))] : []),
+    ...(better ? [better] : []),
+    el('table', {},
+      el('thead', {}, el('tr', {}, ...[['Modelo', ''], ['Tamaño', 'num'], ['Velocidad', 'num'], ['Tiempo', 'num'], ['Respuesta', ''], ['', '']].map(([t, c]) => el('th', { className: c, textContent: t })))),
+      el('tbody', {}, ...doneRows, ...pendingRows)),
+    el('div', { className: 'bench-foot' }, el('div', { className: 'muted' }, el('div', { textContent: meta }), el('div', { textContent: legend })), ...(allPending ? [allPending] : [])));
 }
 
 /** Una fila: nombre y tipo | estado | modelo | acciones. `more` = zona desplegable (clave, resultado de «Probar»). */
-function engineItem({ name, kind, kindClass, on, ok, detail, model, actions, panel = null, tools = [], more = [] }) {
+function engineItem({ name, kind, kindClass, on, ok, detail, model, actions, panel = null, tools = [], status = null, more = [] }) {
   const line = el('div', { className: `eng-line${on ? '' : ' off'}` },
     el('div', { className: 'c-name' }, el('strong', { textContent: name }), el('em', { className: `kind ${kindClass}`, textContent: kind })),
     el('div', { className: 'c-state', title: detail }, el('span', { className: on && ok ? 'dot-ok' : on ? 'dot-bad' : 'dot-off' }), span(detail)),
@@ -1564,8 +1636,10 @@ function engineItem({ name, kind, kindClass, on, ok, detail, model, actions, pan
   // mismo orden en todos los motores: encender · buscar · probar · medir · apagar (lo destructivo al final)
   const rank = (b) => (/Encend/.test(b.textContent) ? 0 : /Busc/.test(b.textContent) ? 1 : /Prob/.test(b.textContent) ? 2 : /Med/.test(b.textContent) ? 3 : 4);
   tools = [...tools].sort((x, y) => rank(x) - rank(y));
-  const bar = panel || tools.length ? [el('div', { className: 'eng-tools' }, ...(panel ? [panel] : []), ...(tools.length ? [el('div', { className: 'tools-btns' }, ...tools)] : []))] : [];
-  return el('div', { className: 'eng-item' }, line, ...bar, el('div', { className: 'eng-more' }, ...more));
+  // debajo de la fila: barra de herramientas a todo el ancho (botones + estado breve) y, debajo, la tabla de modelos
+  const toolbar = tools.length || status ? el('div', { className: 'tools-row' }, ...(tools.length ? [el('div', { className: 'tools-btns' }, ...tools)] : []), ...(status ? [status] : [])) : null;
+  const bar = panel || toolbar ? [el('div', { className: 'eng-tools' }, ...(toolbar ? [toolbar] : []), el('div', { className: 'eng-more' }, ...more), ...(panel ? [panel] : []))] : [el('div', { className: 'eng-more' }, ...more)];
+  return el('div', { className: 'eng-item' }, line, ...bar);
 }
 
 /** «Probar» de Ollama: una pregunta mínima al modelo en uso; el resultado queda bajo la fila. */
@@ -1590,8 +1664,9 @@ function localEngineItem(key, label, info, detail, kind, kindClass) {
     name: label, kind, kindClass, on: key === 'ollama' ? info.enabled && info.ok : info.enabled, ok: info.ok,
     detail: !info.enabled ? `apagado · ${detail ?? ''}` : key === 'ollama' && !info.ok ? 'servidor apagado: usa el interruptor para encenderlo' : (detail ?? ''),
     model: modelSelect(key, label),
-    panel: key === 'ollama' && info.enabled ? benchPanel('ollama') : null,
+    panel: key === 'ollama' && info.enabled ? benchPanel('ollama', info.ok) : null,
     tools: key === 'ollama' && info.enabled && info.ok ? [scanButton('ollama'), benchButton('ollama'), probarOllama.button] : [],
+    status: key === 'ollama' && info.enabled ? benchStatus('ollama', info.ok) : null,
     more: key === 'ollama' && info.enabled ? [probarOllama.res] : [],
     actions: [key === 'ollama' ? serverSwitch('ollama', info.enabled, info.ok, '/api/system/engines/ollama/toggle') : switchBtn(info.enabled, info.enabled ? `Apagar ${label}: las misiones dejan de usarlo` : `Encender ${label}`, async () => {
       if (info.enabled && key === 'claude' && !(await confirmDialog('Apagar Claude Code', 'Sin Claude Code no se pueden editar archivos ni correr agentes de código; solo quedarán Ollama, Codex y los modelos extra (que únicamente leen). Puedes encenderlo cuando quieras.'))) return;
@@ -1646,7 +1721,8 @@ function providerItem(p) {
     name: lm ? 'LM Studio' : p.name, kind: lm ? 'Local' : 'Internet', kindClass: lm ? 'k-local' : 'k-net',
     on: lm ? p.enabled && lmUp !== false : p.enabled, ok: lm ? lmUp !== false : true, detail,
     model: lm && p.enabled ? modelSelect('lmstudio', 'LM Studio') : el('span', { className: 'muted', textContent: p.configured || lm ? p.model : `modelo: ${p.model}` }),
-    actions, panel: lm && p.enabled ? benchPanel('lmstudio') : null, tools, more: [res, keyform],
+    actions, panel: lm && p.enabled ? benchPanel('lmstudio', lmUp !== false) : null, tools, more: [res, keyform],
+    status: lm && p.enabled ? benchStatus('lmstudio', lmUp !== false) : null,
   });
 }
 
