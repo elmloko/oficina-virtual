@@ -31,6 +31,11 @@ services:
       - ${DOCS_HOST:-${USERPROFILE}/OneDrive/Documentos}:/documentos
       - ${USERPROFILE}/Downloads:/descargas:ro
       - ${USERPROFILE}/.claude/agents:/agents:ro
+      # Código de la oficina EN VIVO (solo lectura): public/ se ve al recargar la página;
+      # server/ reinicia el servidor solo (server/watch-poll.js). Sin --build tras cada cambio.
+      - ./server:/app/server:ro
+      - ./public:/app/public:ro
+    command: ["node", "server/watch-poll.js"]
 
 volumes:
   oficina-data:

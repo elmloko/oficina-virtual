@@ -134,4 +134,6 @@ Los modelos no se copian al contenedor: la oficina les habla a Ollama y LM Studi
 
 Monta `C:\xampp\htdocs` (proyectos), `OneDrive\Documentos`, `Descargas` (solo lectura) y `~/.claude/agents` (solo lectura). La base de datos es propia del contenedor (volumen `oficina-data`), no la del PC.
 
+El código de la oficina también está montado en vivo: lo que cambies en `public/` se ve al recargar la página, y un cambio en `server/` reinicia el servidor solo (`server/watch-poll.js`, unos 2 s). Solo hace falta `docker compose up -d --build` si cambias `package.json` o el `Dockerfile`.
+
 Limitaciones dentro del contenedor: Claude Code y Codex no están instalados (las misiones que actúan pasan a Ollama), el modo «Control total» ejecuta `sh` de Linux en vez de PowerShell y no ve tu Windows, y los botones «Encender servidor» no pueden arrancar Ollama ni LM Studio del PC.
