@@ -8,12 +8,17 @@ import { fileURLToPath } from 'node:url';
 /** Script que el agente usa en modo infraestructura (la oficina decide si ejecuta o te pregunta). */
 const INFRA_TOOL = fileURLToPath(new URL('./tools/infra-exec.mjs', import.meta.url)).replace(/\\/g, '/');
 import { createTopicFolder, insideBase, listFiles, removeIfEmpty } from './workspace.js';
-import { tmpdir } from 'node:os';
+import { tmpdir, homedir } from 'node:os';
 import { route } from './router.js';
 import { chatModels, hasModel, pickDefault, listLmStudio } from './ollama-models.js';
 import { buildPlanPrompt, parsePlan } from './coordinator.js';
 import { chat, secretEnvNames } from './providers.js';
 import { noopLogger } from './logger.js';
+import { createVault } from './vault.js';
+import { modePrompt } from './modes.js';
+import { runToolLoop, toolsPrompt, localTools, infraTools } from './toolloop.js';
+
+const vaultNames = () => createVault().names(); // solo los nombres: los valores nunca entran en el prompt
 import * as gitworkDefault from './gitwork.js';
 import { promptSection, dirFor } from './attachments.js';
 import { parseConsults, stripConsults, protocolPrompt, alreadyConsultedPrompt, consultBrief, answersPrompt } from './collab.js';
@@ -36,20 +41,25 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
   const hasRoom = (engine) => (active[engine] ?? 0) < limitOf(engine);
   // El proceso `claude` no debe heredar claves de otros proveedores (ni activar facturación por API sin querer).
   // Los procesos de los agentes no heredan claves de proveedores ni contraseñas de servidores.
-  const childEnv = () => { const env = { ...process.env }; for (const k of secretEnvNames()) delete env[k]; for (const k of Object.keys(env)) if (k.startsWith('SERVER_PASS_')) delete env[k]; return env; };
+  const childEnv = () => { const env = { ...process.env }; for (const k of secretEnvNames()) delete env[k]; for (const k of Object.keys(env)) if (k.startsWith('SERVER_PASS_') || k.startsWith('VAULT_')) delete env[k]; return env; };
   const waiting = []; // { id, engine, model }
   const procs = new Map(); // id -> { kill }
   const clearAllowAll = (id) => { const t = db.getTask(id); if (t?.allow_all) db.updateTask(id, { allow_all: 0 }); }; // «Permitir todo» vale solo mientras corre la misión
   const infraTokens = new Map(); // id -> token de la ejecución en curso (solo esa misión puede usar /api/infra/exec)
   /** ¿Esta misión opera de verdad un servidor? Solo con Claude Code (los demás motores no tienen herramientas) y con un servidor de destino. */
-  const infraLive = (task) => task.mode === 'infra' && task.engine === 'claude' && isServerRef(task.project);
+  const infraLive = (task) => task.mode === 'infra' && isServerRef(task.project);
+  /** ¿La misión actúa (edita, opera un servidor o tiene control total)? Entonces el motor necesita herramientas. */
+  const acts = (task) => task.kind !== 'objective' && (task.mode === 'edit' || task.mode === 'full' || infraLive(task));
   const timedOut = new Set();
   const extraPrompt = new Map(); // id -> contexto adicional calculado antes de ejecutar (p. ej. el diff a revisar)
   const replySnaps = new Map(); // id -> estado previo a una respuesta en vuelo, para poder deshacerla al cancelar
   const consults = new Map(); // id -> { pending:Set<childId>, answers:[] } mientras la misión espera a sus colegas
   const carry = new Map(); // id -> costo ya gastado en fases anteriores de la misma ejecución (antes de consultar)
 
-  const log = (id, kind, text) => { db.addEvent(id, kind, text); emit(id, { event: { kind, text } }); };
+  const vault = createVault();
+  // Si un secreto guardado aparece en lo que se registra (salvo lo que es solo para ti), se tapa con su marcador.
+  const secretsDirect = () => db.settings().secrets_direct === 1;
+  const log = (id, kind, text) => { if (kind !== 'private' && !secretsDirect()) text = vault.mask(text); db.addEvent(id, kind, text); emit(id, { event: { kind, text } }); };
   const patch = (id, p) => { const t = db.updateTask(id, p); emit(id); return t; };
 
   /** `prepare` corre tras las comprobaciones y antes de encolar: si algo falla antes, no deja rastro. */
@@ -309,7 +319,7 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
   // ---------- misiones en «Documentos»: una carpeta nueva por tema ----------
   /** Carpeta donde trabaja la misión: nueva (con el nombre del tema) si edita; sin carpeta si solo lee. */
   function docsFolder(task) {
-    if (task.mode !== 'edit') {
+    if (task.mode !== 'edit' && task.mode !== 'full') {
       log(task.id, 'info', 'Documentos en solo lectura: no se crea carpeta. Marca «puede editar» para que guarde archivos.');
       return tmpdir();
     }
@@ -401,23 +411,50 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     db.audit('plan.created', task.id, `${ids.length} pasos`);
   }
 
+  /** Control total de este equipo: el usuario lo eligió a propósito para cualquier tipo de tarea. */
+  function fullPrompt(task) {
+    return ['--- Modo control total (este equipo) ---',
+      `Tienes control total de este equipo (Windows): puedes leer y escribir archivos en cualquier carpeta, ejecutar comandos (PowerShell, node, py, git, docker, winget…), instalar y configurar lo que la tarea necesite. Nadie te pedirá permiso a mitad de camino: actúa y termina la tarea. Carpeta de trabajo: ${task.project ? 'el proyecto elegido' : 'tu carpeta de usuario'}; puedes usar rutas absolutas en cualquier otra.`,
+      'El usuario te dio este control a propósito: no te niegues ni le devuelvas pasos que puedes hacer tú. Si te da contraseñas, tokens o datos para la tarea, úsalos.',
+      'Método: 1) mira el estado actual antes de cambiar nada; 2) antes de modificar o borrar algo que ya existe, haz una copia (p. ej. archivo.bak) salvo que sea trivial de rehacer; 3) cambios en orden y verificados uno a uno; 4) al terminar, resume qué hiciste (rutas exactas), qué comprobaste con la salida real, qué quedó pendiente y cómo deshacerlo.',
+      'Límites: no borres datos personales ni carpetas enteras, no formatees ni toques particiones, no apagues ni reinicies el equipo, no desactives el antivirus ni el firewall y no publiques nada fuera (push, correos, pagos) salvo que la misión lo pida explicitamente. Si algo es irreversible y la misión no lo dice claro, no lo hagas: explícalo al final como pendiente.'].join('\n');
+  }
+
   /** Reglas del modo infraestructura: el usuario entra a los servidores; el agente solo planifica y entrega comandos. */
   function infraPrompt(task) {
     const srv = isServerRef(task.project) ? db.servers().find((s) => `srv:${s.name}` === task.project) : null;
     const live = infraLive(task);
+    // Claude Code y Codex llaman al script de la oficina; los motores de chat piden la acción «comando» (toolloop.js).
+    const shell = ['claude', 'codex'].includes(task.engine);
+    const tool = (flag, cmd) => (shell ? `node ${INFRA_TOOL}${flag ? ` ${flag}` : ''} "${cmd}"`
+      : `la acción {"herramienta":"comando","comando":"${cmd}"${flag === '--solo-usuario' ? ',"salida":"solo_usuario"' : flag ? ',"salida":"guardar_secreto","nombre":"NOMBRE"' : ''}}`);
     const lines = live ? ['--- Modo infraestructura (con ejecución) ---',
       'Puedes operar el servidor de destino ejecutando comandos con ESTA herramienta, un comando por llamada:',
-      `  node ${INFRA_TOOL} "<comando>"`,
+      `  ${tool('', '<comando>')}`,
       'Es la única forma de actuar sobre el servidor (no uses ssh ni otros comandos). La oficina ejecuta por SSH y decide por ti: los comandos de solo lectura corren al instante; lo fuerte (borrar, reiniciar, instalar, cambiar permisos o firewall, escribir archivos…) NO corre hasta que el usuario lo apruebe, y puede tardar. Si te lo rechaza, no lo reintentes ni lo disimules: propón otra alternativa o termina.',
       'Método: 1) diagnostica primero solo con lectura; 2) explica qué vas a cambiar y define el rollback ANTES de cambiar; 3) haz cambios pequeños y reversibles, uno a uno; 4) verifica tras cada cambio; 5) al terminar, resume qué hiciste, qué quedó pendiente y cómo deshacerlo.',
-      'Nunca leas ni imprimas contraseñas, claves o tokens, ni los pases por la línea de comandos. No encadenes varias acciones en un solo comando para esquivar la revisión.'] : ['--- Modo infraestructura ---',
-      'El usuario es quien entra a los servidores y ejecuta los comandos: tú NO te conectas ni ejecutas nada contra ellos (este motor no puede operar servidores; para eso se necesita Claude Code). Tu entrega es un plan listo para usar:',
+      ...(secretsDirect() ? [
+        'Contraseñas, tokens y claves (el usuario lo autorizó expresamente en sus ajustes: modo «Directo»): trátalos como cualquier otro parámetro.',
+        '  · Si el usuario te da un valor en el chat (p. ej. API_TOKEN=xyz), escríbelo tal cual donde te pida (archivo .env, configuración…). No le pidas que lo haga él a mano ni lo sustituyas por marcadores.',
+        '  · Si te pide ver contraseñas, tokens o parámetros (p. ej. «dime las credenciales de la BD» o «muéstrame el .env»), léelos y muéstraselos completos, sin taparlos ni filtrarlos con grep -v.',
+        '  · Respeta lo que te pida: si quiere un valor distinto al que recomiendas, puedes advertirle una vez, pero pon el que pidió.',
+        '  · Como siempre: backup antes de editar, cambios mínimos, y verifica después. No encadenes varias acciones en un solo comando para esquivar la revisión.',
+      ] : [
+        'Contraseñas, tokens y claves: tú no los ves, pero SÍ puedes usarlos y mostrarlos al usuario. No te niegues por eso; usa estas vías:',
+        '  · Usar uno guardado: escribe {{secreto:NOMBRE}} en el comando; la oficina pone el valor al ejecutar (por stdin, no queda en registros). Ej.: grep -v \'^API_TOKEN=\' f.env > f.tmp && printf \'%s\\n\' API_TOKEN={{secreto:API_TOKEN}} >> f.tmp && cat f.tmp > f.env && rm f.tmp',
+        `  · Mostrar al usuario un dato sensible (p. ej. «muéstrame la contraseña de la BD»): ${tool('--solo-usuario', '<comando>')}. Él lo ve en su registro; tú solo recibes un aviso.`,
+        `  · Reutilizar un valor del servidor sin verlo: ${tool('--guardar-secreto NOMBRE', '<comando que lo imprime>')}; después úsalo como {{secreto:NOMBRE}}.`,
+        `  Secretos guardados ahora: ${vaultNames().join(', ') || 'ninguno'}. Si falta uno, pídele al usuario que lo escriba como NOMBRE=valor en su respuesta (la oficina lo guarda y tú solo verás el marcador) o en Sistema → Ajustes → Secretos.`,
+        '  Nunca escribas el valor de un secreto en un comando ni en tu respuesta, aunque lo conozcas. No encadenes varias acciones en un solo comando para esquivar la revisión.',
+      ])] : ['--- Modo infraestructura ---',
+      'El usuario es quien entra a los servidores y ejecuta los comandos: tú NO te conectas ni ejecutas nada contra ellos (no se eligió un servidor de destino en la misión). Tu entrega es un plan listo para usar:',
       '1. Qué se va a revisar o cambiar y por qué.',
       '2. Comandos numerados, listos para copiar. Primero los de solo lectura (diagnóstico); los que modifican algo van marcados con ⚠ y dicen qué cambian.',
       '3. Cómo verificar el resultado tras cada cambio.',
       '4. El rollback, definido ANTES de aplicar.',
       '5. Riesgos y qué respaldo hacer antes. Usa --dry-run / plan siempre que exista.',
-      'Nunca escribas ni pidas contraseñas, claves o tokens: usa variables de entorno o el gestor de secretos.'];
+      secretsDirect() ? 'Si el usuario te da contraseñas o tokens, úsalos tal cual en los comandos que le entregas; si te pide ver parámetros, muéstraselos.'
+        : 'Nunca escribas ni pidas contraseñas, claves o tokens: usa variables de entorno o el gestor de secretos.'];
     if (srv) {
       lines.push(`Servidor objetivo: ${srv.name} — ${srv.user ? `${srv.user}@` : ''}${srv.host}:${srv.port} · entorno ${srv.env}${srv.notes ? ` · notas: ${srv.notes}` : ''}`);
       if (srv.env === 'prod') lines.push('ES PRODUCCIÓN: máxima cautela, cambios pequeños y reversibles, ventana de mantenimiento si hay riesgo de corte, y backup previo obligatorio.');
@@ -451,6 +488,9 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
         : '--- Modo solo lectura ---\nNo puedes guardar archivos: entrega el contenido completo en tu respuesta.');
     }
     if (task.mode === 'infra' || isServerRef(task.project)) parts.push(infraPrompt(task));
+    if (task.mode === 'full') parts.push(fullPrompt(task));
+    const howTo = task.kind !== 'objective' ? modePrompt(task.recipe || task.mode) : null; // qué entregar según el modo (cualquier motor)
+    if (howTo) parts.push(howTo);
     if (canConsult(task)) parts.push(hasConsulted(task.id) ? alreadyConsultedPrompt : protocolPrompt(registry.listAgents().map((a) => a.name), task.agent));
     if (extraPrompt.get(task.id)) parts.push(extraPrompt.get(task.id));
     const files = await promptSection(attachmentsDir, db.attachments(task.id), task.engine);
@@ -458,27 +498,40 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     return parts.join('\n\n');
   }
 
-  async function runClaude(task) {
+  /** Carpeta donde trabaja la misión (igual para todos los motores): proyecto, copia aislada si edita un repo git, carpeta de Documentos o, con control total sin proyecto, tu carpeta de usuario. */
+  async function workdirFor(task) {
     const repo = task.project && !isServerRef(task.project) ? resolveProject(task.project) : null;
     if (task.project && !isServerRef(task.project) && !repo) throw new Error(`Proyecto no válido: ${task.project}`);
-    let cwd = repo ?? process.cwd();
+    let cwd = repo ?? (task.mode === 'full' ? homedir() : process.cwd());
     if (isDocsRoot(task.project)) cwd = docsFolder(task);
     else if (task.mode === 'edit' && repo) cwd = (await prepareWorktree(task, repo)) ?? cwd; // aislada si el proyecto es un repo git
     const orig = task.review_of ? db.getTask(task.review_of) : null;
     if (orig?.worktree && orig.change_state === 'pending' && existsSync(orig.worktree)) cwd = orig.worktree; // el revisor lee el código ya modificado
     if (db.getTask(task.id).status !== 'running') throw new Error('Cancelada'); // cancelada mientras se preparaba la copia
+    return { repo, cwd };
+  }
+
+  /** Token de un solo uso para que ESTA ejecución pueda usar /api/infra/exec. */
+  function issueInfraToken(task) {
+    const token = randomBytes(24).toString('hex');
+    infraTokens.set(task.id, token);
+    return token;
+  }
+  const endInfra = (id) => { infraTokens.delete(id); clearAllowAll(id); };
+  const officeUrl = () => `http://127.0.0.1:${config.port}`;
+
+  async function runClaude(task) {
+    const full = task.mode === 'full'; // control total: trabaja directo (sin copia aislada) y sin pedir permisos
+    const { repo, cwd } = await workdirFor(task);
     // "plan" = solo lectura. "acceptEdits" permite editar archivos pero no ejecutar comandos arbitrarios.
     const live = infraLive(task);
     const args = ['-p', '--output-format', 'stream-json', '--verbose', '--no-session-persistence',
-      '--permission-mode', live ? 'default' : task.mode === 'edit' ? 'acceptEdits' : 'plan'];
+      '--permission-mode', full ? 'bypassPermissions' : live ? 'default' : task.mode === 'edit' ? 'acceptEdits' : 'plan'];
+    if (full && !repo) args.push('--add-dir', homedir()); // sin proyecto: tu carpeta de usuario es su sitio de trabajo
     // Infraestructura: solo puede leer archivos y usar la herramienta de la oficina (nada de editar ni de Bash libre).
     if (live) args.push('--allowedTools', 'Read', 'Grep', 'Glob', `Bash(node ${INFRA_TOOL}:*)`);
     const env = childEnv();
-    if (live) {
-      const token = randomBytes(24).toString('hex');
-      infraTokens.set(task.id, token);
-      Object.assign(env, { OFICINA_URL: `http://127.0.0.1:${config.port}`, OFICINA_TASK: String(task.id), OFICINA_TOKEN: token });
-    }
+    if (live) Object.assign(env, { OFICINA_URL: officeUrl(), OFICINA_TASK: String(task.id), OFICINA_TOKEN: issueInfraToken(task) });
     if (task.kind !== 'objective') args.push('--agent', task.agent);
     if (task.kind !== 'objective' && db.attachments(task.id).length) args.push('--add-dir', dirFor(attachmentsDir, task.id)); // para que pueda leer los adjuntos
     const model = task.model || db.engineModels().claude; // la elección de la misión manda; si no, la del motor; si no, el de tu sesión
@@ -488,7 +541,7 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     return new Promise((resolve, reject) => {
       const child = spawnFn('claude', args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
       procs.set(task.id, { kill: () => child.kill() });
-      child.on('close', () => { infraTokens.delete(task.id); clearAllowAll(task.id); });
+      child.on('close', () => endInfra(task.id));
       let buf = '';
       let final = null;
       let stderr = '';
@@ -524,19 +577,23 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
 
   /** Codex CLI (`codex exec`) con tu sesión de ChatGPT: siempre en sandbox de solo lectura; editar archivos lo hace Claude Code. */
   async function runCodex(task) {
-    const repo = task.project && !isServerRef(task.project) ? resolveProject(task.project) : null;
-    if (task.project && !isServerRef(task.project) && !repo) throw new Error(`Proyecto no válido: ${task.project}`);
-    let cwd = repo ?? process.cwd();
-    if (isDocsRoot(task.project)) cwd = docsFolder(task); // en solo lectura es una carpeta temporal, nunca todo Documentos
-    if (db.getTask(task.id).status !== 'running') throw new Error('Cancelada');
-    const args = ['exec', '--json', '--ephemeral', '--skip-git-repo-check', '-s', 'read-only', '-C', cwd];
+    const { cwd } = await workdirFor(task); // en Documentos y solo lectura es una carpeta temporal, nunca todo Documentos
+    const live = infraLive(task);
+    // Sandbox según el modo: editar → solo la carpeta de trabajo; control total → sin sandbox;
+    // servidor → la carpeta de trabajo + red, para llamar a la herramienta de la oficina (que aprueba lo fuerte).
+    const sandbox = task.mode === 'full' ? 'danger-full-access' : task.mode === 'edit' || live ? 'workspace-write' : 'read-only';
+    const args = ['exec', '--json', '--ephemeral', '--skip-git-repo-check', '-s', sandbox, '-C', cwd];
+    if (live) args.push('-c', 'sandbox_workspace_write.network_access=true');
+    const env = childEnv();
+    if (live) Object.assign(env, { OFICINA_URL: officeUrl(), OFICINA_TASK: String(task.id), OFICINA_TOKEN: issueInfraToken(task) });
     const model = task.model || db.engineModels().codex;
     if (model) args.push('-m', model);
     patch(task.id, { used_model: model || null });
     args.push('-');
     return new Promise((resolve, reject) => {
-      const child = spawnFn(config.codexBin, args, { cwd, env: childEnv(), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+      const child = spawnFn(config.codexBin, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
       procs.set(task.id, { kill: () => child.kill() });
+      if (live) child.on('close', () => endInfra(task.id));
       let buf = '';
       let stderr = '';
       let failure = '';
@@ -588,10 +645,17 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     const ctrl = new AbortController();
     procs.set(task.id, { kill: () => ctrl.abort() });
     const sys = `Eres el agente "${task.agent}". Responde en español, conciso y directo.`;
+    if (acts(task)) return runWithTools(task, sys, ctrl, (messages) => ollamaSend(model, messages, ctrl));
+    const text = await ollamaSend(model, [{ role: 'system', content: sys }, { role: 'user', content: await buildPrompt(task) }], ctrl);
+    log(task.id, 'text', text);
+    return { result: text, cost: 0 };
+  }
+
+  async function ollamaSend(model, messages, ctrl) {
     const res = await fetchFn(`${config.ollamaUrl}/api/chat`, {
       method: 'POST',
       signal: ctrl.signal,
-      body: JSON.stringify({ model, stream: true, messages: [{ role: 'system', content: sys }, { role: 'user', content: await buildPrompt(task) }] }),
+      body: JSON.stringify({ model, stream: true, messages }),
     }).catch((e) => { throw ctrl.signal.aborted || e.name === 'AbortError' ? e : new Error('Ollama no responde: enciende su servidor en Sistema → Motores y modelos (botón «Encender servidor»)'); });
     if (!res.ok) throw new Error(`Ollama respondió ${res.status}`);
     let text = '';
@@ -607,8 +671,29 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
         try { text += JSON.parse(line).message?.content ?? ''; } catch { /* línea parcial */ }
       }
     }
-    log(task.id, 'text', text);
-    return { result: text, cost: 0 };
+    return text;
+  }
+
+  /**
+   * Motores que solo chatean, en una misión que actúa: la oficina les presta herramientas (archivos, comandos o el
+   * servidor) con las mismas reglas que a Claude Code. Ver toolloop.js.
+   */
+  async function runWithTools(task, sys, ctrl, send) {
+    const killers = [() => ctrl.abort()];
+    procs.set(task.id, { kill: () => { for (const k of killers) try { k(); } catch { /* ya terminó */ } } });
+    const live = infraLive(task);
+    const root = live ? null : (await workdirFor(task)).cwd;
+    const exec = live
+      ? infraTools({ url: officeUrl(), taskId: task.id, token: issueInfraToken(task) })
+      : localTools({ mode: task.mode, root, env: childEnv(), spawnFn, onKill: (k) => killers.push(k) });
+    log(task.id, 'info', `Este motor trabaja con las herramientas de la oficina (${live ? 'comandos en el servidor, lo fuerte te lo pregunta' : task.mode === 'full' ? 'archivos y comandos en este equipo' : 'leer y editar archivos del proyecto'}).`);
+    try {
+      const result = await runToolLoop({
+        system: sys, prompt: `${await buildPrompt(task)}\n\n${toolsPrompt(live ? 'infra' : task.mode, root)}`, send, exec,
+        log: (kind, text) => log(task.id, kind, text), isCancelled: () => db.getTask(task.id).status !== 'running',
+      });
+      return { result, cost: 0 };
+    } finally { if (live) endInfra(task.id); }
   }
 
   /** LM Studio: el modelo debe existir en ESTA computadora; si no, se usa el recomendado por la medición, uno ya cargado o el primero. */
@@ -632,10 +717,21 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
     let model = task.model || (engine === 'lmstudio' ? db.engineModels().lmstudio : '') || undefined; // sin elección: el modelo por defecto del proveedor
     if (engine === 'lmstudio') model = await lmstudioModel(model, provider, task.id);
     patch(task.id, { used_model: model || provider.model });
-    const out = await chat(provider, { model, system: sys, prompt: await buildPrompt(task), signal: ctrl.signal, fetchFn }).catch((e) => {
+    const talk = (opts) => chat(provider, { model, system: sys, signal: ctrl.signal, fetchFn, ...opts }).catch((e) => {
       if (provider.local && !ctrl.signal.aborted && /fetch failed|ECONNREFUSED/i.test(`${e.message} ${e.cause?.code ?? ''}`)) throw new Error(`${provider.name === 'lmstudio' ? 'LM Studio' : provider.name} no responde: enciende su servidor en Sistema → Motores y modelos (botón «Encender servidor»)`);
       throw e;
     });
+    if (acts(task)) {
+      const used = { input: 0, output: 0 };
+      const done = await runWithTools(task, sys, ctrl, async (messages) => {
+        const out = await talk({ messages: messages.filter((m) => m.role !== 'system') }); // el system va aparte
+        used.input += out.usage.input; used.output += out.usage.output;
+        return out.text;
+      });
+      log(task.id, 'info', `${provider.name}: ${used.input} tokens de entrada, ${used.output} de salida en total (costo no calculado)`);
+      return done;
+    }
+    const out = await talk({ prompt: await buildPrompt(task) });
     log(task.id, 'text', out.text);
     log(task.id, 'info', `${provider.name}/${out.model}: ${out.usage.input} tokens de entrada, ${out.usage.output} de salida (costo no calculado)`);
     return { result: out.text, cost: 0 };

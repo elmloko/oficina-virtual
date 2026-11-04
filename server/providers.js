@@ -65,15 +65,16 @@ async function* sseData(body) {
  * Pregunta al modelo y devuelve { text, usage }. `onText` recibe el texto a medida que llega.
  * Los errores no incluyen la clave ni cabeceras.
  */
-export async function chat(provider, { model, system, prompt, signal, fetchFn = fetch, onText }) {
+export async function chat(provider, { model, system, prompt, messages = null, signal, fetchFn = fetch, onText }) {
   const m = model || provider.model;
   const anthropic = provider.kind === 'anthropic';
   const url = anthropic ? `${provider.baseUrl}/v1/messages` : `${provider.baseUrl}/chat/completions`;
   const headers = { 'Content-Type': 'application/json' };
   if (anthropic) { headers['x-api-key'] = provider.key; headers['anthropic-version'] = '2023-06-01'; } else if (provider.key) headers.Authorization = `Bearer ${provider.key}`;
+  const turns = messages ?? [{ role: 'user', content: prompt }]; // varios turnos: bucle de herramientas
   const body = anthropic
-    ? { model: m, max_tokens: 4096, stream: true, system, messages: [{ role: 'user', content: prompt }] }
-    : { model: m, stream: true, stream_options: { include_usage: true }, messages: [{ role: 'system', content: system }, { role: 'user', content: prompt }] };
+    ? { model: m, max_tokens: 4096, stream: true, system, messages: turns }
+    : { model: m, stream: true, stream_options: { include_usage: true }, messages: [{ role: 'system', content: system }, ...turns] };
 
   const res = await fetchFn(url, { method: 'POST', headers, body: JSON.stringify(body), signal });
   if (!res.ok) {

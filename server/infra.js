@@ -121,7 +121,7 @@ const shellQuote = (t) => (/^[\w@%+=:,./-]+$/.test(t) ? t : `'${t.replace(/'/g, 
 const DOCKER_EXEC_ARG_OPTS = new Set(['-e', '--env', '-u', '--user', '-w', '--workdir', '--env-file', '--detach-keys']);
 
 /** Clasifica un comando completo (con pipes, && y ;). La categoría es la del peor de sus tramos. */
-export function classify(command) {
+export function classify(command, { ignoreSecrets = false } = {}) {
   const cmd = String(command ?? '').trim();
   const strong = (reason) => ({ tier: 'strong', reason, critical: DANGER.some((re) => re.test(cmd)) });
   if (!cmd) return strong('comando vacío');
@@ -129,7 +129,7 @@ export function classify(command) {
   if (/[\r\n]/.test(cmd)) return strong('varias líneas');
   if (/\$\(|`|<\(|>\(|<<|\$\{|\\\n/.test(cmd)) return strong('sustitución de comandos o heredoc');
   if (DANGER.some((re) => re.test(cmd))) return strong('acción destructiva o que afecta el servicio');
-  if (SECRETS.test(cmd)) return strong('puede exponer secretos (se enviarían al modelo)');
+  if (!ignoreSecrets && SECRETS.test(cmd)) return strong('puede exponer secretos (se enviarían al modelo)'); // con salida solo para ti, el modelo no la ve
   const { segs, redirect, openQuote } = scan(cmd);
   if (openQuote) return strong('comillas sin cerrar');
   if (redirect) return strong('escribe o lee archivos con redirección');
@@ -150,7 +150,7 @@ export function classify(command) {
       }
       const inner = tokens.slice(k + 1); // tokens[k] es el contenedor
       if (!inner.length) return strong('docker exec sin comando');
-      const r = classify(inner.map(shellQuote).join(' '));
+      const r = classify(inner.map(shellQuote).join(' '), { ignoreSecrets });
       if (r.tier === 'strong') return { ...r, reason: `dentro del contenedor: ${r.reason}` };
       tier = r.tier;
     } else {
@@ -173,7 +173,7 @@ const cap = (s) => (s.length > OUT_CAP ? `${s.slice(0, OUT_CAP)}\n…[salida cor
  * Ejecuta el comando por SSH con contraseña (cliente SSH incluido, sin tocar el ssh del sistema).
  * La primera vez fija la huella del servidor (`onPin`); si después cambia, se niega a conectar (posible suplantación).
  */
-export function runSsh2({ server, command, password, pinned = null, onPin, timeoutMs = SSH_TIMEOUT_MS, ClientCtor = Client }) {
+export function runSsh2({ server, command, stdin = null, password, pinned = null, onPin, timeoutMs = SSH_TIMEOUT_MS, ClientCtor = Client }) {
   return new Promise((resolve) => {
     const conn = new ClientCtor();
     let out = ''; let err = ''; let timedOut = false; let done = false; let mismatch = false;
@@ -185,6 +185,7 @@ export function runSsh2({ server, command, password, pinned = null, onPin, timeo
         stream.on('data', (d) => { if (out.length < OUT_CAP * 2) out += d; });
         stream.stderr.on('data', (d) => { if (err.length < OUT_CAP * 2) err += d; });
         stream.on('close', (code) => finish({ code: code ?? -1, stdout: cap(out), stderr: cap(err), timedOut }));
+        if (stdin != null) stream.end(stdin); // el guion con secretos viaja por stdin, no en la línea de comandos
       });
     });
     conn.on('keyboard-interactive', (_n, _i, _l, prompts, reply) => reply(prompts.map(() => password)));
@@ -207,12 +208,13 @@ export function runSsh2({ server, command, password, pinned = null, onPin, timeo
 }
 
 /** Ejecuta el comando por SSH con tus llaves (sin shell local, sin contraseñas). */
-export function runSsh({ server, command, spawnFn = spawn, sshBin = 'ssh', timeoutMs = SSH_TIMEOUT_MS }) {
+export function runSsh({ server, command, stdin = null, spawnFn = spawn, sshBin = 'ssh', timeoutMs = SSH_TIMEOUT_MS }) {
   const target = `${server.user ? `${server.user}@` : ''}${server.host}`;
   const args = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '-o', 'ServerAliveInterval=15', '-p', String(server.port || 22), '--', target, command];
   return new Promise((resolve) => {
     let out = ''; let err = ''; let timedOut = false; let done = false;
-    const child = spawnFn(sshBin, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    const child = spawnFn(sshBin, args, { stdio: [stdin != null ? 'pipe' : 'ignore', 'pipe', 'pipe'], windowsHide: true });
+    if (stdin != null) { child.stdin?.on('error', () => {}); child.stdin?.end(stdin); } // secretos por stdin: no aparecen en la línea de comandos
     const timer = setTimeout(() => { timedOut = true; child.kill(); }, timeoutMs);
     const finish = (r) => { if (done) return; done = true; clearTimeout(timer); resolve(r); };
     child.stdout.on('data', (d) => { if (out.length < OUT_CAP * 2) out += d; });

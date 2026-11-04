@@ -185,5 +185,14 @@ export function createDispatcher({ listAgents, agentsDir, ask = (p) => askClaude
     const fallback = best?.agent ?? (agents.find((a) => a.name === CATCH_ALL) ?? agents[0]).name;
     return { agent: fallback, via: 'respaldo', reason: best ? 'la mejor coincidencia local (no se pudo consultar a Claude)' : 'agente general (no se pudo consultar a Claude)' };
   }
-  return { choose };
+  /** Vista previa mientras escribes: solo palabras clave (instantáneo y sin gastar). sure=false → al crear lo decidirá Claude. */
+  function preview(task) {
+    const mode = task.mode === 'edit' ? 'edit' : 'read';
+    const agents = listAgents().filter((a) => mode !== 'edit' || canEdit(a));
+    const [best, second] = rank(task, agents);
+    if (!best) return { agent: null, sure: false };
+    const sure = best.score >= SEEN.confident && best.score - (second?.score ?? 0) >= SEEN.margin;
+    return { agent: best.agent, description: agents.find((a) => a.name === best.agent)?.description ?? '', sure };
+  }
+  return { choose, preview };
 }

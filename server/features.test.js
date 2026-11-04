@@ -302,6 +302,82 @@ test('API: ejecutar con edición exige confirmación explícita; infraestructura
   assert.equal(app.db.getTask(infra.id).mode, 'read');
 });
 
+test('modos que no cambian nada: valen con cualquier motor, se conservan y le dicen al agente qué entregar', async () => {
+  for (const mode of ['explain', 'review', 'write', 'ideas', 'summary', 'translate']) {
+    assert.deepEqual([route({ agent: 'backend', mode, engine: 'ollama' }).mode, route({ agent: 'backend', mode, engine: 'ollama' }).engine], [mode, 'ollama'], mode);
+    assert.equal(route({ agent: 'devops', mode, engine: 'auto' }).mode, mode, `${mode}: un agente de infraestructura no lo cambia`);
+  }
+  assert.equal(route({ agent: 'backend', mode: 'inventado' }).mode, 'read');
+  assert.equal((await call('POST', '/api/tasks', { title: 'x', agent: 'backend', mode: 'inventado' })).status, 400);
+  const t = (await call('POST', '/api/tasks', { title: 'Revisar el texto de bienvenida', agent: 'backend', mode: 'review' })).body;
+  const sin = await call('POST', `/api/tasks/${t.id}/run`, {});
+  assert.equal(sin.status, 202, 'no cambia nada: no pide confirmación');
+  const before = apiCalls.length;
+  await waitFor(() => apiCalls.length > before || app.db.getTask(t.id).status === 'review');
+  await waitFor(() => app.db.getTask(t.id).status === 'review');
+  const { args, input } = apiCalls.at(-1);
+  assert.equal(args[args.indexOf('--permission-mode') + 1], 'plan');
+  assert.match(input, /Revisar y dar feedback ---\nModo revisión/);
+  assert.equal(app.db.getTask(t.id).mode, 'review');
+});
+
+test('modos de trabajo: se guardan con su permiso real, sugieren su agente y están en el formulario y en la exportación', async () => {
+  const { MODE_INFO } = await import('./modes.js');
+  const { MODE_ES } = await import('../public/exporter.js');
+  const { readFileSync } = await import('node:fs');
+  const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+  for (const [key, m] of Object.entries(MODE_INFO)) {
+    assert.ok(html.includes(`<option value="${key}"`), `${key}: falta en el formulario`);
+    assert.ok(MODE_ES[key], `${key}: falta su nombre en MODE_ES`);
+    if (m.level !== 'read' && m.level !== key) assert.ok(html.includes(`<option value="${key}" data-level="${m.level}"`), `${key}: data-level`);
+  }
+  // Una receta que edita: se guarda como mode=edit + recipe=fix, pide confirmación y le da sus instrucciones al agente
+  const t = (await call('POST', '/api/tasks', { title: 'Falla el login', agent: 'backend', project: 'proj', mode: 'fix' })).body;
+  assert.deepEqual([t.mode, t.recipe], ['edit', 'fix']);
+  assert.equal((await call('POST', `/api/tasks/${t.id}/run`, {})).status, 409);
+  const before = apiCalls.length;
+  assert.equal((await call('POST', `/api/tasks/${t.id}/run`, { confirm: true })).status, 202);
+  await waitFor(() => apiCalls.length > before);
+  await waitFor(() => app.db.getTask(t.id).status === 'review');
+  const { args, input } = apiCalls.at(-1);
+  assert.equal(args[args.indexOf('--permission-mode') + 1], 'acceptEdits');
+  assert.match(input, /Arreglar un error en el proyecto ---\nModo arreglo/);
+  // Cambiar a un modo base borra la receta
+  const p = await call('PATCH', `/api/tasks/${t.id}`, { mode: 'review' });
+  assert.deepEqual([p.body.mode, p.body.recipe], ['review', null]);
+  // Automático: el modo sugiere su agente si existe (tests → tester)
+  const auto = await call('POST', '/api/tasks', { title: 'Cubrir el carrito', agent: 'auto', project: 'proj', mode: 'tests' });
+  assert.equal(auto.body.agent, 'tester', JSON.stringify(auto.body));
+  assert.match(auto.body.auto.reason, /lo sugiere el modo/);
+  assert.deepEqual((await call('POST', '/api/dispatch/preview', { title: 'x', mode: 'srv_pull' })).body.agent, 'devops');
+  // Un modo de servidor sin servidor (con Claude) avisa igual que «Operar un servidor»
+  assert.equal((await call('POST', '/api/tasks', { title: 'x', agent: 'devops', mode: 'srv_pull' })).status, 400);
+});
+
+test('API: Control total — sin proyecto, con Claude Code sin pedir permisos, confirmación obligatoria y límites claros', async () => {
+  const bad = async (body, re) => { const r = await call('POST', '/api/tasks', { title: 'x', agent: 'backend', mode: 'full', ...body }); assert.equal(r.status, 400); assert.match(r.body.error, re); };
+  await bad({ project: 'srv:nada' }, /Control total es para este equipo/);
+  const t =(await call('POST', '/api/tasks', { title: 'Organizar mis descargas', agent: 'devops', mode: 'full' })).body; // sin proyecto y con un agente de infraestructura
+  assert.equal(t.mode, 'full');
+  const sin = await call('POST', `/api/tasks/${t.id}/run`, {});
+  assert.equal(sin.status, 409); assert.equal(sin.body.needsConfirm, true);
+  const before = apiCalls.length;
+  assert.equal((await call('POST', `/api/tasks/${t.id}/run`, { confirm: true })).status, 202);
+  await waitFor(() => apiCalls.length > before);
+  await waitFor(() => app.db.getTask(t.id).status === 'review');
+  const { args, input } = apiCalls[before];
+  assert.equal(args[args.indexOf('--permission-mode') + 1], 'bypassPermissions');
+  assert.equal(app.db.getTask(t.id).mode, 'full', 'devops no lo rebaja a solo lectura');
+  assert.equal(app.db.getTask(t.id).engine, 'claude');
+  assert.ok(args.includes('--add-dir'));
+  assert.match(input, /Modo control total/);
+  assert.match(input, /no formatees/);
+  assert.equal(route({ agent: 'backend', mode: 'full', engine: 'ollama' }).engine, 'ollama', 'cualquier motor puede tener control total');
+  assert.equal(route({ agent: 'backend', mode: 'full', engine: 'auto' }, ['claude']).engine, 'ollama');
+  assert.match(route({ agent: 'backend', mode: 'full', engine: 'auto' }, ['claude', 'ollama']).blocked, /Claude Code está desactivado/);
+  assert.equal(route({ agent: 'backend', mode: 'full', project: '@Descargas' }).mode, 'read', 'una carpeta extra sigue siendo de solo lectura');
+});
+
 test('API: flujo de objetivo → plan → lanzar → pasos en orden', async () => {
   const obj = (await call('POST', '/api/objectives', { title: 'Auditar el proyecto' })).body;
   assert.equal(obj.kind, 'objective');

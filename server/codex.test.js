@@ -33,9 +33,10 @@ function fakeCodex(lines, code = 0) {
   return { spawnFn, calls };
 }
 
-test('route: codex solo lee (editar va a Claude Code) y se puede apagar', () => {
+test('route: codex también edita y tiene control total, y se puede apagar', () => {
   assert.equal(route({ agent: 'docs', engine: 'codex' }).engine, 'codex');
-  assert.equal(route({ agent: 'docs', engine: 'codex', mode: 'edit' }).engine, 'claude');
+  assert.equal(route({ agent: 'docs', engine: 'codex', mode: 'edit' }).engine, 'codex');
+  assert.equal(route({ agent: 'docs', engine: 'codex', mode: 'full' }).engine, 'codex');
   assert.match(route({ agent: 'docs', engine: 'codex' }, ['codex']).blocked, /Codex está desactivado/);
   assert.equal(route({ agent: 'docs', engine: 'auto' }, ['codex']).blocked, null); // auto nunca elige Codex
 });
@@ -63,6 +64,24 @@ test('runner: la misión con Codex corre en sandbox de solo lectura y guarda su 
   assert.match(calls[0].prompt, /con codex/);
   const info = db.events(t.id).map((e) => e.text).join('\n');
   assert.match(info, /10 tokens de entrada/);
+});
+
+test('runner: Codex usa el sandbox que pide el modo (editar → su carpeta; control total → sin sandbox)', async () => {
+  const db = openDb(':memory:');
+  const { spawnFn, calls } = fakeCodex([{ type: 'item.completed', item: { type: 'agent_message', text: 'hecho' } }]);
+  const runner = createRunner(db, () => {}, { spawnFn, registry });
+  const sandboxOf = async (mode) => {
+    const t = db.createTask({ title: `codex ${mode}`, agent: 'docs', engine: 'codex', mode });
+    runner.enqueue(t.id);
+    await waitFor(() => db.getTask(t.id).status === 'review');
+    const a = calls.at(-1).args;
+    return [a[a.indexOf('-s') + 1], calls.at(-1).prompt];
+  };
+  assert.equal((await sandboxOf('edit'))[0], 'workspace-write');
+  const [full, prompt] = await sandboxOf('full');
+  assert.equal(full, 'danger-full-access');
+  assert.match(prompt, /Modo control total/);
+  assert.equal((await sandboxOf('read'))[0], 'read-only');
 });
 
 test('runner: un fallo de Codex deja la misión en «fallida» con su mensaje; apagado, ni arranca', async () => {

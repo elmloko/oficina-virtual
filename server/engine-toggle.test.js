@@ -10,7 +10,8 @@ test('route: el modo auto esquiva el motor apagado y bloquea si no hay alternati
   assert.equal(route({ agent: 'summarizer' }, ['ollama']).engine, 'claude'); // un agente ligero normalmente iría a Ollama
   assert.equal(route({ agent: 'backend' }, ['claude']).engine, 'ollama'); // solo lectura: Ollama puede
   assert.equal(route({ agent: 'backend' }, ['claude']).blocked, null);
-  assert.match(route({ agent: 'backend', mode: 'edit' }, ['claude']).blocked, /Claude Code está desactivado.*editar/);
+  assert.equal(route({ agent: 'backend', mode: 'edit' }, ['claude']).engine, 'ollama'); // editar ya no exige Claude Code
+  assert.match(route({ agent: 'backend', mode: 'edit' }, ['claude', 'ollama']).blocked, /Claude Code está desactivado/);
   assert.match(route({ agent: 'backend' }, ['claude', 'ollama']).blocked, /Claude Code está desactivado/);
   assert.match(route({ agent: 'x', engine: 'ollama' }, ['ollama']).blocked, /Ollama está desactivado/);
   assert.equal(route({ agent: 'backend' }).blocked, null);

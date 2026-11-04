@@ -10,6 +10,9 @@ export const DEFAULT_SETTINGS = {
   task_budget_usd: 2, // tope por tarea (--max-budget-usd)
   task_timeout_min: 20,
   collab: 1, // 1 = los agentes pueden pedirse ayuda entre sí (cada consulta es una misión de solo lectura que gasta)
+  // 1 = Directo: los agentes leen, escriben y te muestran contraseñas/tokens como cualquier texto (llegan al modelo y al registro).
+  // 0 = Protegido: van a la bóveda y el agente los usa sin verlos ({{secreto:NOMBRE}}).
+  secrets_direct: 1,
   max_claude: config.maxClaude, // concurrencia por motor (editable desde la web)
   max_ollama: config.maxOllama,
   max_api: config.maxApi,
@@ -19,7 +22,7 @@ export const DEFAULT_SETTINGS = {
 const LIMIT_KEYS = new Set(['max_claude', 'max_ollama', 'max_api', 'max_codex', 'max_lmstudio']);
 
 const TASK_COLUMNS = ['title', 'description', 'project', 'agent', 'engine', 'mode', 'status', 'result', 'error',
-  'cost_usd', 'started_at', 'finished_at', 'parent_id', 'depends_on', 'kind', 'schedule_id', 'model', 'reply_text', 'branch', 'worktree', 'base_sha', 'change_state', 'chain_fired', 'workdir', 'used_model', 'allow_all'];
+  'cost_usd', 'started_at', 'finished_at', 'parent_id', 'depends_on', 'kind', 'schedule_id', 'model', 'reply_text', 'branch', 'worktree', 'base_sha', 'change_state', 'chain_fired', 'workdir', 'used_model', 'allow_all', 'recipe'];
 
 function addColumnIfMissing(db, table, column, ddl) {
   const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
@@ -126,6 +129,7 @@ export function openDb(file = config.dbFile) {
   addColumnIfMissing(db, 'tasks', 'workdir', 'TEXT'); // carpeta nueva creada en Documentos para esta misión
   addColumnIfMissing(db, 'tasks', 'allow_all', 'INTEGER NOT NULL DEFAULT 0'); // «Permitir todo»: el agente ya no te pregunta en esta misión
   addColumnIfMissing(db, 'tasks', 'consult_of', 'INTEGER'); // misión creada porque la #consult_of pidió ayuda a este agente
+  addColumnIfMissing(db, 'tasks', 'recipe', 'TEXT'); // modo de trabajo que actúa (fix, laravel, srv_pull…): «mode» guarda su permiso
   addColumnIfMissing(db, 'tasks', 'reply_text', 'TEXT'); // respuesta del usuario en vuelo (o cancelada, lista para editar)
 
   db.exec("UPDATE approvals SET status='expired', decided_at=datetime('now') WHERE status='pending'"); // al reiniciar nadie sigue esperando
@@ -176,11 +180,11 @@ export function openDb(file = config.dbFile) {
   return {
     raw: db,
     createTask(t) {
-      const row = db.prepare(`INSERT INTO tasks (title, description, project, agent, engine, mode, parent_id, depends_on, kind, schedule_id, model, chain, review_of, consult_of)
-                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`)
+      const row = db.prepare(`INSERT INTO tasks (title, description, project, agent, engine, mode, parent_id, depends_on, kind, schedule_id, model, chain, review_of, consult_of, recipe)
+                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`)
         .get(t.title, t.description ?? '', t.project ?? null, t.agent, t.engine ?? 'auto', t.mode ?? 'read',
           t.parent_id ?? null, JSON.stringify(t.depends_on ?? []), t.kind ?? 'task', t.schedule_id ?? null, t.model ?? null,
-          JSON.stringify(t.chain ?? []), t.review_of ?? null, t.consult_of ?? null);
+          JSON.stringify(t.chain ?? []), t.review_of ?? null, t.consult_of ?? null, t.recipe ?? null);
       return parseTask(row);
     },
     /** Permisos que pide el agente en modo infraestructura (comandos fuertes). */
@@ -207,6 +211,16 @@ export function openDb(file = config.dbFile) {
     /** Lo que escribiste a los agentes (de todas las misiones), el más reciente primero y sin repetidos: para recuperarlo con ↑. */
     userHistory: (limit = 100) => q.userHistory.all(limit).map((r) => r.text),
     deleteEvent: (id) => q.delEvent.run(id).changes > 0,
+    /** Borra un secreto de todo lo guardado (registro, misiones, mensajes, auditoría, aprobaciones): queda su marcador. */
+    scrubSecret(value, replacement) {
+      if (typeof value !== 'string' || value.length < 4) return 0;
+      let n = 0;
+      const cols = { events: ['text'], tasks: ['title', 'description', 'result', 'error', ...(TASK_COLUMNS.includes('reply_text') ? ['reply_text'] : [])], messages: ['text'], audit: ['detail'], approvals: ['command'] };
+      for (const [table, list] of Object.entries(cols)) {
+        for (const c of list) n += db.prepare(`UPDATE ${table} SET ${c} = replace(${c}, ?, ?) WHERE instr(${c}, ?) > 0`).run(value, replacement, value).changes;
+      }
+      return n;
+    },
     addEvent: (id, kind, text) => q.addEvent.get(id, kind, String(text).slice(0, 20000)),
     /** Actualiza solo columnas conocidas; evita SQL dinámico con claves externas. */
     updateTask(id, patch) {
@@ -254,6 +268,7 @@ export function openDb(file = config.dbFile) {
         const n = Number(v);
         if (!Number.isFinite(n) || n < 0) throw new Error(`Valor inválido para ${k}`);
         if (LIMIT_KEYS.has(k) && !(Number.isInteger(n) && n >= 1 && n <= 16)) throw new Error(`${k} debe ser un entero entre 1 y 16`);
+        if (k === 'secrets_direct' && n !== 0 && n !== 1) throw new Error('secrets_direct debe ser 0 o 1');
         if (k === 'task_timeout_min' && n <= 0) throw new Error('El tiempo máximo por tarea debe ser mayor que 0'); // 0 mataría cada misión al empezar
         q.setSetting.run(k, String(n));
       }

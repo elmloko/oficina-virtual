@@ -124,6 +124,14 @@
         </div>
         <div id="ag-preview"></div>
         <div id="ag-list"></div></article>
+      <article class="card-sys wide" id="card-vault" data-g="ajustes"><h2>🔑 Secretos</h2>
+        <p class="hint">Tokens y contraseñas que los agentes pueden <b>usar sin verlos</b>: escriben <code>{{secreto:NOMBRE}}</code> en sus comandos y la oficina pone el valor al ejecutar (no queda en registros ni llega al modelo). Se guardan solo en este equipo (<code>.env</code>). Atajo: si en una respuesta escribes <code>NOMBRE_TOKEN=valor</code> (o PASSWORD, SECRET, API_KEY…), se guarda aquí solo.</p>
+        <form id="vault-form" class="vault-form" autocomplete="off">
+          <input id="vault-name" placeholder="NOMBRE (p. ej. SITRA_IPS_TOKEN)" aria-label="Nombre del secreto" pattern="[A-Z][A-Z0-9_]{1,47}" required>
+          <input id="vault-value" type="password" placeholder="valor" aria-label="Valor del secreto" autocomplete="new-password" required>
+          <button class="primary">Guardar</button>
+        </form>
+        <div id="vault-list"></div></article>
       <article class="card-sys" id="card-schedules" data-g="ajustes"><h2>Próximas rutinas <button type="button" class="mini-link" id="goto-routines">Gestionar →</button></h2><div id="sys-schedules"></div>
         <p class="hint">Las rutinas corren en modo solo lectura y solo mientras la oficina está encendida.</p></article>
       <article class="card-sys wide" id="card-servers" data-g="ajustes"><h2>Servidores (modo infraestructura)</h2>
@@ -144,6 +152,8 @@
         <form id="settings-form" class="settings-form">
           <fieldset><legend>Seguridad</legend><p class="hint">Topes que frenan una misión; no cobran nada. 0 = sin tope.</p>
             <div class="set-row"><label>Tope diario (USD)<input name="daily_budget_usd" type="number" min="0" step="0.5"></label><label>Tope por tarea (USD)<input name="task_budget_usd" type="number" min="0" step="0.5"></label><label>Tiempo máximo por tarea (min)<input name="task_timeout_min" type="number" min="1" step="1"></label></div></fieldset>
+          <fieldset><legend>Contraseñas y tokens</legend><p class="hint"><b>Directo:</b> escribes el token en el chat y el agente lo pone tal cual; si le pides ver contraseñas o parámetros, te los muestra. El valor llega al modelo y queda en el registro. <b>Protegido:</b> se guardan en 🔑 Secretos y el agente los usa sin verlos.</p>
+            <div class="set-row"><label>Modo<select name="secrets_direct"><option value="1">Directo</option><option value="0">Protegido</option></select></label></div></fieldset>
           <fieldset><legend>Colaboración</legend><p class="hint">Permite que un agente pida ayuda a otros durante la misión.</p>
             <div class="set-row"><label>Entre agentes<select name="collab"><option value="1">Activada</option><option value="0">Apagada</option></select></label></div></fieldset>
           <fieldset><legend>Misiones a la vez por motor</legend><p class="hint">Las demás esperan en la cola. En un equipo sin GPU, los modelos locales rinden mejor de uno en uno.</p>
@@ -164,34 +174,70 @@
       <div class="modal-body">
         <label>Título <small class="muted">(solo un nombre para identificarla)</small> <input name="title" required maxlength="200" placeholder="Nombre corto. Ej.: Revisar contenedores del servidor" autocomplete="off"></label>
         <label>Instrucciones <small class="muted">(esto es lo que el agente hará)</small> <textarea name="description" rows="5" placeholder="Qué debe hacer exactamente: contexto, pasos, criterios de aceptación, archivos relevantes…"></textarea></label>
+        <input type="hidden" name="agent" value="auto">
+        <div id="who" class="who-box" aria-live="polite"></div>
         <div id="new-files" class="files-field"></div>
         <div class="grid2">
-          <label>Agente <select name="agent" required></select></label>
-          <label>Proyecto <select name="project"><option value="">(sin proyecto)</option></select></label>
-        </div>
-        <div class="grid2">
-          <label>Motor
-            <select name="engine"></select>
-          </label>
-          <label>Modo
+          <label>¿Dónde? <select name="project"><option value="">(sin proyecto)</option></select></label>
+          <label>¿Qué puede hacer?
             <select name="mode">
-              <option value="read">Solo lectura / plan</option>
-              <option value="edit">Puede editar archivos</option>
-              <option value="infra">Infraestructura — opera el servidor (lo fuerte te lo pregunta)</option>
+              <optgroup label="No cambian nada · con cualquier motor">
+                <option value="read" data-desc="Diagnóstico con evidencia, plan numerado, riesgos y una recomendación final.">Analizar y proponer un plan</option>
+                <option value="explain" data-desc="Respuesta corta primero y luego la explicación paso a paso, con ejemplos (y archivo:línea si hay código).">Investigar y explicar</option>
+                <option value="review" data-desc="Hallazgos por gravedad (🔴 🟠 🟡) con dónde, por qué y cómo arreglarlo, y un veredicto final.">Revisar y dar feedback</option>
+                <option value="write" data-desc="El texto final listo para copiar: correo, informe, documento, mensaje o publicación.">Redactar un texto</option>
+                <option value="ideas" data-desc="De 5 a 10 opciones distintas con ventajas, desventajas y esfuerzo, y cuál recomienda.">Lluvia de ideas</option>
+                <option value="summary" data-desc="Idea principal, puntos clave, cifras y pendientes del material (texto, adjuntos o archivos).">Resumir</option>
+                <option value="translate" data-desc="Traducción fiel conservando formato, tono y términos técnicos.">Traducir</option>
+                <option value="debug_plan" data-desc="Causa más probable, cómo confirmarla con comandos exactos, el arreglo y cómo verificarlo. Tú decides si lo aplicas.">Diagnosticar un error (te digo qué hacer)</option>
+                <option value="sql" data-desc="Consulta o cambio de esquema listo para ejecutar, explicado; lo que borra va marcado ⚠ con un SELECT previo. Con versión Eloquent si es Laravel.">Base de datos y consultas SQL</option>
+                <option value="diplomado" data-desc="Conceptos con intuición, solución en Python comentada (se corre con py), salida esperada y errores típicos.">Ejercicio o clase de Python / IA</option>
+                <option value="excel_help" data-desc="Fórmulas (español con «;» e inglés), macros VBA completas o los pasos de la tabla dinámica, listos para pegar.">Fórmulas, macros y tablas de Excel</option>
+                <option value="compare" data-desc="Tabla comparativa (RAM, disco, costo, sin internet, calidad…) y una recomendación concreta para tu equipo.">Comparar opciones y recomendar</option>
+                <option value="docs" data-desc="README, manual o guía en Markdown, listo para guardar, basado solo en lo que ve.">Documentar (README, manual o guía)</option>
+              </optgroup>
+              <optgroup label="Editan el proyecto · con cualquier motor">
+                <option value="edit" data-level="edit" data-desc="Cambia los archivos del proyecto (en una copia aislada si es un repositorio git), prueba y te resume qué cambió.">Editar archivos del proyecto</option>
+                <option value="fix" data-level="edit" data-desc="Reproduce el error, busca la causa raíz, corrige con el cambio mínimo y lo verifica (php -l, artisan test, npm test).">Arreglar un error en el proyecto</option>
+                <option value="laravel" data-level="edit" data-desc="Migración, modelo, validación, rutas y componente Livewire siguiendo el estilo del proyecto; verifica con php -l y artisan.">Nueva función Laravel / Livewire</option>
+                <option value="ui" data-level="edit" data-desc="Orden, jerarquía, textos claros, estados vacíos y de error, accesibilidad y móvil, reutilizando tus estilos.">Mejorar la interfaz (diseño y usabilidad)</option>
+                <option value="tests" data-level="edit" data-desc="Tests con el framework que ya usa el proyecto (camino feliz, bordes, errores) y los ejecuta.">Escribir y correr tests</option>
+              </optgroup>
+              <optgroup label="Operan un servidor · lo fuerte te lo pregunta">
+                <option value="infra" data-level="infra">Operar un servidor (cualquier tarea)</option>
+                <option value="srv_status" data-level="infra" data-desc="Tabla con cada contenedor: estado, puertos, URL de acceso, a qué base de datos apunta y si responde. No cambia nada.">Servidor: contenedores, URLs y estado</option>
+                <option value="srv_pull" data-level="infra" data-desc="Ubica el repo de la app, protege cambios locales, hace git pull, dependencias y migraciones, reinicia solo ese contenedor y verifica.">Servidor: traer cambios de git y redesplegar</option>
+                <option value="srv_web" data-level="infra" data-desc="nginx, puertos, HTTPS y certificados vencidos, redirecciones a otro puerto e imágenes que no cargan; copia antes y nginx -t.">Servidor: dominios, puertos, HTTPS y certificados</option>
+                <option value="srv_fix" data-level="infra" data-desc="Logs, variables de BD, red entre contenedores, URL del backend y permisos; explica la causa antes de arreglar.">Servidor: app caída, error 500 o que no conecta</option>
+              </optgroup>
+              <optgroup label="Este equipo · control total">
+                <option value="full" data-level="full">Control total en este equipo (cualquier tarea)</option>
+                <option value="pc_setup" data-level="full" data-desc="Comprueba si ya está, instala con winget o el instalador oficial, configura con copia previa y verifica.">Mi PC: instalar y configurar programas</option>
+                <option value="local_ai" data-level="full" data-desc="Ollama y LM Studio: revisa RAM y disco antes de descargar, prueba y compara modelos, limpia lo que no sirve.">Mi PC: modelos de IA locales (Ollama / LM Studio)</option>
+                <option value="excel_files" data-level="full" data-desc="Consolida, limpia o resume Excels con Python sobre una COPIA (nunca el original) y lo verifica.">Mi PC: procesar archivos de Excel</option>
+              </optgroup>
             </select>
           </label>
         </div>
-        <fieldset id="review-set" hidden>
-          <legend>Revisión automática (opcional)</legend>
-          <div id="review-opts"></div>
-          <p class="hint">Al terminar, estos agentes revisan el trabajo por su cuenta (solo lectura, con el diff si hubo cambios) y te avisan de su veredicto.</p>
-        </fieldset>
-        <label id="model-row" hidden>Modelo (opcional)
-          <input name="model" placeholder="" autocomplete="off" maxlength="100">
-          <select name="model_pick" hidden></select>
-        </label>
-        <p class="hint" id="engine-hint" hidden></p>
-        <p class="hint" id="infra-hint" hidden>🖥 Modo infraestructura: con Claude Code y un servidor de destino, el agente opera el servidor por SSH. Lo de solo lectura corre solo; <b>lo fuerte</b> (borrar, reiniciar, instalar, permisos, firewall, escribir archivos…) <b>te lo pregunta</b> antes, y en producción también los cambios leves. Con otros motores solo te entrega un plan con comandos.</p>
+        <p class="hint" id="mode-desc"></p>
+        <details id="new-adv" class="adv">
+          <summary>Opciones avanzadas <span id="adv-sum" class="muted"></span></summary>
+          <div class="grid2">
+            <label>Motor <select name="engine"></select></label>
+            <label id="model-row" hidden>Modelo (opcional)
+              <input name="model" placeholder="" autocomplete="off" maxlength="100">
+              <select name="model_pick" hidden></select>
+            </label>
+          </div>
+          <p class="hint" id="engine-hint" hidden></p>
+          <fieldset id="review-set" hidden>
+            <legend>Revisión automática al terminar</legend>
+            <div id="review-opts"></div>
+            <p class="hint">Estos agentes revisan el trabajo por su cuenta (solo lectura, con el diff si hubo cambios) y te avisan de su veredicto.</p>
+          </fieldset>
+        </details>
+        <p class="hint" id="infra-hint" hidden>🖥 Modo infraestructura: con un servidor de destino, el agente opera el servidor por SSH. Lo de solo lectura corre solo; <b>lo fuerte</b> (borrar, reiniciar, instalar, permisos, firewall, escribir archivos…) <b>te lo pregunta</b> antes, y en producción también los cambios leves. Funciona con cualquier motor; sin servidor de destino solo te entrega un plan con comandos.</p>
+        <p class="mode-hint" id="full-hint" hidden>⚡ Control total: el agente (con cualquier motor) lee, escribe, ejecuta comandos e instala lo que haga falta en este equipo <b>sin preguntarte a mitad de camino</b>. Trabaja directo sobre los archivos (sin copia aislada); hace copia antes de cambiar algo y al final te dice cómo deshacerlo. Sin proyecto, trabaja desde tu carpeta de usuario. Tu protección contra lo catastrófico (guard) sigue activa.</p>
         <p class="mode-hint" id="mode-hint" hidden>⚠ Este modo puede modificar archivos del proyecto. Te pediremos confirmación antes de ejecutar.</p>
         <p class="form-error error" role="alert"></p>
       </div>

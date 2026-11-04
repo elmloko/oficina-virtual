@@ -22,6 +22,8 @@ import { createLogger } from './logger.js';
 import { classify, needsApproval, runSsh, runSsh2, passVar, encodePass, decodePass } from './infra.js';
 import { timingSafeEqual } from 'node:crypto';
 import { setEnvVar, KEY_RE } from './envfile.js';
+import { MODES, splitMode, levelOf, modeAgent, modeLabel } from './modes.js';
+import { createVault, SECRET_NAME_RE, PLACEHOLDER_RE, placeholder, validateSecret } from './vault.js';
 import { createProbe, collectSystem } from './system.js';
 import { join } from 'node:path';
 import { telegramFromEnv } from './telegram.js';
@@ -30,7 +32,7 @@ import { checkUpload, saveFile, readStored, removeFile, removeTaskDir, isImage, 
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png' };
 const MANUAL_STATUSES = new Set(['backlog', 'review', 'done']); // el resto lo mueve el runner
-const MODES = new Set(['read', 'edit', 'infra']);
+// Modos válidos: ver server/modes.js (full = control total de este equipo; los de nivel read valen con cualquier motor)
 const SERVER_ENVS = new Set(['prod', 'staging', 'dev']);
 /** Valida la lista de servidores (sin secretos: nada de contraseñas ni claves). */
 function parseServers(raw) {
@@ -97,11 +99,25 @@ export function createApp({ db = openDb(), lmsCtl = defaultLmsCtl, runnerOpts = 
   const APPROVAL_WAIT_MS = approvalWaitMs;
   /** Contraseña guardada de un servidor (vive en .env, codificada); null = se usa tu llave SSH. */
   const serverPassword = (name) => decodePass(process.env[passVar(name)]);
+  const vault = createVault({ envFile }); // secretos que el agente usa sin verlos
+  /** Lo que escribes: NOMBRE_TOKEN=valor (o PASSWORD, SECRET, API_KEY…) pasa a la bóveda y el agente solo recibe el marcador. */
+  const secretsDirect = () => db.settings().secrets_direct === 1;
+  const guardSecrets = (text, taskId = null) => {
+    if (secretsDirect()) return { text, names: [] }; // modo Directo: lo que escribes le llega al agente tal cual
+    const { text: clean, saved } = vault.capture(text);
+    for (const s of saved) {
+      db.scrubSecret(s.value, placeholder(s.name)); // y desaparece de los registros donde ya estuviera
+      db.audit('vault.set', taskId, `${s.name} (desde tu mensaje)`);
+      if (taskId) runner.log(taskId, 'info', `🔑 Guardé ${s.name} en tus secretos: el agente solo ve ${placeholder(s.name)} y la oficina pone el valor al ejecutar.`);
+    }
+    if (saved.length) broadcast({ type: 'vault' });
+    return { text: clean, names: saved.map((s) => s.name) };
+  };
   const pinHostKey = (name, fp) => { db.setServers(db.servers().map((s) => (s.name === name ? { ...s, hostkey: fp } : s))); db.audit('servers.hostkey', null, `${name}: ${fp}`); };
   const sshRun = (o) => {
     const password = serverPassword(o.server.name);
     return password
-      ? runSsh2Fn({ server: o.server, command: o.command, password, pinned: o.server.hostkey ?? null, onPin: (fp) => pinHostKey(o.server.name, fp) })
+      ? runSsh2Fn({ server: o.server, command: o.command, stdin: o.stdin ?? null, password, pinned: o.server.hostkey ?? null, onPin: (fp) => pinHostKey(o.server.name, fp) })
       : runSshFn({ ...o, sshBin: config.sshBin });
   };
   /** Lo que ve la web de cada servidor: nunca la contraseña, solo si hay una guardada. */
@@ -165,9 +181,14 @@ export function createApp({ db = openDb(), lmsCtl = defaultLmsCtl, runnerOpts = 
     if (!partial || 'agent' in out) if (!agents.has(out.agent)) return { error: 'Agente desconocido' };
     if ('engine' in out && !engineSet().has(out.engine)) return { error: 'Motor inválido (¿falta la clave del proveedor o está desactivado?)' };
     if ('mode' in out && !MODES.has(out.mode)) return { error: 'Modo inválido' };
+    if ('mode' in out) Object.assign(out, splitMode(out.mode)); // receta que actúa → su permiso (edit/infra/full) + la receta
     // Modo infraestructura con Claude Code sin servidor de destino: no podría operar nada y se quedaría en un plan. Mejor avisar al crear.
     if (out.mode === 'infra' && !isServerRef(out.project) && (!partial || 'engine' in out) && ['auto', 'claude'].includes(out.engine ?? 'auto')) {
       return { error: 'Para que el agente opere un servidor elige uno en «Proyecto» (agrégalo antes en Sistema → Ajustes → Servidores). Sin servidor de destino solo puede entregar un plan: en ese caso elige otro motor (Codex, Ollama…).' };
+    }
+    if (out.mode === 'full') {
+      if (isServerRef(out.project)) return { error: 'Control total es para este equipo. Para un servidor elige «Operar un servidor».' };
+      if (isExtraRoot(out.project)) return { error: 'Las carpetas extra son de solo lectura: elige otro proyecto o ninguno' };
     }
     if (isServerRef(out.project)) {
       if (!db.servers().some((s) => `srv:${s.name}` === out.project)) return { error: 'Servidor desconocido (agrégalo en Sistema → Ajustes)' };
@@ -197,7 +218,7 @@ export function createApp({ db = openDb(), lmsCtl = defaultLmsCtl, runnerOpts = 
   /** Pide confirmación si la misión puede editar archivos o actuar de verdad sobre un servidor (Claude Code + modo infraestructura). */
   const needsConfirm = (task) => {
     const plan = route(task, db.disabledEngines(), runner.down());
-    return plan.mode === 'edit' || (plan.mode === 'infra' && plan.engine === 'claude' && isServerRef(task.project));
+    return plan.mode === 'edit' || plan.mode === 'full' || (plan.mode === 'infra' && isServerRef(task.project)); // cualquier motor actúa
   };
 
   function costs() {
@@ -515,6 +536,8 @@ export function createApp({ db = openDb(), lmsCtl = defaultLmsCtl, runnerOpts = 
     // --- tareas ---
     if (method === 'POST' && url.pathname === '/api/tasks') {
       let body = await readJson(req);
+      const vaulted = [];
+      for (const k of ['title', 'description']) if (typeof body[k] === 'string') { const g = guardSecrets(body[k]); body = { ...body, [k]: g.text }; vaulted.push(...g.names); }
       // Sin agente (o "auto"): lo elige el despachador y, si ninguno encaja, crea uno nuevo.
       const auto = !body.agent || body.agent === 'auto';
       if (auto) {
@@ -522,10 +545,12 @@ export function createApp({ db = openDb(), lmsCtl = defaultLmsCtl, runnerOpts = 
         if (probe.error) return send(res, 400, { error: probe.error });
       }
       let choice = null;
-      if (auto) {
-        try { choice = await dispatcher.choose({ title: body.title, description: body.description ?? '', project: body.project || null, mode: body.mode ?? 'read' }); } catch (e) { return send(res, 409, { error: `No se pudo elegir agente: ${e.message}` }); }
-        body = { ...body, agent: choice.agent };
+      const suggested = auto ? modeAgent(body.mode, listAgents()) : null; // el modo ya dice quién (p. ej. «Nueva función Laravel» → laravel)
+      if (suggested) choice = { agent: suggested, reason: `lo sugiere el modo «${modeLabel(body.mode)}»`, created: null };
+      else if (auto) {
+        try { choice = await dispatcher.choose({ title: body.title, description: body.description ?? '', project: body.project || null, mode: levelOf(body.mode ?? 'read') }); } catch (e) { return send(res, 409, { error: `No se pudo elegir agente: ${e.message}` }); }
       }
+      if (choice) body = { ...body, agent: choice.agent };
       const { error, value } = validate(body);
       if (error) return send(res, 400, { error });
       const chain = parseChain(body.review, value.agent);
@@ -541,7 +566,18 @@ export function createApp({ db = openDb(), lmsCtl = defaultLmsCtl, runnerOpts = 
         logger.info(`Agente nuevo creado: ${choice.created.name} (para la misión #${task.id})`);
         broadcast({ type: 'agent-created', agent: choice.created, task: { id: task.id, title: task.title }, reason: choice.reason });
       }
-      return send(res, 201, choice ? { ...task, auto: choice } : task);
+      for (const n of vaulted) runner.log(task.id, 'info', `🔑 Guardé ${n} en tus secretos: el agente solo ve ${placeholder(n)} y la oficina pone el valor al ejecutar.`);
+      const out = vaulted.length ? { ...task, vaulted } : task;
+      return send(res, 201, choice ? { ...out, auto: choice } : out);
+    }
+    // Quién haría la misión (vista previa del formulario): solo palabras clave, sin consultar a Claude.
+    if (method === 'POST' && url.pathname === '/api/dispatch/preview') {
+      const body = await readJson(req).catch(() => ({}));
+      const title = String(body.title ?? '').slice(0, 200); const description = String(body.description ?? '').slice(0, 4000);
+      if (!(title + description).trim()) return send(res, 200, { agent: null, sure: false });
+      const sug = modeAgent(body.mode, listAgents());
+      if (sug) return send(res, 200, { agent: sug, description: listAgents().find((a) => a.name === sug)?.description ?? '', sure: true, byMode: true });
+      return send(res, 200, dispatcher.preview?.({ title, description, mode: levelOf(body.mode ?? 'read') }) ?? { agent: null, sure: false });
     }
     // --- infraestructura: el agente pide ejecutar un comando; lo fuerte espera tu aprobación ---
     if (url.pathname === '/api/infra/exec' && method === 'POST') {
@@ -554,7 +590,19 @@ export function createApp({ db = openDb(), lmsCtl = defaultLmsCtl, runnerOpts = 
       const server = db.servers().find((s) => `srv:${s.name}` === task.project);
       if (!server) return send(res, 404, { error: 'El servidor de destino ya no está registrado' });
       const command = String(body.command ?? '').trim();
-      const { tier, reason, critical } = classify(command);
+      // Salida: 'agent' (la ve el modelo), 'user' (solo tú, en el registro) o 'secret' (se guarda en la bóveda sin que nadie la vea)
+      const output = body.output === 'user' || body.output === 'secret' ? body.output : 'agent';
+      const secretName = output === 'secret' ? String(body.secret_name ?? '') : null;
+      if (output === 'secret') {
+        if (!SECRET_NAME_RE.test(secretName)) return send(res, 400, { error: 'Nombre de secreto inválido: MAYÚSCULAS, números y _ (p. ej. DB_PASSWORD)' });
+        if (vault.get(secretName) != null) return send(res, 409, { error: `Ya existe el secreto ${secretName}: usa otro nombre (los secretos del usuario no se reemplazan)` });
+      }
+      const exp = vault.expand(command);
+      if (exp.missing.length) return send(res, 400, { error: `No hay ningún secreto guardado como ${exp.missing.join(', ')}. Pídele al usuario que lo guarde (Sistema → Ajustes → Secretos, o escribiendo NOMBRE=valor en su respuesta). Disponibles: ${vault.names().join(', ') || 'ninguno'}` });
+      const direct = secretsDirect();
+      let { tier, reason, critical } = classify(command.replace(PLACEHOLDER_RE, 'VALOR'), { ignoreSecrets: direct || output !== 'agent' }); // Directo: leer un .env es lectura normal
+      if (exp.used.length && tier !== 'strong') { tier = 'strong'; reason = `usa ${exp.used.join(', ')} (la oficina pone el valor al ejecutar; el modelo no lo ve)`; } // usar un secreto siempre se revisa (podría enviarlo fuera)
+      else if (exp.used.length) reason = `${reason} · usa ${exp.used.join(', ')}`;
       const wouldAsk = needsApproval(tier, server.env);
       const allowAll = !!task.allow_all || server.allow_all === true; // «Permitir todo» en la misión o en el servidor
       const ask = wouldAsk && !allowAll;
@@ -579,11 +627,31 @@ export function createApp({ db = openDb(), lmsCtl = defaultLmsCtl, runnerOpts = 
         }
       }
       if (wouldAsk && allowAll) runner.log(task.id, 'info', `🔓 Permitido automáticamente (${task.allow_all ? 'permitir todo en la misión' : 'permitir todo en el servidor'}): ${reason}`);
-      runner.log(task.id, 'tool', `ssh ${server.name} $ ${show}`);
-      db.audit('infra.exec', task.id, `${server.name}: ${show}`);
-      const r = await sshRun({ server, command });
-      runner.log(task.id, 'info', `↳ código ${r.code}${r.timedOut ? ' (tiempo agotado)' : ''}${r.stderr ? ` · ${r.stderr.slice(0, 200)}` : ''}`);
-      return send(res, 200, { ok: r.code === 0, ...r });
+      const where = output === 'user' ? ' (salida solo para ti)' : output === 'secret' ? ` (salida → secreto ${secretName})` : '';
+      runner.log(task.id, 'tool', `ssh ${server.name} $ ${show}${where}`);
+      db.audit('infra.exec', task.id, `${server.name}: ${show}${where}`);
+      // Con secretos, el comando real viaja por stdin a la shell remota: no aparece en la línea de comandos de ningún lado.
+      const r = await sshRun(exp.used.length ? { server, command: 'exec "${SHELL:-/bin/sh}" -s', stdin: `${exp.script}\n` } : { server, command });
+      const masked = direct ? r : { ...r, stdout: vault.mask(r.stdout), stderr: vault.mask(r.stderr) };
+      runner.log(task.id, 'info', `↳ código ${r.code}${r.timedOut ? ' (tiempo agotado)' : ''}${masked.stderr && output === 'agent' ? ` · ${masked.stderr.slice(0, 200)}` : ''}`);
+      if (output === 'agent') return send(res, 200, { ok: r.code === 0, ...masked });
+      const errNote = r.code !== 0 && masked.stderr ? ` Error: ${masked.stderr.slice(0, 300)}` : '';
+      if (output === 'user') {
+        const raw = [r.stdout, r.stderr].filter(Boolean).join('\n').trimEnd();
+        runner.log(task.id, 'private', raw || '(sin salida)');
+        db.audit('infra.private', task.id, `${server.name}: salida mostrada solo al usuario`);
+        const lines = raw ? raw.split('\n').length : 0;
+        return send(res, 200, { ok: r.code === 0, code: r.code, timedOut: r.timedOut, stdout: '', stderr: '', note: `La salida (${lines} línea${lines === 1 ? '' : 's'}) se mostró solo al usuario en el registro de la misión; tú no la recibes. Si necesitas usar ese valor en otro comando, vuelve a leerlo con --guardar-secreto.${errNote}` });
+      }
+      const value = (r.stdout ?? '').replace(/\r?\n$/, '');
+      const bad = r.code !== 0 ? 'el comando falló' : validateSecret(secretName, value);
+      if (bad) return send(res, 200, { ok: false, code: r.code || 1, stdout: '', stderr: '', note: `No se guardó el secreto: ${bad}.${errNote}` });
+      vault.set(secretName, value);
+      db.scrubSecret(value, placeholder(secretName));
+      db.audit('vault.set', task.id, `${secretName} (leído de ${server.name})`); // nunca el valor
+      runner.log(task.id, 'info', `🔑 Guardé ${secretName} en tus secretos (${value.length} caracteres). El agente solo ve ${placeholder(secretName)}.`);
+      broadcast({ type: 'vault' });
+      return send(res, 200, { ok: true, code: 0, stdout: '', stderr: '', note: `Guardado como ${placeholder(secretName)} (${value.length} caracteres). Úsalo así en tus comandos; nunca verás el valor.` });
     }
     // «Permitir todo» en esta misión: deja de preguntar (y aprueba lo que estaba esperando). Se apaga solo cuando termina la misión.
     if ((r = m(/^\/api\/tasks\/(\d+)\/allow-all$/)) && method === 'POST') {
@@ -608,6 +676,34 @@ export function createApp({ db = openDb(), lmsCtl = defaultLmsCtl, runnerOpts = 
       db.audit(r[2] === 'approve' ? 'infra.approve' : 'infra.deny', ap.task_id, `${ap.server}: ${ap.command.slice(0, 200)}`);
       broadcast({ type: 'approval', approval: done });
       return send(res, 200, done);
+    }
+    // --- bóveda de secretos: la web ve los nombres; el valor solo cuando tú pulsas «Ver» ---
+    if (url.pathname === '/api/vault' && method === 'GET') return send(res, 200, vault.names().map((name) => ({ name, placeholder: placeholder(name), length: vault.get(name).length })));
+    if ((r = m(/^\/api\/vault\/([A-Z][A-Z0-9_]{1,47})(\/value)?$/))) {
+      const name = r[1];
+      if (r[2] && method === 'GET') {
+        const value = vault.get(name);
+        if (value == null) return send(res, 404, { error: 'No existe ese secreto' });
+        db.audit('vault.view', null, name);
+        return send(res, 200, { name, value });
+      }
+      if (!r[2] && method === 'PUT') {
+        const { value } = await readJson(req).catch(() => ({}));
+        const err = validateSecret(name, value);
+        if (err) return send(res, 400, { error: err });
+        vault.set(name, value);
+        const cleaned = db.scrubSecret(value, placeholder(name)); // si ya estaba escrito en algún registro, se borra
+        db.audit('vault.set', null, name); // nunca el valor
+        broadcast({ type: 'vault' });
+        return send(res, 200, { name, placeholder: placeholder(name), cleaned });
+      }
+      if (!r[2] && method === 'DELETE') {
+        if (vault.get(name) == null) return send(res, 404, { error: 'No existe ese secreto' });
+        vault.remove(name);
+        db.audit('vault.remove', null, name);
+        broadcast({ type: 'vault' });
+        return send(res, 200, { ok: true });
+      }
     }
     if (url.pathname === '/api/servers' && method === 'GET') return send(res, 200, publicServers());
     if ((r = m(/^\/api\/servers\/([^/]+)\/password$/)) && method === 'PUT') {
@@ -669,6 +765,7 @@ export function createApp({ db = openDb(), lmsCtl = defaultLmsCtl, runnerOpts = 
         if (error) return send(res, 400, { error });
         const patch = {};
         for (const k of ['title', 'description', 'project', 'agent', 'engine', 'mode', 'model']) if (k in body) patch[k] = value[k];
+        if ('mode' in body) patch.recipe = value.recipe;
         if (body.status !== undefined) {
           if (!MANUAL_STATUSES.has(body.status) || ['queued', 'running'].includes(task.status)) return send(res, 400, { error: 'Cambio de estado no permitido' });
           patch.status = body.status;
@@ -757,12 +854,14 @@ export function createApp({ db = openDb(), lmsCtl = defaultLmsCtl, runnerOpts = 
       }
       if (r[2] === 'reply' && method === 'POST') {
         const body = await readJson(req);
-        const text = typeof body.text === 'string' ? body.text.trim() : '';
+        let text = typeof body.text === 'string' ? body.text.trim() : '';
         if (!text) return send(res, 400, { error: 'Escribe una respuesta' });
         if (text.length > 4000) return send(res, 400, { error: 'La respuesta es demasiado larga (máx. 4000 caracteres)' });
         if (needsConfirm(task) && body.confirm !== true) return send(res, 409, { error: 'Esta misión puede editar archivos: requiere confirmación', needsConfirm: true });
+        const vaulted = guardSecrets(text, id);
+        text = vaulted.text;
         try { runner.reply(id, text); } catch (e) { return send(res, 409, { error: e.message }); }
-        return send(res, 202, db.getTask(id));
+        return send(res, 202, { ...db.getTask(id), vaulted: vaulted.names });
       }
       if (r[2] === 'cancel' && method === 'POST') { runner.cancel(id); return send(res, 200, db.getTask(id)); }
       if (r[2] === 'launch' && method === 'POST') {

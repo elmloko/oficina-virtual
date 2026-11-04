@@ -127,10 +127,10 @@ test('chat: errores HTTP muestran el motivo del proveedor pero jamás la clave',
   await assert.rejects(chat(loadProviders({ OFICINA_ANTHROPIC_API_KEY: SECRET }).anthropic, { system: 's', prompt: 'p', fetchFn: err }), /overloaded/);
 });
 
-test('router: los proveedores en internet son solo lectura; si piden edición pasan a Claude', () => {
+test('router: los proveedores también editan (con las herramientas de la oficina)', () => {
   assert.equal(route({ agent: 'backend', engine: 'openai', mode: 'read' }).engine, 'openai');
   const r = route({ agent: 'backend', engine: 'openai', mode: 'edit' });
-  assert.equal(r.engine, 'claude');
+  assert.equal(r.engine, 'openai');
   assert.equal(r.mode, 'edit');
 });
 

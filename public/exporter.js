@@ -2,6 +2,12 @@
 import { parseTs } from './metrics.js';
 
 const STATUS = { backlog: 'pendiente', queued: 'en cola', running: 'en misión', review: 'por revisar', done: 'completada', failed: 'fallida' };
+/** Nombre de cada modo (el catálogo completo, con sus instrucciones, vive en server/modes.js). */
+export const MODE_ES = { read: 'analizar y proponer un plan', explain: 'investigar y explicar', review: 'revisar y dar feedback', write: 'redactar un texto', ideas: 'lluvia de ideas', summary: 'resumir', translate: 'traducir', edit: 'editar archivos', infra: 'operar un servidor', full: 'control total en este equipo',
+  debug_plan: 'diagnosticar un error', sql: 'base de datos y SQL', diplomado: 'ejercicio de Python / IA', excel_help: 'fórmulas y macros de Excel', compare: 'comparar y recomendar', docs: 'documentar',
+  fix: 'arreglar un error', laravel: 'nueva función Laravel / Livewire', ui: 'mejorar la interfaz', tests: 'escribir tests',
+  srv_status: 'servidor: estado', srv_pull: 'servidor: traer cambios de git', srv_web: 'servidor: dominios y HTTPS', srv_fix: 'servidor: app caída',
+  pc_setup: 'instalar programas', local_ai: 'modelos de IA locales', excel_files: 'procesar Excel' };
 const oneLine = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
 const fmtSecs = (s) => { s = Math.round(s); const m = Math.floor(s / 60); return m ? `${m} min ${s % 60} s` : `${s} s`; };
 const when = (ts) => (ts ? parseTs(ts).toLocaleString('es') : '');
@@ -11,7 +17,7 @@ function metaLines(t) {
   return [
     ['Agente', t.kind === 'objective' ? 'coordinador' : t.agent],
     ['Proyecto', t.project || 'sin proyecto'],
-    ['Motor', `${t.engine}${t.model ? ':' + t.model : ''} · ${t.mode === 'edit' ? 'puede editar' : 'solo lectura'}`],
+    ['Motor', `${t.engine}${t.model ? ':' + t.model : ''} · ${MODE_ES[t.recipe || t.mode] ?? t.mode}`],
     ['Estado', STATUS[t.status] ?? t.status],
     ['Duración', secs != null && Number.isFinite(secs) ? fmtSecs(secs) : ''],
     ['Costo', t.cost_usd ? `$${t.cost_usd.toFixed(3)}` : ''],

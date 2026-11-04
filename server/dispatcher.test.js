@@ -180,3 +180,18 @@ test('API: crear misión sin agente (o "auto") lo elige solo, lo anota en el reg
     assert.equal((await post({ title: 'Agente inexistente', agent: 'fantasma' })).status, 400);
   } finally { app.server.close(); app.server.closeAllConnections?.(); }
 });
+
+test('preview: dice qué agente lo haría solo con palabras clave (sin consultar a Claude) y la API lo expone', async () => {
+  const d = mk(noAsk);
+  assert.deepEqual([d.preview({ title: 'Crear endpoint de tarifas con validación' }).agent, d.preview({ title: 'Crear endpoint de tarifas con validación' }).sure], ['backend', true]);
+  assert.equal(d.preview({ title: 'zzz qqq' }).agent, null);
+  const app = createApp({ db: openDb(':memory:'), dispatcher: d, attachmentsDir: join(tmp, 'att3') });
+  await new Promise((r) => app.server.listen(0, '127.0.0.1', r));
+  const url = `http://127.0.0.1:${app.server.address().port}/api/dispatch/preview`;
+  const post = async (body) => (await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })).json();
+  try {
+    const r = await post({ title: 'Crear endpoint de tarifas con validación' });
+    assert.equal(r.agent, 'backend'); assert.equal(r.sure, true); assert.match(r.description, /Backend/);
+    assert.deepEqual(await post({ title: '  ' }), { agent: null, sure: false });
+  } finally { app.server.close(); app.server.closeAllConnections?.(); }
+});

@@ -7,7 +7,7 @@ import { createAlerts, SOUNDS } from './alerts.js';
 import { threads, activeLinks, ticker as tickerText, prune } from './comms.js';
 import { filterTasks, isFiltering, NO_PROJECT } from './filters.js';
 import { agentMetrics, summarize, parseTs } from './metrics.js';
-import { taskToMarkdown, tasksToMarkdown, printableHtml } from './exporter.js';
+import { taskToMarkdown, tasksToMarkdown, printableHtml, MODE_ES } from './exporter.js';
 
 const COLUMNS = [
   ['backlog', 'Hangar (pendientes)'],
@@ -95,23 +95,25 @@ const serverOptions = () => (state.servers?.length
   ? [el('optgroup', { label: '🖥 Servidores (infraestructura)' }, ...state.servers.map((s) => el('option', { value: `srv:${s.name}`, textContent: `${s.name} · ${ENV_ES[s.env] ?? s.env}` })))]
   : []);
 /** Si el destino es un servidor, el modo pasa a «infraestructura» (no se puede editar un servidor). */
+/** Permiso real del modo elegido: los modos de trabajo (arreglar, laravel, srv_pull…) traen el suyo en data-level. */
+const modeLevel = (sel) => sel.selectedOptions[0]?.dataset.level ?? sel.value;
 function applyServerMode(form) {
   const srv = String(form.project.value).startsWith('srv:');
-  const edit = [...form.mode.options].find((o) => o.value === 'edit');
-  if (edit) edit.disabled = srv;
-  if (srv) form.mode.value = 'infra';
+  for (const o of form.mode.options) if (['edit', 'full'].includes(o.dataset.level ?? o.value)) o.disabled = srv; // en un servidor solo los modos de servidor
+  if (srv && modeLevel(form.mode) !== 'infra') form.mode.value = 'infra';
+  if (form.engine) for (const o of form.engine.options) o.disabled = false; // editar, operar y control total valen con cualquier motor
 }
 /** Aviso del modo infraestructura: si falta el servidor de destino, lo dice claro (sin él Claude solo puede dejar un plan). */
 function infraHint(node, form) {
-  const infra = form.mode.value === 'infra';
+  const infra = modeLevel(form.mode) === 'infra';
   const needsServer = infra && !String(form.project.value).startsWith('srv:') && ['auto', 'claude'].includes(form.engine.value);
   node.hidden = !infra;
   node.className = needsServer ? 'error' : 'hint';
   node.textContent = needsServer
     ? (state.servers?.length
-      ? '⚠ Falta el servidor de destino: elígelo en «Proyecto» (grupo 🖥 Servidores). Sin él, el agente no puede operar nada.'
-      : '⚠ Aún no tienes servidores registrados. Agrégalo en Sistema → Ajustes → Servidores (nombre, host, usuario, entorno) y vuelve aquí a elegirlo como Proyecto.')
-    : '🖥 Con Claude Code y un servidor de destino, el agente opera el servidor por SSH. Lo de solo lectura corre solo; lo fuerte (borrar, reiniciar, instalar, permisos, firewall, escribir archivos…) te lo pregunta antes, y en producción también los cambios leves. Con otros motores solo entrega un plan con comandos.';
+      ? '⚠ Falta el servidor de destino: elígelo en «¿Dónde?» (grupo 🖥 Servidores). Sin él, el agente no puede operar nada.'
+      : '⚠ Aún no tienes servidores registrados. Agrégalo en Sistema → Ajustes → Servidores (nombre, host, usuario, entorno) y vuelve aquí a elegirlo en «¿Dónde?».')
+    : '🖥 Con un servidor de destino, el agente opera el servidor por SSH. Lo de solo lectura corre solo; lo fuerte (borrar, reiniciar, instalar, permisos, firewall, escribir archivos…) te lo pregunta antes, y en producción también los cambios leves. Vale con cualquier motor.';
 }
 function renderServers() {
   const list = state.servers ?? [];
@@ -398,6 +400,10 @@ function card(t) {
   );
   if (t.mode === 'edit') meta.append(el('span', { className: 'tag edit', textContent: 'edita' }));
   if (t.mode === 'infra') meta.append(el('span', { className: 'tag', textContent: 'infra' }));
+  if (t.mode === 'full') meta.append(el('span', { className: 'tag edit', textContent: '⚡ control total' }));
+  const MODE_TAG = { explain: 'explica', review: 'revisa', write: 'redacta', ideas: 'ideas', summary: 'resume', translate: 'traduce', debug_plan: 'diagnostica', sql: 'SQL', diplomado: 'diplomado', excel_help: 'Excel', compare: 'compara', docs: 'documenta', fix: 'arregla', laravel: 'Laravel', ui: 'interfaz', tests: 'tests', srv_status: 'estado', srv_pull: 'git pull', srv_web: 'HTTPS', srv_fix: 'emergencia', pc_setup: 'instala', local_ai: 'IA local', excel_files: 'Excel' };
+  const kind = t.recipe || t.mode;
+  if (MODE_TAG[kind]) meta.append(el('span', { className: 'tag', textContent: MODE_TAG[kind], title: MODE_ES[kind] }));
   if (kids.length) meta.append(el('span', { textContent: `pasos ${kids.filter((k) => ['review', 'done'].includes(k.status)).length}/${kids.length}` }));
   if (t.parent_id) meta.append(el('span', { textContent: `↳ #${t.parent_id}` }));
   if (t.review_of) meta.append(el('span', { textContent: `revisa #${t.review_of}` }));
@@ -449,7 +455,7 @@ function drawer(t) {
   $('#d-title').textContent = `#${t.id} ${t.title}`;
   const deps = t.depends_on?.length ? ` · depende de ${t.depends_on.map((d) => '#' + d).join(', ')}` : '';
   $('#d-meta').title = t.workdir ? `Carpeta: ${t.workdir}` : '';
-  $('#d-meta').textContent = `${t.kind === 'objective' ? 'coordinador' : t.agent} · ${t.project || 'sin proyecto'} · ${t.engine}${t.used_model || t.model ? ':' + (t.used_model || t.model) : ''}/${t.mode} · ${t.status}${deps}${t.error ? ' · ' + t.error : ''}`;
+  $('#d-meta').textContent = `${t.kind === 'objective' ? 'coordinador' : t.agent} · ${t.project || 'sin proyecto'} · ${t.engine}${t.used_model || t.model ? ':' + (t.used_model || t.model) : ''}/${MODE_ES[t.recipe || t.mode] ?? t.mode} · ${t.status}${deps}${t.error ? ' · ' + t.error : ''}`;
   $('#d-result').textContent = t.result || '';
   $('#d-instr').replaceChildren(...instructionBlocks(t));
   const act = $('#d-actions');
@@ -714,6 +720,13 @@ function appendLine(box, ev, t = null) {
     line.onclick = () => reuseMessage(line, ev.text);
     line.onkeydown = (e) => { if (e.key === 'Enter') reuseMessage(line, ev.text); };
     box.append(line);
+  } else if (ev.kind === 'private') { // salida que el agente pidió mostrarte solo a ti (contraseñas, datos sensibles)
+    const pre = el('pre', { className: 'priv-body', textContent: ev.text, hidden: true });
+    const btn = el('button', { type: 'button', className: 'mini-link', textContent: 'Mostrar' });
+    btn.onclick = () => { pre.hidden = !pre.hidden; btn.textContent = pre.hidden ? 'Mostrar' : 'Ocultar'; };
+    const copy = el('button', { type: 'button', className: 'mini-link', textContent: 'Copiar' });
+    copy.onclick = () => navigator.clipboard?.writeText(ev.text).then(() => toast('Copiado', false), () => toast('No se pudo copiar'));
+    box.append(el('div', { className: 'private' }, el('b', { className: 'who', textContent: '🔒 SOLO PARA TI' }), el('span', { className: 'muted', textContent: ' el agente no ve esto ' }), btn, ' · ', copy, pre));
   } else if (ev.kind === 'text') {
     box.append(el('div', { className: 'text' }, el('b', { className: 'who', textContent: speaker(t) }), span(ev.text)));
   } else {
@@ -833,7 +846,14 @@ function replyForm(t) {
         picker.clear(); attsCache.delete(t.id);
       }
       const r = await withConfirm(`/api/tasks/${t.id}/reply`, 'Esta misión puede editar archivos de tu proyecto o actuar sobre un servidor (lo fuerte te lo preguntará antes). ¿Permitirlo?', { text });
-      if (r) { rememberSent(text); agentUi.drafts.delete(t.id); ta.value = ''; toast('Respuesta enviada: el agente sigue trabajando', false); }
+      if (r) {
+        const vaulted = r.vaulted ?? [];
+        // el historial (↑) guarda el mensaje ya sin el valor del secreto
+        const clean = vaulted.reduce((s, n) => s.replace(new RegExp(`^([ \\t]*(?:export[ \\t]+)?${n}[ \\t]*=).*$`, 'gm'), `$1{{secreto:${n}}}`), text);
+        rememberSent(clean); agentUi.drafts.delete(t.id); ta.value = '';
+        toast(vaulted.length ? `🔑 Guardé ${vaulted.join(', ')} en tus secretos: el agente solo ve el nombre y lo usa sin verlo` : 'Respuesta enviada: el agente sigue trabajando', false);
+        if (vaulted.length) refreshVault();
+      }
     } catch (x) { err.textContent = x.message; } finally { send.disabled = false; }
   };
   if (recovered) form.prepend(el('div', { className: 'reply-note', textContent: 'Cancelaste este mensaje: edítalo y reenvíalo.' }));
@@ -912,14 +932,14 @@ async function renderAgent() {
       now.replaceChildren(el('div', { className: 'now-row' },
         el('div', {},
           el('div', { textContent: `${current.status === 'running' ? '▶ En misión' : '⏳ En cola'}: #${current.id} ${current.title}` }),
-          el('div', { className: 'muted', textContent: `${current.engine}${current.used_model || current.model ? ':' + (current.used_model || current.model) : ''}/${current.mode}${current.project ? ' · 📁 ' + current.project : ''}${since}` }),
+          el('div', { className: 'muted', textContent: `${current.engine}${current.used_model || current.model ? ':' + (current.used_model || current.model) : ''}/${MODE_ES[current.recipe || current.mode] ?? current.mode}${current.project ? ' · 📁 ' + current.project : ''}${since}` }),
           ...(replying ? [el('div', { className: 'reply-sent', textContent: `Tu mensaje: «${current.reply_text.length > 200 ? current.reply_text.slice(0, 200) + '…' : current.reply_text}»` })] : [])),
         x));
     } else {
       now.replaceChildren(el('div', { textContent: mine.length ? 'Libre' : 'Libre · aún no tiene misiones' }));
     }
     const newBtn = el('button', { className: 'primary', type: 'button', textContent: 'Nueva misión' });
-    newBtn.onclick = () => openTaskDialog((f) => { f.agent.value = name; });
+    newBtn.onclick = () => openTaskDialog((f) => { f.agent.value = name; updateWho(true); });
     $('#a-actions').replaceChildren(newBtn);
     agentUi.sig.head = sigs.head;
   }
@@ -946,13 +966,11 @@ function serversDown() {
 
 function fillSelects() {
   const f = $('#new-form');
-  const keepAgent = f.agent.value;
-  f.agent.replaceChildren(el('option', { value: 'auto', textContent: '🤖 Automático — el sistema elige (y crea uno si hace falta)' }), ...state.agents.map((a) => el('option', { value: a.name, textContent: `${a.name} — ${a.description}`.slice(0, 80) })));
-  if (keepAgent && [...f.agent.options].some((o) => o.value === keepAgent)) f.agent.value = keepAgent;
+  if (f.agent.value !== 'auto' && !state.agents.some((a) => a.name === f.agent.value)) { f.agent.value = 'auto'; updateWho(true); } // el agente fijado ya no existe
   const projectOptions = () => [el('option', { value: '', textContent: '(sin proyecto)' }), ...state.projects.map((p) => el('option', { value: p.name, textContent: p.docs ? '📄 Documentos — carpeta nueva por tema' : p.name }))];
   f.project.replaceChildren(...projectOptions(), ...serverOptions());
   const offE = state.enginesOff ?? [];
-  const engines = [['auto', 'Auto (el router decide)'], ...(offE.includes('claude') ? [] : [['claude', 'Claude Code (suscripción)']]), ...(offE.includes('ollama') ? [] : [['ollama', 'Ollama (local)']]), ...(offE.includes('codex') ? [] : [['codex', 'Codex (ChatGPT · solo lectura)']]), ...state.providers.map((p) => [p.name, `${provName(p)} · ${p.local ? 'en este equipo' : 'en internet'} (${p.model})`])];
+  const engines = [['auto', 'Auto (el router decide)'], ...(offE.includes('claude') ? [] : [['claude', 'Claude Code (suscripción)']]), ...(offE.includes('ollama') ? [] : [['ollama', 'Ollama (local)']]), ...(offE.includes('codex') ? [] : [['codex', 'Codex (ChatGPT)']]), ...state.providers.map((p) => [p.name, `${provName(p)} · ${p.local ? 'en este equipo' : 'en internet'} (${p.model})`])];
   const down = serversDown();
   const keep = f.engine.value;
   const shown = engines.filter(([v]) => !down.has(v)); // los de servidor apagado no se muestran
@@ -965,6 +983,45 @@ function fillSelects() {
   $('#review-set').hidden = !reviewers.length;
   $('#review-opts').replaceChildren(...reviewers.map(([n, why]) => el('label', { className: 'chk', title: why }, el('input', { type: 'checkbox', name: 'review', value: n }), el('span', { textContent: n }))));
   $('#days').replaceChildren(...DAYS.map((d, i) => el('label', { className: 'chk' }, el('input', { type: 'checkbox', name: 'day', value: String(i) }), el('span', { textContent: d }))));
+}
+
+/**
+ * «Quién lo hará» en el formulario de misión (sustituye al selector de agente). Por defecto el agente se elige solo:
+ * mientras escribes se muestra el probable (solo palabras clave, sin gastar). Desde el panel de un agente queda fijado.
+ */
+const whoUi = { timer: null, seq: 0 };
+function updateWho(now = false) {
+  const f = $('#new-form'); const box = $('#who');
+  if (!f || !box) return;
+  clearTimeout(whoUi.timer);
+  const fixed = f.agent.value && f.agent.value !== 'auto' ? state.agents.find((a) => a.name === f.agent.value) : null;
+  if (fixed) {
+    const auto = el('button', { type: 'button', className: 'mini-link', textContent: 'elegir automáticamente' });
+    auto.onclick = () => { f.agent.value = 'auto'; updateWho(true); };
+    box.className = 'who-box fixed';
+    return box.replaceChildren(el('span', { className: 'who-ico', textContent: '👤' }), el('span', {}, 'Para ', el('b', { textContent: fixed.name }), el('span', { className: 'muted', textContent: ` — ${fixed.description}` })), auto);
+  }
+  const title = f.title.value.trim(); const description = f.description.value.trim();
+  const show = (main, sub = '', cls = '') => { box.className = `who-box ${cls}`; box.replaceChildren(el('span', { className: 'who-ico', textContent: '🤖' }), el('span', {}, ...main, sub ? el('span', { className: 'muted', textContent: ` — ${sub}` }) : '')); };
+  if (!title && !description) return show(['El agente se elige solo según lo que escribas.']);
+  const run = async () => {
+    const seq = ++whoUi.seq;
+    let p;
+    try { p = await post('/api/dispatch/preview', { title, description, mode: f.mode.value }); } catch { return; }
+    if (seq !== whoUi.seq || f.agent.value !== 'auto') return; // llegó tarde o ya fijaste uno
+    if (p.agent && p.sure) show(['Lo hará ', el('b', { textContent: p.agent })], p.description, 'sure');
+    else if (p.agent) show(['Probablemente ', el('b', { textContent: p.agent }), ' · al crearla se confirma (o se crea un agente nuevo si ninguno encaja)']);
+    else show(['Al crearla se elige el mejor agente', ' (o se crea uno nuevo si ninguno encaja)']);
+  };
+  if (now) run(); else whoUi.timer = setTimeout(run, 350);
+}
+
+/** Resumen de «Opciones avanzadas» cerrado: se ve qué hay elegido sin abrirlo. */
+function syncAdvSummary() {
+  const f = $('#new-form');
+  const eng = f.engine.selectedOptions[0]?.textContent?.replace(/\s*\(.*$/, '') ?? 'Auto';
+  const rev = [...f.querySelectorAll('input[name=review]:checked')].map((x) => x.value);
+  $('#adv-sum').textContent = `· motor: ${eng}${rev.length ? ` · revisa: ${rev.join(', ')}` : ''}`;
 }
 
 function wireDialog(dialogSel, formSel, submit) {
@@ -1035,7 +1092,11 @@ function setupForms() {
   const taskForm = $('#new-form');
   const syncHint = () => {
     applyServerMode(taskForm);
-    $('#mode-hint').hidden = taskForm.mode.value !== 'edit';
+    $('#mode-hint').hidden = modeLevel(taskForm.mode) !== 'edit';
+    $('#full-hint').hidden = modeLevel(taskForm.mode) !== 'full';
+    const desc = taskForm.mode.selectedOptions[0]?.dataset.desc ?? ''; // qué entrega el modo elegido
+    $('#mode-desc').textContent = desc ? `→ ${desc}` : '';
+    $('#mode-desc').hidden = !desc;
     infraHint($('#infra-hint'), taskForm);
     const prov = state.providers.find((p) => p.name === taskForm.engine.value);
     const pick = PICK_ENGINES.includes(taskForm.engine.value) ? taskForm.engine.value : null;
@@ -1051,10 +1112,13 @@ function setupForms() {
       : `☁ El texto de la misión (título, descripción y resultados de pasos previos) se enviará a ${prov.name}. No ve archivos del proyecto y no puede editarlos.`;
   };
   state.syncHint = syncHint;
-  taskForm.mode.onchange = syncHint;
+  taskForm.mode.onchange = () => { syncHint(); updateWho(); };
   taskForm.project.onchange = syncHint;
-  taskForm.engine.onchange = syncHint;
-  taskForm.addEventListener('reset', () => setTimeout(syncHint));
+  taskForm.engine.onchange = () => { syncHint(); syncAdvSummary(); };
+  taskForm.addEventListener('change', (e) => { if (e.target.name === 'review') syncAdvSummary(); });
+  taskForm.title.addEventListener('input', () => updateWho());
+  taskForm.description.addEventListener('input', () => updateWho());
+  taskForm.addEventListener('reset', () => setTimeout(() => { syncHint(); taskForm.agent.value = 'auto'; updateWho(true); syncAdvSummary(); $('#new-adv').open = false; }));
   const rf = $('#routine-form');
   const syncTpl = () => {
     const t = state.templates.find((x) => x.id === rf.template.value);
@@ -1067,7 +1131,7 @@ function setupForms() {
   for (const d of document.querySelectorAll('dialog:not(#confirm-dialog):not(#approval-dialog)')) {
     d.addEventListener('mousedown', (e) => { if (e.target === d) d.close(); });
   }
-  $('#new-btn').onclick = () => { refreshModels(); openTaskDialog(syncHint); }; // al abrir se comprueba qué servidores siguen encendidos
+  $('#new-btn').onclick = () => { refreshModels(); openTaskDialog((f) => { syncHint(f); f.agent.value = 'auto'; updateWho(true); syncAdvSummary(); }); }; // al abrir se comprueba qué servidores siguen encendidos
   $('#obj-btn').onclick = () => openObjDialog();
   $('#new-routine').onclick = () => openRoutineDialog(syncTpl);
   setupSystem();
@@ -1669,7 +1733,7 @@ function localEngineItem(key, label, info, detail, kind, kindClass) {
     status: key === 'ollama' && info.enabled ? benchStatus('ollama', info.ok) : null,
     more: key === 'ollama' && info.enabled ? [probarOllama.res] : [],
     actions: [key === 'ollama' ? serverSwitch('ollama', info.enabled, info.ok, '/api/system/engines/ollama/toggle') : switchBtn(info.enabled, info.enabled ? `Apagar ${label}: las misiones dejan de usarlo` : `Encender ${label}`, async () => {
-      if (info.enabled && key === 'claude' && !(await confirmDialog('Apagar Claude Code', 'Sin Claude Code no se pueden editar archivos ni correr agentes de código; solo quedarán Ollama, Codex y los modelos extra (que únicamente leen). Puedes encenderlo cuando quieras.'))) return;
+      if (info.enabled && key === 'claude' && !(await confirmDialog('Apagar Claude Code', 'Las misiones en automático pasarán a Ollama, Codex o los modelos extra (que también pueden editar y actuar, aunque los modelos pequeños lo hacen peor). Puedes encenderlo cuando quieras.'))) return;
       await api(`/api/system/engines/${key}/toggle`, { method: 'PUT', body: JSON.stringify({ enabled: !info.enabled }) });
       toast(`${label} ${info.enabled ? 'apagado' : 'encendido'}`, false);
       await refreshState(); await refreshSystem();
@@ -1758,6 +1822,50 @@ async function refreshSystem() {
     renderSystem();
     if (state.modelInfo?.lmstudio_up === false && state.system.providers.some((p) => p.name === 'lmstudio' && p.enabled)) refreshModels(); // detecta cuándo enciendes el servidor de LM Studio
   } catch (e) { /* el servidor puede estar reiniciando */ }
+}
+
+// ---------- 🔑 secretos: los agentes los usan sin verlos; tú los ves solo cuando pulsas «Ver» ----------
+async function refreshVault() {
+  const box = $('#vault-list');
+  if (!box) return;
+  let list = [];
+  try { list = await api('/api/vault'); } catch (e) { box.replaceChildren(el('div', { className: 'h-err', textContent: e.message })); return; }
+  if (!list.length) return box.replaceChildren(el('div', { className: 'empty', textContent: 'Aún no hay secretos guardados.' }));
+  box.replaceChildren(el('ul', { className: 'vault-rows' }, ...list.map((s) => {
+    const val = el('code', { className: 'v-val', textContent: '•'.repeat(Math.min(12, s.length)) });
+    let shown = false;
+    const see = el('button', { type: 'button', className: 'mini-link', textContent: 'Ver' });
+    see.onclick = guard(async () => {
+      shown = !shown;
+      val.textContent = shown ? (await api(`/api/vault/${s.name}/value`)).value : '•'.repeat(Math.min(12, s.length));
+      see.textContent = shown ? 'Ocultar' : 'Ver';
+    });
+    const copy = el('button', { type: 'button', className: 'mini-link', textContent: 'Copiar marcador', title: `Copia ${s.placeholder} para usarlo en un mensaje` });
+    copy.onclick = () => navigator.clipboard?.writeText(s.placeholder).then(() => toast(`Copiado ${s.placeholder}`, false), () => toast('No se pudo copiar'));
+    const del = el('button', { type: 'button', className: 'mini-link danger-link', textContent: 'Borrar' });
+    del.onclick = guard(async () => {
+      if (!(await confirmDialog('Borrar secreto', `Se borrará ${s.name} de este equipo. Los agentes ya no podrán usarlo.`))) return;
+      await api(`/api/vault/${s.name}`, { method: 'DELETE' });
+      toast(`${s.name} borrado`, false); refreshVault();
+    });
+    return el('li', {}, el('b', { textContent: s.name }), val, el('span', { className: 'v-acts' }, see, ' · ', copy, ' · ', del));
+  })));
+}
+
+function setupVault() {
+  const form = $('#vault-form');
+  if (!form) return;
+  const name = $('#vault-name'); const value = $('#vault-value');
+  name.oninput = () => { const p = name.selectionStart; name.value = name.value.toUpperCase().replace(/[^A-Z0-9_]/g, '_'); name.setSelectionRange(p, p); };
+  form.onsubmit = guard(async (e) => {
+    e.preventDefault();
+    const r = await api(`/api/vault/${encodeURIComponent(name.value)}`, { method: 'PUT', body: JSON.stringify({ value: value.value }) });
+    value.value = '';
+    toast(`🔑 ${r.name} guardado. Los agentes lo usan como ${r.placeholder}${r.cleaned ? ` · borrado de ${r.cleaned} registro(s) donde aparecía` : ''}`, false);
+    name.value = '';
+    refreshVault();
+  });
+  refreshVault();
 }
 
 // ---------- importar / exportar agentes (sin repetir) ----------
@@ -1879,6 +1987,7 @@ function setSysTab(tab) {
 
 function setupSystem() {
   setupAgentsIO();
+  setupVault();
   for (const b of document.querySelectorAll('.sys-tabs button')) b.onclick = () => setSysTab(b.dataset.tab);
   let saved = null;
   try { saved = localStorage.getItem(SYS_TAB_KEY); } catch { /* sin almacenamiento */ }
@@ -1975,6 +2084,8 @@ function connect() {
       state.tasks.delete(m.id);
       if (state.open === m.id) state.open = null;
       render();
+    } else if (m.type === 'vault') {
+      refreshVault();
     } else if (m.type === 'agents-changed') {
       refreshState().then(renderAgentsCard).catch(() => {}); // importados desde esta u otra pestaña
     } else if (m.type === 'agent-created') {

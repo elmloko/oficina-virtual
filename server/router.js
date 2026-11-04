@@ -1,5 +1,7 @@
 // Elige motor y modo de ejecución. Reglas conservadoras: lo que toca infraestructura
 // real nunca se ejecuta con permisos de edición (skill infra-safety).
+import { READ_MODES } from './modes.js';
+
 const INFRA = new Set(['devops', 'cicd', 'iac', 'k8s', 'cloud', 'sre', 'netsec', 'backup-dr', 'windows-admin']);
 const LIGHT = new Set(['summarizer', 'translator', 'copywriter']);
 
@@ -17,21 +19,23 @@ export function route({ agent, engine = 'auto', mode = 'read', project = null },
   const extra = typeof project === 'string' && project.startsWith('@'); // carpetas extra: solo lectura
   const server = typeof project === 'string' && project.startsWith('srv:'); // servidor: modo infraestructura (plan y comandos)
   const forcedRead = INFRA.has(agent) || extra;
-  // «infra»: solo lectura de archivos + reglas de seguridad de infraestructura en el prompt (el agente nunca se conecta a servidores).
-  const finalMode = server || mode === 'infra' ? 'infra' : forcedRead ? 'read' : mode === 'edit' ? 'edit' : 'read';
+  // «infra»: con servidor de destino opera por la oficina (lo fuerte se aprueba); sin servidor, solo entrega un plan.
+  // «full»: control total de este equipo; lo eliges tú a propósito, así que ningún agente lo rebaja a solo lectura.
+  // Los modos que no cambian nada (analizar, explicar, revisar, redactar…) se conservan tal cual: valen con cualquier motor.
+  const readMode = READ_MODES.has(mode) ? mode : 'read';
+  const finalMode = server || mode === 'infra' ? 'infra' : mode === 'full' && !extra ? 'full' : forcedRead ? readMode : mode === 'edit' ? 'edit' : readMode;
+  // Editar, operar un servidor y control total valen con cualquier motor: Claude Code y Codex usan sus propias
+  // herramientas y los motores de chat las de la oficina (toolloop.js). En automático, lo que actúa va a Claude Code.
+  const acting = finalMode === 'edit' || finalMode === 'full';
   let finalEngine = engine;
   if (engine === 'auto') {
-    finalEngine = LIGHT.has(agent) && finalMode !== 'edit' ? 'ollama' : 'claude';
-    // En automático se esquiva el motor apagado si el otro puede hacer el trabajo (Ollama solo lee).
+    finalEngine = LIGHT.has(agent) && !acting ? 'ollama' : 'claude';
+    // En automático se esquiva el motor apagado si el otro puede hacer el trabajo.
     const out = [...off, ...down];
     if (finalEngine === 'ollama' && out.includes('ollama')) finalEngine = 'claude';
-    else if (finalEngine === 'claude' && off.includes('claude') && finalMode !== 'edit' && !out.includes('ollama')) finalEngine = 'ollama';
+    else if (finalEngine === 'claude' && off.includes('claude') && !out.includes('ollama')) finalEngine = 'ollama';
   }
-  // Ollama y los proveedores en internet son solo chat (sin archivos): si piden edición, va a Claude.
-  if (finalEngine !== 'claude' && finalMode === 'edit') finalEngine = 'claude';
-  const blocked = off.includes(finalEngine)
-    ? `${ENGINE_NAME[finalEngine]} está desactivado en Sistema${finalEngine === 'claude' && finalMode === 'edit' ? ' (editar archivos solo lo hace Claude Code)' : ''}`
-    : null;
+  const blocked = off.includes(finalEngine) ? `${ENGINE_NAME[finalEngine]} está desactivado en Sistema` : null;
   return {
     blocked,
     engine: finalEngine,
