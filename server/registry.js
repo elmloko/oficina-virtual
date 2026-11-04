@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { config } from './config.js';
+import { parseAgent } from './agents-io.js';
 
 /** Destino «servidor» (modo infraestructura): `srv:nombre`. No es una carpeta: el agente no se conecta, solo planifica. */
 export const isServerRef = (name) => typeof name === 'string' && name.startsWith('srv:');
@@ -49,6 +50,8 @@ export function listAgents(dir = config.agentsDir) {
   if (!existsSync(dir)) return [];
   return readdirSync(dir).filter((f) => f.endsWith('.md')).map((f) => {
     const text = readFileSync(join(dir, f), 'utf8');
+    const a = parseAgent(text, f); // entiende también descripciones YAML de varias líneas (description: |)
+    if (!a.error) return { name: a.name, description: a.description, tools: a.tools === '*' && !/^tools:/m.test(text) ? '' : a.tools };
     const get = (k) => (text.match(new RegExp(`^${k}:\\s*"?(.*?)"?\\s*$`, 'm')) || [])[1] || '';
     return { name: get('name') || f.slice(0, -3), description: get('description'), tools: get('tools') };
   }).sort((a, b) => a.name.localeCompare(b.name));

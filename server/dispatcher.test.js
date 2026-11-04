@@ -123,6 +123,26 @@ test('createAgentFile: rechaza nombres peligrosos, duplicados, definiciones vac�
   await assert.rejects(createAgentFile(agentsDir, { ...ok, name: 'inyeccion' }), /EEXIST/); // wx: nunca pisa
 });
 
+test('API: si se crea un agente nuevo, la web recibe el aviso "agent-created" por WebSocket', async () => {
+  const { WebSocket } = await import('ws');
+  const spec = { name: 'contador-iva', description: 'Calcula el IVA de facturas y planillas', prompt: 'Eres un contador. Calcula el IVA con precisión y explica el criterio.' };
+  const dispatcher = createDispatcher({ listAgents, agentsDir, ask: async () => JSON.stringify({ create: spec, reason: 'ninguno cubre lo fiscal' }) });
+  const app = createApp({ db: openDb(':memory:'), dispatcher, attachmentsDir: join(tmp, 'att2') });
+  await new Promise((r) => app.server.listen(0, '127.0.0.1', r));
+  const port = app.server.address().port;
+  const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+  try {
+    await new Promise((ok, ko) => { ws.once('open', ok); ws.once('error', ko); });
+    const llega = new Promise((ok) => ws.on('message', (d) => { const m = JSON.parse(d); if (m.type === 'agent-created') ok(m); }));
+    const r = await fetch(`http://127.0.0.1:${port}/api/tasks`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: 'Calcular el IVA', agent: 'auto' }) });
+    const body = await r.json();
+    const m = await Promise.race([llega, new Promise((_, ko) => setTimeout(() => ko(new Error('no llegó el aviso')), 3000))]);
+    assert.equal(m.agent.name, 'contador-iva');
+    assert.deepEqual(m.task, { id: body.id, title: 'Calcular el IVA' });
+    assert.equal(m.reason, 'ninguno cubre lo fiscal');
+  } finally { ws.terminate(); app.server.close(); app.server.closeAllConnections?.(); }
+});
+
 test('parseDecision: extrae el JSON aunque venga con texto alrededor', () => {
   assert.deepEqual(parseDecision('hola {"agent":"x"} adiós'), { agent: 'x' });
   assert.equal(parseDecision('sin json'), null);

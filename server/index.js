@@ -10,6 +10,7 @@ import { createScheduler, validateSpec } from './scheduler.js';
 import { TEMPLATES } from './templates.js';
 import { route } from './router.js';
 import { listAgents, listProjects, resolveProject, isExtraRoot, isServerRef } from './registry.js';
+import { exportBundle, readUpload, planImport, applyImport, scanSources, pickScanned, MAX_IMPORT } from './agents-io.js';
 import { insideBase } from './workspace.js';
 import { CLAUDE_MODELS, ollamaChatModels } from './system.js';
 import { OLLAMA_MODELS } from './router.js';
@@ -91,7 +92,7 @@ export const defaultLmsCtl = {
   }),
 };
 
-export function createApp({ db = openDb(), lmsCtl = defaultLmsCtl, runnerOpts = {}, now, providers = loadProviders(), logger = createLogger(), envFile = config.envFile, probe = createProbe({ config }), attachmentsDir = config.attachmentsDir, dispatcher, docsRoot = config.docsRoot, openFolder = (dir) => spawnProc('explorer.exe', [dir], { detached: true, stdio: 'ignore' }).unref(), ollamaFetch = fetch, serverCtl = defaultServerCtl, freeMem = freemem, runSshFn = runSsh, runSsh2Fn = runSsh2, approvalWaitMs = 15 * 60_000 } = {}) {
+export function createApp({ db = openDb(), lmsCtl = defaultLmsCtl, runnerOpts = {}, now, providers = loadProviders(), logger = createLogger(), envFile = config.envFile, probe = createProbe({ config }), attachmentsDir = config.attachmentsDir, dispatcher, docsRoot = config.docsRoot, openFolder = (dir) => spawnProc('explorer.exe', [dir], { detached: true, stdio: 'ignore' }).unref(), ollamaFetch = fetch, serverCtl = defaultServerCtl, freeMem = freemem, runSshFn = runSsh, runSsh2Fn = runSsh2, approvalWaitMs = 15 * 60_000, agentSources = config.agentSources } = {}) {
   const startedAt = new Date();
   const APPROVAL_WAIT_MS = approvalWaitMs;
   /** Contraseña guardada de un servidor (vive en .env, codificada); null = se usa tu llave SSH. */
@@ -239,6 +240,37 @@ export function createApp({ db = openDb(), lmsCtl = defaultLmsCtl, runnerOpts = 
         settings: db.settings(), providers: publicProviders(providers), templates: TEMPLATES, schedules: db.schedules(), costs: costs(),
         messages: db.messages(150),
       });
+    }
+    // ---------- importar / exportar agentes (sin repetir: compara nombre y contenido; nunca reemplaza uno tuyo) ----------
+    if (method === 'GET' && url.pathname === '/api/agents/export') {
+      const names = (url.searchParams.get('names') || '').split(',').map((s) => s.trim()).filter(Boolean);
+      const bundle = exportBundle(config.agentsDir, names);
+      db.audit('agent.export', null, `${bundle.agents.length} agentes`);
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'Content-Disposition': `attachment; filename="agentes-${bundle.exported_at.slice(0, 10)}.json"` });
+      return res.end(JSON.stringify(bundle, null, 2));
+    }
+    if (method === 'GET' && url.pathname === '/api/agents/scan') return send(res, 200, { sources: agentSources.map((s) => s.label), agents: scanSources(agentSources, config.agentsDir) });
+    if (method === 'POST' && url.pathname === '/api/agents/import') {
+      let body; try { body = await readJson(req); } catch (e) { return send(res, 400, { error: e.message }); }
+      let items;
+      if (Array.isArray(body.ids)) { // desde «Buscar en este equipo»: el servidor relee el disco, el navegador solo elige
+        if (body.ids.length > MAX_IMPORT) return send(res, 400, { error: `Como máximo ${MAX_IMPORT} agentes por vez` });
+        items = pickScanned(agentSources, body.ids.filter((x) => typeof x === 'string' && /^[0-9a-f]{64}$/.test(x)));
+        if (!items.length) return send(res, 400, { error: 'Esos agentes ya no están en el equipo; vuelve a buscar' });
+      } else {
+        const up = readUpload(body);
+        if (up.error) return send(res, 400, { error: up.error });
+        items = up.items;
+      }
+      if (body.dry) return send(res, 200, { results: planImport(items, config.agentsDir).map(({ content, ...p }) => p) });
+      const results = await applyImport(items, config.agentsDir);
+      const done = results.filter((r) => r.status === 'importado').map((r) => r.name);
+      if (done.length) {
+        db.audit('agent.import', null, done.join(', '));
+        logger.info(`Agentes importados (${done.length}): ${done.join(', ')}`);
+        broadcast({ type: 'agents-changed' });
+      }
+      return send(res, 200, { results });
     }
     if (method === 'GET' && url.pathname === '/api/replies/history') return send(res, 200, db.userHistory(Math.min(500, Number(url.searchParams.get('limit')) || 100)));
     if (method === 'GET' && url.pathname === '/api/messages') return send(res, 200, db.messages(Math.min(500, Number(url.searchParams.get('limit')) || 150)));
@@ -505,6 +537,10 @@ export function createApp({ db = openDb(), lmsCtl = defaultLmsCtl, runnerOpts = 
         db.addEvent(task.id, 'info', `Agente elegido automáticamente: ${choice.agent}${choice.created ? ' (agente nuevo creado)' : ''} — ${choice.reason}`);
       }
       emit(task.id);
+      if (choice?.created) { // aviso en vivo: la web lo muestra como notificación (en todas las pestañas abiertas)
+        logger.info(`Agente nuevo creado: ${choice.created.name} (para la misión #${task.id})`);
+        broadcast({ type: 'agent-created', agent: choice.created, task: { id: task.id, title: task.title }, reason: choice.reason });
+      }
       return send(res, 201, choice ? { ...task, auto: choice } : task);
     }
     // --- infraestructura: el agente pide ejecutar un comando; lo fuerte espera tu aprobación ---

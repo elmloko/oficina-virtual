@@ -99,6 +99,7 @@
       <button role="tab" data-tab="resumen" aria-selected="true">Resumen</button>
       <button role="tab" data-tab="motores" aria-selected="false">Motores y modelos</button>
       <button role="tab" data-tab="ajustes" aria-selected="false">Ajustes y rutinas</button>
+      <button role="tab" data-tab="agentes" aria-selected="false">Agentes</button>
       <button role="tab" data-tab="comunicaciones" aria-selected="false">Comunicaciones <span id="comms-badge" class="badge live" hidden>0</span></button>
       <button role="tab" data-tab="registro" aria-selected="false">Registro</button>
     </nav>
@@ -112,6 +113,17 @@
       <article class="card-sys wide" id="card-providers" data-g="motores"><h2>Motores y modelos</h2>
         <p class="hint">Apaga con el interruptor lo que no quieras usar: las misiones no lo tocarán y tus claves se conservan (viven en <code>.env</code>; solo se ve su final).</p>
         <div id="sys-engines"></div></article>
+      <article class="card-sys wide" id="card-agents" data-g="agentes"><h2>Agentes <span id="ag-count" class="muted"></span></h2>
+        <p class="hint">Lleva tus agentes a otro equipo o trae los que tengas en otras carpetas. <b>Nunca se repiten ni se reemplazan</b>: si ya tienes ese agente (aunque tenga otro nombre) se salta, y si hay otro distinto con el mismo nombre se respeta el tuyo.</p>
+        <div class="ag-actions">
+          <a id="ag-export" class="btn" href="/api/agents/export" download>⬇ Exportar todos</a>
+          <button type="button" id="ag-export-sel" hidden>⬇ Exportar seleccionados</button>
+          <label class="btn" for="ag-file">⬆ Importar archivos…</label>
+          <input type="file" id="ag-file" accept=".md,.json" multiple hidden>
+          <button type="button" id="ag-scan">🔎 Buscar en este equipo</button>
+        </div>
+        <div id="ag-preview"></div>
+        <div id="ag-list"></div></article>
       <article class="card-sys" id="card-schedules" data-g="ajustes"><h2>Próximas rutinas <button type="button" class="mini-link" id="goto-routines">Gestionar →</button></h2><div id="sys-schedules"></div>
         <p class="hint">Las rutinas corren en modo solo lectura y solo mientras la oficina está encendida.</p></article>
       <article class="card-sys wide" id="card-servers" data-g="ajustes"><h2>Servidores (modo infraestructura)</h2>
@@ -252,6 +264,7 @@
   </dialog>
 
   <div id="toast" role="status" aria-live="polite"></div>
+  <div id="notices" aria-live="polite" aria-label="Notificaciones"></div>
 
   <aside id="drawer" hidden aria-label="Detalle de misión">
     <div class="drawer-head">

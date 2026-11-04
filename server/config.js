@@ -60,6 +60,9 @@ export const config = {
   // Espacio «+Documentos»: cada misión que guarda archivos crea ahí una carpeta nueva con el nombre de su tema.
   docsRoot: process.env.DOCS_ROOT || docsCandidates.find((p) => existsSync(p)) || join(homedir(), 'Documents'),
   agentsDir: process.env.AGENTS_DIR || join(homedir(), '.claude', 'agents'),
+  // Dónde buscar otros agentes del equipo para importarlos (solo se leen). Formato: Nombre=Ruta;Otro=Ruta2
+  agentSources: Object.entries(parseExtraRoots(process.env.AGENT_SOURCES ?? `Plugins=${join(homedir(), '.claude', 'plugins')};Proyectos=${process.env.HTDOCS_ROOT || 'C:\\xampp\\htdocs'}`))
+    .map(([k, path]) => ({ label: k.slice(1), path })),
   ollamaUrl: process.env.OLLAMA_URL || 'http://127.0.0.1:11434',
   maxClaude: Number(process.env.MAX_CLAUDE_CONCURRENCY || 2),
   maxOllama: Number(process.env.MAX_OLLAMA_CONCURRENCY || 1),

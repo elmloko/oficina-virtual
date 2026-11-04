@@ -1760,18 +1760,125 @@ async function refreshSystem() {
   } catch (e) { /* el servidor puede estar reiniciando */ }
 }
 
+// ---------- importar / exportar agentes (sin repetir) ----------
+const agentsUi = { selected: new Set(), preview: null }; // preview: { from: 'archivos'|'equipo', items, results }
+const canEditTools = (tools) => !tools || tools.trim() === '*' || /\b(Edit|Write)\b/.test(tools);
+const AG_STATUS = { nuevo: ['Nuevo', 'ok'], importado: ['Importado', 'ok'], igual: ['Ya lo tienes', 'same'], conflicto: ['Nombre ocupado', 'warn'], repetido: ['Repetido', 'same'], invalido: ['No válido', 'bad'] };
+
+function renderAgentsCard() {
+  const box = $('#ag-list');
+  if (!box) return;
+  const names = new Set(state.agents.map((a) => a.name));
+  for (const n of agentsUi.selected) if (!names.has(n)) agentsUi.selected.delete(n);
+  $('#ag-count').textContent = `(${state.agents.length})`;
+  $('#ag-export-sel').hidden = !agentsUi.selected.size;
+  $('#ag-export-sel').textContent = `⬇ Exportar seleccionados (${agentsUi.selected.size})`;
+  box.replaceChildren(el('h3', { textContent: 'Tus agentes' }), state.agents.length ? el('ul', { className: 'ag-rows' }, ...state.agents.map((a) => {
+    const cb = el('input', { type: 'checkbox', checked: agentsUi.selected.has(a.name), ariaLabel: `Seleccionar ${a.name} para exportar` });
+    cb.onchange = () => { cb.checked ? agentsUi.selected.add(a.name) : agentsUi.selected.delete(a.name); renderAgentsCard(); };
+    return el('li', {}, el('label', { className: 'ag-row' }, cb, el('b', { textContent: a.name }),
+      el('span', { className: `ag-perm ${canEditTools(a.tools) ? 'edit' : ''}`, textContent: canEditTools(a.tools) ? 'puede editar' : 'solo lectura' }),
+      el('span', { className: 'muted', textContent: a.description, title: a.description })));
+  })) : el('div', { className: 'empty', textContent: 'Aún no tienes agentes: impórtalos o búscalos en este equipo.' }));
+}
+
+function renderAgentsPreview() {
+  const box = $('#ag-preview');
+  const p = agentsUi.preview;
+  if (!p) return box.replaceChildren();
+  const count = (s) => p.results.filter((r) => r.status === s).length;
+  const pick = p.results.map((r) => r.status === 'nuevo');
+  const go = el('button', { type: 'button', className: 'primary' });
+  const update = () => { const n = pick.filter(Boolean).length; go.textContent = `Importar ${n} agente${n === 1 ? '' : 's'}`; go.disabled = !n; };
+  const rows = p.results.map((r, i) => {
+    const [label, cls] = AG_STATUS[r.status] ?? [r.status, ''];
+    const cb = el('input', { type: 'checkbox', checked: pick[i], disabled: r.status !== 'nuevo', ariaLabel: `Importar ${r.name}` });
+    cb.onchange = () => { pick[i] = cb.checked; update(); };
+    return el('tr', { className: r.status === 'nuevo' ? '' : 'dim' },
+      el('td', {}, cb),
+      el('td', {}, el('b', { textContent: r.name }), el('div', { className: 'muted', textContent: r.description ?? '' })),
+      el('td', { className: 'muted', textContent: r.source ?? '' }),
+      el('td', {}, el('span', { className: `ag-st ${cls}`, textContent: label, title: r.reason ?? '' }), r.reason && r.status !== 'nuevo' ? el('div', { className: 'muted small', textContent: r.reason }) : ''));
+  });
+  go.onclick = guard(async () => {
+    go.disabled = true;
+    const chosen = p.results.map((r, i) => (pick[i] ? i : -1)).filter((i) => i >= 0);
+    const body = p.from === 'equipo' ? { ids: chosen.map((i) => p.results[i].id) } : { agents: chosen.map((i) => p.items[i]) };
+    const { results } = await post('/api/agents/import', body);
+    const ok = results.filter((r) => r.status === 'importado');
+    const skipped = results.length - ok.length;
+    const names = ok.slice(0, 5).map((r) => r.name).join(', ') + (ok.length > 5 ? ` y ${ok.length - 5} más` : '');
+    toast(ok.length ? `Importados ${ok.length}: ${names}${skipped ? ` · ${skipped} saltados (ya los tenías)` : ''}` : 'No se importó nada: ya los tenías', !ok.length);
+    agentsUi.preview = null; renderAgentsPreview();
+    await refreshState();
+    renderAgentsCard();
+  });
+  const close = el('button', { type: 'button', textContent: 'Cancelar' });
+  close.onclick = () => { agentsUi.preview = null; renderAgentsPreview(); };
+  update();
+  box.replaceChildren(el('div', { className: 'ag-preview' },
+    el('h3', { textContent: p.from === 'equipo' ? 'Agentes encontrados en este equipo' : 'Vista previa de la importación' }),
+    el('p', { className: 'hint', textContent: `${count('nuevo')} nuevos · ${count('igual') + count('repetido')} ya los tienes o están repetidos · ${count('conflicto')} con un nombre que ya usas (se respeta el tuyo)${count('invalido') ? ` · ${count('invalido')} no válidos` : ''}. Nada se guarda hasta que pulses Importar.` }),
+    p.results.length ? el('div', { className: 'ag-table' }, el('table', {}, el('thead', {}, el('tr', {}, el('th', {}), el('th', { textContent: 'Agente' }), el('th', { textContent: 'Origen' }), el('th', { textContent: 'Estado' }))), el('tbody', {}, ...rows)))
+      : el('div', { className: 'empty', textContent: 'No se encontró ningún agente.' }),
+    el('div', { className: 'btns' }, go, close)));
+}
+
+/** Lee los archivos elegidos: paquetes .json exportados o agentes .md sueltos. */
+async function readAgentFiles(files) {
+  const items = [];
+  let size = 0;
+  for (const f of files) {
+    size += f.size;
+    if (size > 900_000) throw new Error('Demasiados datos de una vez (máx. ~900 KB): importa en tandas');
+    const text = await f.text();
+    if (/\.json$/i.test(f.name)) {
+      let b; try { b = JSON.parse(text); } catch { throw new Error(`${f.name} no es un JSON válido`); }
+      if (b?.format !== 'oficina-agentes' || !Array.isArray(b.agents)) throw new Error(`${f.name} no es un paquete de agentes exportado desde la oficina`);
+      for (const a of b.agents) if (typeof a?.content === 'string') items.push({ filename: `${a.name ?? 'agente'}.md`, content: a.content, source: f.name });
+    } else items.push({ filename: f.name, content: text, source: f.name });
+  }
+  return items;
+}
+
+function setupAgentsIO() {
+  $('#ag-export-sel').onclick = () => { location.href = `/api/agents/export?names=${encodeURIComponent([...agentsUi.selected].join(','))}`; };
+  $('#ag-file').onchange = guard(async (e) => {
+    const files = [...e.target.files];
+    e.target.value = ''; // permite volver a elegir los mismos archivos
+    if (!files.length) return;
+    const items = await readAgentFiles(files);
+    if (!items.length) throw new Error('Esos archivos no traen agentes');
+    const { results } = await post('/api/agents/import', { agents: items, dry: true });
+    agentsUi.preview = { from: 'archivos', items, results: results.map((r, i) => ({ ...r, source: items[i].source })) };
+    renderAgentsPreview();
+  });
+  const scan = $('#ag-scan');
+  scan.onclick = guard(async () => {
+    scan.disabled = true; scan.textContent = '🔎 Buscando…';
+    try {
+      const r = await api('/api/agents/scan');
+      const order = { nuevo: 0, conflicto: 1, repetido: 2, igual: 3 };
+      agentsUi.preview = { from: 'equipo', results: r.agents.sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9) || a.name.localeCompare(b.name)) };
+      renderAgentsPreview();
+    } finally { scan.disabled = false; scan.textContent = '🔎 Buscar en este equipo'; }
+  });
+}
+
 const SYS_TAB_KEY = 'oficina.systab';
 function setSysTab(tab) {
-  const tabs = ['resumen', 'motores', 'ajustes', 'comunicaciones', 'registro'];
+  const tabs = ['resumen', 'motores', 'ajustes', 'agentes', 'comunicaciones', 'registro'];
   if (!tabs.includes(tab)) tab = 'resumen';
   $('#view-system').dataset.tab = tab;
   for (const b of document.querySelectorAll('.sys-tabs button')) b.setAttribute('aria-selected', String(b.dataset.tab === tab));
   try { localStorage.setItem(SYS_TAB_KEY, tab); } catch { /* sin almacenamiento: vale solo esta sesión */ }
   if (tab === 'registro') renderLogs();
   if (tab === 'comunicaciones') renderComms();
+  if (tab === 'agentes') renderAgentsCard();
 }
 
 function setupSystem() {
+  setupAgentsIO();
   for (const b of document.querySelectorAll('.sys-tabs button')) b.onclick = () => setSysTab(b.dataset.tab);
   let saved = null;
   try { saved = localStorage.getItem(SYS_TAB_KEY); } catch { /* sin almacenamiento */ }
@@ -1805,6 +1912,45 @@ async function refreshState() {
   render();
 }
 
+/**
+ * Aviso que se queda en pantalla hasta cerrarlo (a diferencia del toast, que se va solo).
+ * `actions`: [[texto, fn]]. Devuelve el nodo para poder cerrarlo desde fuera.
+ */
+function notice({ icon = 'ℹ', title, lines = [], actions = [], kind = '' }) {
+  const box = el('div', { className: `notice ${kind}`, role: 'status' });
+  const close = () => { box.classList.add('out'); setTimeout(() => box.remove(), 200); };
+  box.append(
+    el('div', { className: 'n-head' }, el('b', { textContent: `${icon} ${title}` }), el('button', { className: 'n-x', type: 'button', textContent: '✕', title: 'Cerrar', ariaLabel: 'Cerrar notificación', onclick: close })),
+    ...lines.filter(Boolean).map((l) => (typeof l === 'string' ? el('div', { className: 'n-line', textContent: l }) : l)),
+    ...(actions.length ? [el('div', { className: 'n-act' }, ...actions.map(([t, fn, primary]) => el('button', { type: 'button', className: primary ? 'primary' : '', textContent: t, onclick: guard(async () => { if ((await fn()) !== false) close(); }) })))] : []));
+  $('#notices').prepend(box);
+  while ($('#notices').children.length > 4) $('#notices').lastElementChild.remove(); // como mucho 4 a la vez
+  return box;
+}
+
+/** El despachador creó un agente nuevo para una misión: avisar en la web y, si diste permiso, también en Windows. */
+function noticeAgentCreated({ agent, task, reason }) {
+  const edits = /\b(Edit|Write)\b/.test(agent.tools ?? '');
+  const perms = edits ? 'puede leer y editar archivos del proyecto' : 'solo lectura (no edita archivos)';
+  const wantsDesktop = 'Notification' in window && Notification.permission === 'default';
+  notice({
+    icon: '🤖', kind: 'agent', title: 'Nuevo agente creado',
+    lines: [
+      el('div', { className: 'n-name' }, el('strong', { textContent: agent.name }), span(` — ${agent.description}`)),
+      `Permisos: ${perms}.`,
+      `Lo creó el despachador para la misión #${task.id} «${task.title}»${reason ? `: ${reason}` : ''}.`,
+      'Se guardó en tu carpeta de agentes y ya puedes elegirlo en las misiones nuevas.',
+    ],
+    actions: [
+      ['Ver misión', () => openDrawer(task.id), true],
+      ...(wantsDesktop ? [['Avisarme también en Windows', async () => { await Notification.requestPermission(); return false; }]] : []),
+    ],
+  });
+  if ('Notification' in window && Notification.permission === 'granted' && document.hidden) {
+    try { new Notification('🤖 Nuevo agente creado', { body: `${agent.name}: ${agent.description}`, tag: `agent-${agent.name}` }); } catch { /* algunos navegadores no lo permiten fuera de un service worker */ }
+  }
+}
+
 function connect() {
   const ws = new WebSocket(`ws://${location.host}/ws`);
   ws.onmessage = (e) => {
@@ -1829,6 +1975,11 @@ function connect() {
       state.tasks.delete(m.id);
       if (state.open === m.id) state.open = null;
       render();
+    } else if (m.type === 'agents-changed') {
+      refreshState().then(renderAgentsCard).catch(() => {}); // importados desde esta u otra pestaña
+    } else if (m.type === 'agent-created') {
+      noticeAgentCreated(m);
+      refreshState().then(renderAgentsCard).catch(() => {}); // el agente nuevo aparece ya en las listas
     }
   };
   ws.onclose = () => setTimeout(connect, 1500); // reconexión simple
