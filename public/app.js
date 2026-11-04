@@ -511,6 +511,8 @@ function drawer(t) {
   del.onclick = guard(async () => { if (await confirmDialog('Eliminar misión', isObj && kids.length ? 'Se eliminarán también sus pasos.' : '¿Eliminar esta misión?')) await api(`/api/tasks/${t.id}`, { method: 'DELETE' }); });
   act.append(del);
 
+  optionsPanel(t);
+
   // responder al agente (también cuando pregunta): el formulario solo se rehace si cambia la misión o su estado, para no perder el foco al escribir
   const reply = $('#d-reply');
   const canReply = FINISHED.has(t.status) && t.kind !== 'objective';
@@ -551,6 +553,76 @@ function drawer(t) {
       steps.append(row);
     }
   }
+}
+
+/**
+ * Opciones de una misión ya enviada: agente, dónde, qué puede hacer, motor, modelo y revisión. Las instrucciones iniciales no
+ * (las correcciones van en el chat). Valen desde la próxima ejecución o respuesta. Reutiliza las listas del formulario de misión.
+ */
+function optionsPanel(t) {
+  const box = $('#d-opts');
+  const isObj = t.kind === 'objective';
+  box.hidden = isObj;
+  if (isObj) return;
+  const busy = t.status === 'queued' || t.status === 'running';
+  $('#d-opts-sum').textContent = `${t.agent} · ${MODE_ES[t.recipe || t.mode] ?? t.mode} · ${t.engine}${t.model ? ':' + t.model : ''}`;
+  const sig = JSON.stringify([t.id, busy, t.agent, t.project, t.engine, t.model, t.mode, t.recipe, t.chain, t.change_state, state.agents.length, state.providers.length]);
+  const body = $('#d-opts-body');
+  if (body.dataset.sig === sig) return; // no rehacer mientras eliges (las actualizaciones en vivo no te quitan la selección)
+  body.dataset.sig = sig;
+  const nf = $('#new-form');
+  const clone = (sel, name, value) => { const s = sel.cloneNode(true); s.name = name; s.removeAttribute('id'); for (const o of s.options) o.disabled = false; s.value = value; return s; };
+  const f = el('form', { className: 'opts-form' });
+  const agent = el('select', { name: 'agent' }, ...state.agents.map((a) => el('option', { value: a.name, textContent: a.name, title: a.description ?? '' })));
+  agent.value = t.agent;
+  const project = clone(nf.project, 'project', t.project ?? '');
+  const mode = clone(nf.mode, 'mode', t.recipe || t.mode);
+  const engine = clone(nf.engine, 'engine', t.engine ?? 'auto');
+  if (engine.value !== (t.engine ?? 'auto')) { // su motor está apagado ahora: se muestra igual para no cambiarlo sin querer
+    engine.append(el('option', { value: t.engine, textContent: `${t.engine} (apagado ahora)` }));
+    engine.value = t.engine;
+  }
+  const modelSlot = el('span');
+  const modelField = () => {
+    const pick = PICK_ENGINES.includes(engine.value) ? engine.value : null;
+    const prov = state.providers.find((p) => p.name === engine.value);
+    const cur = engine.value === t.engine ? (t.model ?? '') : '';
+    const m = pick ? el('select', { name: 'model' }, ...modelOptions(pick, cur)) : el('input', { name: 'model', value: cur, placeholder: prov ? `por defecto: ${prov.model}` : 'lo elige el router', disabled: !prov });
+    if (pick) m.value = [...m.options].some((o) => o.value === cur) ? cur : '';
+    modelSlot.replaceChildren(el('label', {}, 'Modelo ', m));
+  };
+  modelField();
+  const names = new Set(state.agents.map((a) => a.name));
+  const reviewers = el('div', { className: 'chks' }, ...REVIEWERS.filter(([n]) => names.has(n)).map(([n, why]) => el('label', { className: 'chk', title: why }, el('input', { type: 'checkbox', name: 'review', value: n, checked: t.chain.includes(n) }), el('span', { textContent: n }))));
+  const syncLimits = () => { // en un servidor solo modos de servidor; un revisor no puede ser el mismo agente
+    const srv = String(project.value).startsWith('srv:');
+    for (const o of mode.options) o.disabled = srv && ['edit', 'full'].includes(o.dataset.level ?? o.value);
+    if (srv && (mode.selectedOptions[0]?.dataset.level ?? mode.value) !== 'infra') mode.value = 'infra';
+    for (const c of reviewers.querySelectorAll('input')) { c.disabled = c.value === agent.value; if (c.disabled) c.checked = false; }
+  };
+  project.onchange = syncLimits; agent.onchange = syncLimits;
+  engine.onchange = modelField;
+  syncLimits();
+  const save = el('button', { type: 'submit', className: 'primary', textContent: 'Guardar opciones', disabled: busy });
+  const err = el('p', { className: 'form-error' });
+  f.append(
+    el('div', { className: 'grid2' }, el('label', {}, 'Agente ', agent), el('label', {}, '¿Dónde? ', project)),
+    el('label', {}, '¿Qué puede hacer? ', mode),
+    el('div', { className: 'grid2' }, el('label', {}, 'Motor ', engine), modelSlot),
+    ...(reviewers.children.length ? [el('div', { className: 'muted', textContent: 'Revisión automática al terminar:' }), reviewers] : []),
+    el('p', { className: 'muted', textContent: busy ? 'La misión está en curso: espera a que termine (o cancélala) para cambiar sus opciones.' : 'Las instrucciones iniciales no cambian; las opciones valen desde la próxima ejecución o respuesta en el chat.' }),
+    err, save);
+  f.onsubmit = guard(async (e) => {
+    e.preventDefault();
+    err.textContent = '';
+    const fd = new FormData(f);
+    const next = { agent: fd.get('agent'), project: fd.get('project') || null, mode: fd.get('mode'), engine: fd.get('engine'), model: fd.get('model') || null, review: fd.getAll('review') };
+    const was = { agent: t.agent, project: t.project ?? null, mode: t.recipe || t.mode, engine: t.engine, model: t.model ?? null, review: t.chain };
+    const diff = Object.fromEntries(Object.entries(next).filter(([k, v]) => JSON.stringify(v) !== JSON.stringify(was[k])));
+    if (!Object.keys(diff).length) { toast('No cambiaste nada', false); return; }
+    try { await api(`/api/tasks/${t.id}`, { method: 'PATCH', body: JSON.stringify(diff) }); toast('Opciones guardadas: valen desde la próxima ejecución o respuesta', false); } catch (x) { err.textContent = x.message; }
+  });
+  body.replaceChildren(f);
 }
 
 // ---------- cambios de una misión que edita (rama git aislada) ----------

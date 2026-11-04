@@ -321,6 +321,31 @@ test('modos que no cambian nada: valen con cualquier motor, se conservan y le di
   assert.equal(app.db.getTask(t.id).mode, 'review');
 });
 
+test('opciones de una misión ya enviada: se cambian todas menos las instrucciones iniciales', async () => {
+  const t = (await call('POST', '/api/tasks', { title: 'Revisar login', description: 'Mira el login', agent: 'backend', mode: 'review' })).body;
+  // Antes de enviarla, el título y la descripción aún se pueden corregir
+  assert.equal((await call('PATCH', `/api/tasks/${t.id}`, { description: 'Mira el login y el registro' })).status, 200);
+  assert.equal((await call('POST', `/api/tasks/${t.id}/run`, {})).status, 202);
+  await waitFor(() => app.db.getTask(t.id).status === 'review');
+  // Enviada: las instrucciones quedan fijas…
+  const locked = await call('PATCH', `/api/tasks/${t.id}`, { description: 'otra cosa' });
+  assert.equal(locked.status, 400); assert.match(locked.body.error, /instrucciones iniciales/);
+  assert.equal((await call('PATCH', `/api/tasks/${t.id}`, { title: 'otro título' })).status, 400);
+  // …y las opciones sí: agente, modo (receta), motor, modelo, proyecto y revisión
+  const ok = await call('PATCH', `/api/tasks/${t.id}`, { agent: 'tester', mode: 'fix', project: 'proj', engine: 'ollama', model: 'gemma3:4b', review: ['reviewer', 'security'] });
+  assert.equal(ok.status, 200, JSON.stringify(ok.body));
+  assert.deepEqual([ok.body.agent, ok.body.mode, ok.body.recipe, ok.body.project, ok.body.engine, ok.body.model, ok.body.chain, ok.body.description], ['tester', 'edit', 'fix', 'proj', 'ollama', 'gemma3:4b', ['reviewer', 'security'], 'Mira el login y el registro']);
+  assert.match(app.db.events(t.id).map((e) => e.text).join('\n'), /⚙ Opciones cambiadas/);
+  // El revisor no puede ser el propio agente: al cambiar de agente se quita de la revisión
+  const self = await call('PATCH', `/api/tasks/${t.id}`, { agent: 'reviewer' });
+  assert.deepEqual(self.body.chain, ['security']);
+  assert.equal((await call('PATCH', `/api/tasks/${t.id}`, { review: ['reviewer'] })).status, 400);
+  // En curso no se cambian
+  app.db.updateTask(t.id, { status: 'running' });
+  assert.equal((await call('PATCH', `/api/tasks/${t.id}`, { engine: 'claude' })).status, 409);
+  app.db.updateTask(t.id, { status: 'review' });
+});
+
 test('modos de trabajo: se guardan con su permiso real, sugieren su agente y están en el formulario y en la exportación', async () => {
   const { MODE_INFO } = await import('./modes.js');
   const { MODE_ES } = await import('../public/exporter.js');

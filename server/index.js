@@ -761,11 +761,27 @@ export function createApp({ db = openDb(), lmsCtl = defaultLmsCtl, runnerOpts = 
       }
       if (method === 'PATCH') {
         const body = await readJson(req);
+        // Una vez enviada, las instrucciones iniciales quedan fijas (las correcciones van en el chat); las opciones sí se pueden cambiar.
+        if (task.started_at && ['title', 'description'].some((k) => k in body)) return send(res, 400, { error: 'Las instrucciones iniciales no se cambian una vez enviada la misión: escribe la corrección en el chat de la misión.' });
+        const opts = ['project', 'agent', 'engine', 'mode', 'model', 'review'].filter((k) => k in body);
+        if (opts.length && ['queued', 'running'].includes(task.status)) return send(res, 409, { error: 'La misión está en curso: cancélala o espera a que termine para cambiar sus opciones.' });
+        if ('project' in body && body.project !== task.project && task.change_state === 'pending') return send(res, 409, { error: 'Tiene cambios sin aplicar en su proyecto: aplícalos o descártalos antes de cambiar de proyecto.' });
         const { error, value } = validate({ ...body, project: 'project' in body ? body.project : task.project, mode: body.mode ?? task.mode }, { partial: true });
         if (error) return send(res, 400, { error });
         const patch = {};
         for (const k of ['title', 'description', 'project', 'agent', 'engine', 'mode', 'model']) if (k in body) patch[k] = value[k];
         if ('mode' in body) patch.recipe = value.recipe;
+        const author = value.agent ?? task.agent;
+        if ('review' in body || task.chain.includes(author)) { // revisores: nunca el propio autor
+          const chain = parseChain('review' in body ? body.review : task.chain.filter((a) => a !== author), author);
+          if (chain.error) return send(res, 400, { error: chain.error });
+          if (JSON.stringify(chain.value) !== JSON.stringify(task.chain)) Object.assign(patch, { chain: chain.value, chain_fired: 0 }); // se lanzan tras la próxima ejecución
+        }
+        if (opts.length) {
+          const what = opts.map((k) => (k === 'review' ? `revisión: ${(patch.chain ?? task.chain).join(', ') || 'ninguna'}` : `${k}: ${k === 'mode' ? modeLabel(body.mode) : (patch[k] ?? '—')}`)).join(' · ');
+          runner.log(id, 'info', `⚙ Opciones cambiadas (valen desde la próxima ejecución o respuesta): ${what}`);
+          db.audit('task.options', id, what);
+        }
         if (body.status !== undefined) {
           if (!MANUAL_STATUSES.has(body.status) || ['queued', 'running'].includes(task.status)) return send(res, 400, { error: 'Cambio de estado no permitido' });
           patch.status = body.status;

@@ -22,7 +22,7 @@ export const DEFAULT_SETTINGS = {
 const LIMIT_KEYS = new Set(['max_claude', 'max_ollama', 'max_api', 'max_codex', 'max_lmstudio']);
 
 const TASK_COLUMNS = ['title', 'description', 'project', 'agent', 'engine', 'mode', 'status', 'result', 'error',
-  'cost_usd', 'started_at', 'finished_at', 'parent_id', 'depends_on', 'kind', 'schedule_id', 'model', 'reply_text', 'branch', 'worktree', 'base_sha', 'change_state', 'chain_fired', 'workdir', 'used_model', 'allow_all', 'recipe'];
+  'cost_usd', 'started_at', 'finished_at', 'parent_id', 'depends_on', 'kind', 'schedule_id', 'model', 'reply_text', 'branch', 'worktree', 'base_sha', 'change_state', 'chain_fired', 'workdir', 'used_model', 'allow_all', 'recipe', 'chain'];
 
 function addColumnIfMissing(db, table, column, ddl) {
   const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
@@ -227,7 +227,7 @@ export function openDb(file = config.dbFile) {
       const keys = Object.keys(patch).filter((k) => TASK_COLUMNS.includes(k));
       if (!keys.length) return parseTask(q.get.get(id));
       const sets = keys.map((k) => `${k} = ?`).join(', ');
-      const vals = keys.map((k) => (k === 'depends_on' ? JSON.stringify(patch[k]) : patch[k]));
+      const vals = keys.map((k) => (k === 'depends_on' || k === 'chain' ? JSON.stringify(patch[k]) : patch[k]));
       return parseTask(db.prepare(`UPDATE tasks SET ${sets}, updated_at = datetime('now') WHERE id = ? RETURNING *`).get(...vals, id));
     },
 

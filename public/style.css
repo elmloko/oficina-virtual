@@ -715,3 +715,11 @@ em.cat-task { color: var(--gold); border-color: var(--gold); } em.cat-sys { colo
 }
 
 .alerts-row { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* opciones de una misión ya enviada (panel de detalle) */
+.opts-form { display: grid; gap: 8px; }
+.opts-form label { display: grid; gap: 3px; font-size: 13px; }
+.opts-form select, .opts-form input:not([type=checkbox]) { width: 100%; }
+.opts-form .chks { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.opts-form .chks label { display: inline-flex; gap: 4px; align-items: center; }
+.opts-form button[type=submit] { justify-self: start; }
