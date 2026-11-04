@@ -22,6 +22,12 @@ const store = {
   set(v) { try { localStorage.setItem(KEY, v ? '1' : '0'); } catch { /* sin almacenamiento: vale esta sesión */ } },
 };
 
+const ASK_KEY = 'oficina.alerts.waiting'; // sonido cuando una misión espera tu instrucción: activo salvo que lo apagues
+const askStore = {
+  get() { try { return localStorage.getItem(ASK_KEY) !== '0'; } catch { return true; } },
+  set(v) { try { localStorage.setItem(ASK_KEY, v ? '1' : '0'); } catch { /* sin almacenamiento: vale esta sesión */ } },
+};
+
 // ---- piezas de síntesis ----
 /** Oscilador con barrido de frecuencia (exponencial) y envolvente de volumen. */
 function tone(ctx, dest, { type = 'sine', f0, f1 = f0, t, dur, vol = 0.12, attack = 0.01, release = 0.05, detune = 0 }) {
@@ -151,6 +157,19 @@ export function createAlerts({ skinId, onOpen, notify = (typeof Notification !==
         const n = new notify(title, { body, tag: 'permiso' });
         n.onclick = () => { window.focus(); onClick?.(); n.close(); };
       }
+    },
+    /** ¿Suena cuando una misión espera tu instrucción? (sí por defecto, aunque los demás avisos estén apagados) */
+    get waitingEnabled() { return askStore.get(); },
+    setWaitingEnabled(v) { askStore.set(!!v); if (v) beep('question'); return !!v; },
+    /** Una misión espera tu instrucción (el agente te pregunta o pide que le indiques algo): suena y notifica si la pestaña está oculta. */
+    waiting({ task, reminder = false, onClick }) {
+      if (!askStore.get()) return false;
+      beep('question');
+      if (notify && notify.permission === 'granted' && document.hidden) {
+        const n = new notify(`${reminder ? 'Sigue esperando' : 'Espera tu instrucción'} · ${task.agent}`, { body: `#${task.id} ${task.title}`, tag: `wait-${task.id}` });
+        n.onclick = () => { window.focus(); onClick?.(); n.close(); };
+      }
+      return true;
     },
     /** Avisa de un evento (ver `transition`). Devuelve true si avisó. */
     fire({ kind, task }) {

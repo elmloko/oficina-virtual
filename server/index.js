@@ -26,6 +26,7 @@ import { MODES, splitMode, levelOf, modeAgent, modeLabel } from './modes.js';
 import { createVault, SECRET_NAME_RE, PLACEHOLDER_RE, placeholder, validateSecret } from './vault.js';
 import { createProbe, collectSystem } from './system.js';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { telegramFromEnv } from './telegram.js';
 import { createDispatcher, askClaude } from './dispatcher.js';
 import { checkUpload, saveFile, readStored, removeFile, removeTaskDir, isImage, extOf, MAX_FILE_BYTES, MAX_FILES_PER_TASK, MAX_TOTAL_BYTES } from './attachments.js';
@@ -952,7 +953,7 @@ export function createApp({ db = openDb(), lmsCtl = defaultLmsCtl, runnerOpts = 
   return { server, db, runner, scheduler, logger, refreshDown };
 }
 
-if (import.meta.url === `file:///${process.argv[1].replace(/\\/g, '/')}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) { // vale en Windows y en Linux (Docker)
   const { server, scheduler, logger, refreshDown } = createApp({ logger: createLogger({ echo: true }) });
   server.listen(config.port, config.host, () => {
     scheduler.start();

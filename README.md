@@ -123,3 +123,15 @@ En **Sistema → Motores y modelos** (una tabla: motor · estado · modelo · ac
 **LM Studio** tiene el mismo botón «Medir modelos» (aparece cuando su servidor local está encendido: en la app, pestaña *Developer* → *Start Server*). Usa la API nativa de LM Studio (`/api/v0`) para leer los tokens por segundo reales; en versiones que no la tienen mide con el reloj y marca la velocidad con «~» (incluye cargar el modelo). LM Studio no informa el tamaño en disco, así que se estima por el nombre (`7b` ≈ 3.9 GB) y se marca «~». Si el modelo elegido no existe en esa computadora, la misión usa el recomendado por la medición, o el que ya esté cargado, o el primero. Con varios modelos en memoria, LM Studio los carga y descarga solo (auto-evict): la medición puede tardar más en el primer uso de cada uno.
 
 Cada proveedor con clave tiene un botón **⏻ Desactivar / Activar**. Desactivarlo deja de ofrecerlo como motor (selector de misiones y rutinas) y rechaza nuevas misiones con él, **sin borrar la clave** del `.env`; al activarlo vuelve al instante, sin reiniciar. La opción se guarda en la base de datos (ajuste `providers_off`) y queda anotada en la auditoría. «Probar» sigue funcionando con un proveedor desactivado, para comprobar su clave.
+
+## Ejecutar en Docker (con los modelos de tu PC)
+
+Los modelos no se copian al contenedor: la oficina les habla a Ollama y LM Studio de tu PC por `host.docker.internal`.
+
+1. Abre Docker Desktop y deja encendido Ollama y/o el servidor local de LM Studio.
+2. `docker compose up -d --build` y entra en http://localhost:4000 (otro puerto: `OFICINA_PORT=4100 docker compose up -d`).
+3. Claves de API (opcional): `docker cp .env oficina-virtual:/app/data/.env` y `docker compose restart`, o ponlas desde Sistema.
+
+Monta `C:\xampp\htdocs` (proyectos), `OneDrive\Documentos`, `Descargas` (solo lectura) y `~/.claude/agents` (solo lectura). La base de datos es propia del contenedor (volumen `oficina-data`), no la del PC.
+
+Limitaciones dentro del contenedor: Claude Code y Codex no están instalados (las misiones que actúan pasan a Ollama), el modo «Control total» ejecuta `sh` de Linux en vez de PowerShell y no ve tu Windows, y los botones «Encender servidor» no pueden arrancar Ollama ni LM Studio del PC.

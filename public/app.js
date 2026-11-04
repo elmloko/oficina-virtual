@@ -2233,6 +2233,8 @@ const alerts = createAlerts({
   onOpen: (t) => (t.kind === 'objective' ? openDrawer(t.id) : openAgent(t.agent)),
 });
 const notified = new Set();
+const waitingTasks = new Map(); // misiones que esperan tu instrucción: id -> { key, reminders }
+const WAIT_REMINDERS = 2;
 
 function handleTransition(prevStatus, task) {
   const ev = transition(prevStatus, task);
@@ -2240,8 +2242,25 @@ function handleTransition(prevStatus, task) {
   const key = `${task.id}:${task.status}:${task.finished_at}`;
   if (notified.has(key)) return; // el WebSocket y el refresco periódico pueden ver el mismo cambio
   notified.add(key);
+  if (ev.kind === 'question') { // la misión espera tu instrucción: suena siempre (salvo que lo apagues) y te lo recuerda
+    if (alerts.waiting({ task, onClick: () => openDrawer(task.id) })) waitingTasks.set(task.id, { key, reminders: 0 });
+    else alerts.fire(ev);
+    if (!document.hidden) toast(`💬 ${KIND_LABEL.question}: #${task.id} ${task.title}`, false);
+    return;
+  }
   if (alerts.fire(ev) && !document.hidden) toast(`${KIND_LABEL[ev.kind]}: #${task.id} ${task.title}`, ev.kind === 'failed');
 }
+
+// Recordatorio: si sigue esperando tu instrucción, vuelve a sonar a los 3 y a los 6 minutos (no más, para no molestar).
+setInterval(() => {
+  for (const [id, w] of waitingTasks) {
+    const t = state.tasks.get(id);
+    if (!t || `${t.id}:${t.status}:${t.finished_at}` !== w.key || w.reminders >= WAIT_REMINDERS) { waitingTasks.delete(id); continue; } // ya respondiste, cambió o se acabaron los recordatorios
+    w.reminders++;
+    alerts.waiting({ task: t, reminder: true, onClick: () => openDrawer(id) });
+    if (!document.hidden) toast(`💬 Sigue esperando tu instrucción: #${t.id} ${t.title}`, false);
+  }
+}, 3 * 60_000);
 
 function setupAlerts() {
   const bell = $('#alerts-btn');
@@ -2256,6 +2275,10 @@ function setupAlerts() {
     else if (perm !== 'default') toast('Las notificaciones del navegador no están permitidas: solo sonará (puedes habilitarlas en el candado de la barra de direcciones)', false);
   };
   paint();
+  const waitBtn = $('#waiting-btn');
+  const paintWait = () => { waitBtn.setAttribute('aria-pressed', String(alerts.waitingEnabled)); waitBtn.textContent = alerts.waitingEnabled ? '💬 Espera tu instrucción: suena' : '💬 Espera tu instrucción: en silencio'; };
+  waitBtn.onclick = () => { const on = alerts.setWaitingEnabled(!alerts.waitingEnabled); paintWait(); toast(on ? 'Sonará cuando una misión espere tu instrucción' : 'Ya no sonará cuando una misión espere tu instrucción (seguirá en Atención)', false); };
+  paintWait();
   document.addEventListener('pointerdown', () => alerts.unlock(), { once: true }); // el audio necesita un gesto antes de poder sonar
   let testing = false;
   $('#sound-test').onclick = async () => {

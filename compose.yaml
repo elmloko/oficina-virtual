@@ -1,0 +1,36 @@
+# Oficina virtual en Docker usando los modelos locales de tu PC.
+#   docker compose up -d --build      → http://localhost:4000
+# Requisitos en Windows: Docker Desktop abierto, y Ollama y/o LM Studio (servidor local activo) en el PC.
+services:
+  oficina:
+    build: .
+    container_name: oficina-virtual
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${OFICINA_PORT:-4000}:4000"   # solo accesible desde tu PC, nunca desde la red
+    extra_hosts:
+      - "host.docker.internal:host-gateway"      # nombre del PC visto desde el contenedor
+    # Las claves NO se pasan como variables (se verían con `docker inspect`): viven en /app/data/.env del volumen.
+    # Para llevar las del PC: docker cp .env oficina-virtual:/app/data/.env && docker compose restart
+    environment:
+      HOST: 0.0.0.0
+      PORT: 4000
+      # Modelos locales del PC (no se copian: el contenedor les habla por la red)
+      OLLAMA_URL: http://host.docker.internal:11434
+      LMSTUDIO_URL: http://host.docker.internal:1234/v1
+      # Rutas dentro del contenedor (las de Windows del .env no valen aquí)
+      HTDOCS_ROOT: /htdocs
+      DOCS_ROOT: /documentos
+      EXTRA_ROOTS: Descargas=/descargas
+      AGENTS_DIR: /agents
+      AGENT_SOURCES: Proyectos=/htdocs
+      ENV_FILE: /app/data/.env                    # las claves que guardes desde la web quedan en el volumen
+    volumes:
+      - oficina-data:/app/data                    # base de datos propia del contenedor (no la del PC)
+      - ${HTDOCS_HOST:-C:/xampp/htdocs}:/htdocs
+      - ${DOCS_HOST:-${USERPROFILE}/OneDrive/Documentos}:/documentos
+      - ${USERPROFILE}/Downloads:/descargas:ro
+      - ${USERPROFILE}/.claude/agents:/agents:ro
+
+volumes:
+  oficina-data:

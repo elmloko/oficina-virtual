@@ -8,7 +8,8 @@ const BUILTIN = [
   { name: 'groq', kind: 'openai', baseUrl: 'https://api.groq.com/openai/v1', keyEnv: 'GROQ_API_KEY', modelEnv: 'GROQ_MODEL', model: 'llama-3.3-70b-versatile' },
   { name: 'deepseek', kind: 'openai', baseUrl: 'https://api.deepseek.com/v1', keyEnv: 'DEEPSEEK_API_KEY', modelEnv: 'DEEPSEEK_MODEL', model: 'deepseek-chat' },
   // LM Studio corre en este equipo (servidor local de LM Studio, puerto 1234): no usa clave ni sale a internet.
-  { name: 'lmstudio', kind: 'openai', baseUrl: 'http://127.0.0.1:1234/v1', keyEnv: null, modelEnv: 'LMSTUDIO_MODEL', model: 'local-model', local: true },
+  // Desde Docker: LMSTUDIO_URL=http://host.docker.internal:1234/v1
+  { name: 'lmstudio', kind: 'openai', baseUrl: (process.env.LMSTUDIO_URL || 'http://127.0.0.1:1234/v1').replace(/\/$/, ''), keyEnv: null, modelEnv: 'LMSTUDIO_MODEL', model: 'local-model', local: true },
 ];
 const RESERVED = new Set(['auto', 'claude', 'ollama', 'codex']);
 export const MODEL_RE = /^[\w.:/@-]{1,100}$/;

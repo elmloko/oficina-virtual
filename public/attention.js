@@ -8,7 +8,9 @@ export function isQuestion(text) {
   if (!tail) return false;
   const last = tail.split(/\n\s*\n/).pop().trim();
   const stripped = last.replace(/[`*_>\s]+$/g, ''); // negritas/comillas finales no cuentan
-  return /[?？]$/.test(stripped) || /¿[^?]{3,}\?/.test(last) || /\b(¿?cuál|¿?quieres que|¿?prefieres|¿?confirmas)\b[^.!]*\?/i.test(last);
+  return /[?？]$/.test(stripped) || /¿[^?]{3,}\?/.test(last) || /\b(¿?cuál|¿?quieres que|¿?prefieres|¿?confirmas)\b[^.!]*\?/i.test(last)
+    // también cuando te pide una instrucción sin signo de pregunta («indícame…», «dime si…», «quedo a la espera…»)
+    || /\b(ind[ií]came|dime (si|qu[eé]|cu[aá]l|c[oó]mo)|av[ií]same|conf[ií]rmame|necesito que me (digas|indiques|confirmes|des)|espero tu (respuesta|confirmaci[oó]n|indicaci[oó]n|instrucci[oó]n|decisi[oó]n)|quedo (a la espera|atento))\b/i.test(last);
 }
 
 const ORDER = { question: 0, failed: 1, plan: 2, review: 3 };

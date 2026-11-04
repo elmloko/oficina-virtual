@@ -57,3 +57,23 @@ test('sin permiso o sin soporte de notificaciones no revienta y la petición de 
     assert.equal(await none.ensurePermission(), 'unsupported');
   });
 });
+
+test('misión que espera tu instrucción: suena aunque los avisos estén apagados, notifica oculta y se puede silenciar', () => withDom(true, () => {
+  const { N, made } = fakeNotify('granted');
+  const mem = new Map();
+  globalThis.localStorage = { getItem: (k) => mem.get(k) ?? null, setItem: (k, v) => mem.set(k, String(v)) };
+  try {
+    const a = createAlerts({ skinId: () => 'clasico', notify: N });
+    assert.equal(a.enabled, false); // avisos generales apagados…
+    assert.equal(a.waitingEnabled, true); // …pero esto suena por defecto
+    assert.equal(a.waiting({ task }), true);
+    assert.match(made[0].title, /Espera tu instrucción · security/);
+    assert.equal(made[0].opts.tag, 'wait-7');
+    a.waiting({ task, reminder: true });
+    assert.match(made[1].title, /Sigue esperando/);
+    a.setWaitingEnabled(false);
+    assert.equal(a.waiting({ task }), false);
+    assert.equal(made.length, 2);
+    assert.equal(createAlerts({ skinId: () => 'clasico', notify: N }).waitingEnabled, false, 'se recuerda');
+  } finally { delete globalThis.localStorage; }
+}));

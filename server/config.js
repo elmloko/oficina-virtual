@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 // Carga mínima de .env sin dependencias; las variables reales del entorno ganan.
-const envFile = join(root, '.env');
+const envFile = process.env.ENV_FILE || join(root, '.env'); // en Docker vive en el volumen de datos (ver compose.yaml)
 if (existsSync(envFile)) {
   for (const line of readFileSync(envFile, 'utf8').split(/\r?\n/)) {
     const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/);
@@ -53,7 +53,9 @@ export const config = {
   get ollamaBin() { return localBin('OLLAMA_BIN', join(homedir(), 'AppData', 'Local', 'Programs', 'Ollama', 'ollama.exe'), 'ollama'); },
   root,
   port: Number(process.env.PORT || 4000),
-  host: '127.0.0.1', // solo local: la oficina puede ejecutar agentes sobre tus carpetas
+  // solo local: la oficina puede ejecutar agentes sobre tus carpetas. En Docker se usa HOST=0.0.0.0 DENTRO del
+  // contenedor y el puerto se publica solo en 127.0.0.1 del equipo (ver compose.yaml).
+  host: process.env.HOST || '127.0.0.1',
   htdocs: process.env.HTDOCS_ROOT || 'C:\\xampp\\htdocs',
   // Carpetas extra fuera de htdocs, SOLO LECTURA. Formato: Nombre=Ruta;Otro=Ruta2 (se exponen como "@Nombre").
   extraRoots: parseExtraRoots(process.env.EXTRA_ROOTS ?? `Descargas=${join(homedir(), 'Downloads')}`),

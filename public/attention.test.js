@@ -41,3 +41,9 @@ test('transition: solo avisa al terminar una misión que estaba en curso', () =>
   assert.equal(transition('running', T(1, 'backlog')), null); // cancelada
   assert.equal(transition('running', T(1, 'review', { kind: 'objective' })).kind, 'plan');
 });
+
+test('isQuestion: también cuando pide una instrucción sin signo de pregunta', () => {
+  for (const s of ['Listo el diagnóstico.\n\nIndícame qué contenedor reinicio.', 'Dime si aplico el cambio en producción.', 'Quedo a la espera de tu confirmación.', 'Necesito que me indiques el dominio.', 'Avísame cuando cierres el Excel.']) assert.equal(isQuestion(s), true, s);
+  assert.equal(isQuestion('Hecho. Reinicié el contenedor y la web responde 200.'), false);
+  assert.equal(isQuestion('El servidor indica que todo está bien.'), false);
+});
