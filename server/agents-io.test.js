@@ -69,6 +69,13 @@ test('applyImport: guarda solo los nuevos y nunca pisa un agente tuyo', async ()
   rmSync(join(agentsDir, 'importado-a.md'));
 });
 
+test('applyImport: si la carpeta de agentes no existe (PC nueva), la crea y sigue', async () => {
+  const nueva = join(tmp, 'pc-nueva', '.claude', 'agents');
+  const r = await applyImport([{ content: md('primero', 'Primer agente') }], nueva);
+  assert.equal(r[0].status, 'importado');
+  assert.deepEqual(readdirSync(nueva), ['primero.md']);
+});
+
 test('exportar y volver a importar el paquete no repite nada', async () => {
   const b = exportBundle(agentsDir);
   assert.equal(b.format, 'oficina-agentes');

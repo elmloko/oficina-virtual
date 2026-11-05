@@ -3,7 +3,7 @@
 // 2) Si hay duda, se le pregunta a Claude (modelo rápido) cuál encaja o si hace falta uno nuevo.
 // 3) Solo si ninguno encaja, se crea un agente nuevo (archivo .md en la carpeta de agentes), con permisos mínimos.
 import { spawn } from 'node:child_process';
-import { writeFile } from 'node:fs/promises';
+import { writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -110,6 +110,7 @@ export async function createAgentFile(dir, spec, { edit = false, existing = [] }
   if (description.length < 10 || prompt.length < 20) throw new Error('La definición del agente es demasiado corta');
   const tools = edit ? 'Read, Grep, Glob, Edit, Write, Bash' : 'Read, Grep, Glob, Bash, WebFetch, WebSearch';
   const body = `---\nname: ${name}\ndescription: "${description}"\ntools: ${tools}\n---\n${prompt}\nMétodo: 1) lee el código o los datos reales antes de opinar; 2) haz lo mínimo que resuelva el problema; 3) verifica con evidencia y reporta resultados reales, incluidos los fallos; 4) cierra con un resumen breve. Responde en español.\n`;
+  await mkdir(dir, { recursive: true }); // la carpeta de agentes puede no existir en una instalación nueva
   await writeFile(join(dir, `${name}.md`), body, { flag: 'wx' });
   return { name, description, tools };
 }

@@ -1,6 +1,6 @@
 // Importar y exportar agentes (archivos .md de Claude Code) sin repetir: compara por nombre y por contenido.
 import { readdirSync, readFileSync, statSync, existsSync } from 'node:fs';
-import { writeFile } from 'node:fs/promises';
+import { writeFile, mkdir } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { join, basename, relative, sep } from 'node:path';
 
@@ -73,6 +73,8 @@ export function planImport(items, dir) {
 /** Importa los «nuevo». `wx`: si otro proceso creó el archivo mientras tanto, no se pisa (queda como conflicto). */
 export async function applyImport(items, dir) {
   const plan = planImport(items, dir);
+  // En una PC recién instalada ~/.claude/agents puede no existir: se crea en vez de fallar con ENOENT.
+  if (plan.some((p) => p.status === 'nuevo')) await mkdir(dir, { recursive: true });
   for (const p of plan) {
     if (p.status !== 'nuevo') continue;
     try { await writeFile(join(dir, `${p.name}.md`), p.content, { flag: 'wx' }); p.status = 'importado'; } catch (e) {
