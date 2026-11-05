@@ -21,12 +21,13 @@ services:
       # Rutas dentro del contenedor (las de Windows del .env no valen aquí)
       HTDOCS_ROOT: /htdocs
       DOCS_ROOT: /documentos
-      EXTRA_ROOTS: Descargas=/descargas
+      EXTRA_ROOTS: Descargas=/descargas;Disco_C=/disco_c   # Disco_C = todo C: de tu PC, solo lectura
       AGENTS_DIR: /agents
       AGENT_SOURCES: Proyectos=/htdocs
-      ENV_FILE: /app/data/.env                    # las claves que guardes desde la web quedan en el volumen
+      ENV_FILE: /app/data/.env                    # las claves que guardes desde la web quedan en ./data/.env de TU PC
     volumes:
-      - oficina-data:/app/data                    # base de datos propia del contenedor (no la del PC)
+      - ./data:/app/data                          # carpeta ./data de tu PC: misiones (oficina.db), claves (.env), copias de trabajo y adjuntos
+      - C:/:/disco_c:ro                           # todo el disco C: de tu PC, solo lectura
       - ${HTDOCS_HOST:-C:/xampp/htdocs}:/htdocs
       - ${DOCS_HOST:-${USERPROFILE}/OneDrive/Documentos}:/documentos
       - ${USERPROFILE}/Downloads:/descargas:ro
@@ -37,5 +38,3 @@ services:
       - ./public:/app/public:ro
     command: ["node", "server/watch-poll.js"]
 
-volumes:
-  oficina-data:
