@@ -124,6 +124,10 @@ En **Sistema → Motores y modelos** (una tabla: motor · estado · modelo · ac
 
 Cada proveedor con clave tiene un botón **⏻ Desactivar / Activar**. Desactivarlo deja de ofrecerlo como motor (selector de misiones y rutinas) y rechaza nuevas misiones con él, **sin borrar la clave** del `.env`; al activarlo vuelve al instante, sin reiniciar. La opción se guarda en la base de datos (ajuste `providers_off`) y queda anotada en la auditoría. «Probar» sigue funcionando con un proveedor desactivado, para comprobar su clave.
 
+## Iniciar en Windows
+
+Doble clic en `iniciar-oficina.cmd` (o `npm start` en una cmd) y entra en http://localhost:4000. Así la oficina usa el Claude Code, Codex y Ollama de tu PC. No la abras a la vez que la de Docker: las dos usan el puerto 4000 (`docker compose stop` para parar la de Docker).
+
 ## Ejecutar en Docker (con los modelos de tu PC)
 
 Los modelos no se copian al contenedor: la oficina les habla a Ollama y LM Studio de tu PC por `host.docker.internal`.
@@ -131,9 +135,12 @@ Los modelos no se copian al contenedor: la oficina les habla a Ollama y LM Studi
 1. Abre Docker Desktop y deja encendido Ollama y/o el servidor local de LM Studio.
 2. `docker compose up -d --build` y entra en http://localhost:4000 (otro puerto: `OFICINA_PORT=4100 docker compose up -d`).
 3. Claves de API (opcional): `docker cp .env oficina-virtual:/app/data/.env` y `docker compose restart`, o ponlas desde Sistema.
+4. Claude Code viene instalado. Inicia sesión **una vez**: `docker exec -it oficina-virtual claude auth login`. La sesión queda en el volumen `claude-home` (separada de la de tu PC) y sobrevive a reinicios y `--build`.
 
-Monta `C:\xampp\htdocs` (proyectos), `OneDrive\Documentos`, `Descargas` (solo lectura) y `~/.claude/agents` (solo lectura). La base de datos es propia del contenedor (volumen `oficina-data`), no la del PC.
+Arranca sola al abrir Docker Desktop (`restart: unless-stopped`). Si Docker Desktop se abre al iniciar Windows, la oficina queda lista al encender el PC.
+
+Monta `C:\xampp\htdocs` (proyectos), `OneDrive\Documentos`, `Descargas` (solo lectura) y `~/.claude/agents` (con escritura, para importar agentes). La base de datos es propia del contenedor (volumen `oficina-data`), no la del PC.
 
 El código de la oficina también está montado en vivo: lo que cambies en `public/` se ve al recargar la página, y un cambio en `server/` reinicia el servidor solo (`server/watch-poll.js`, unos 2 s). Solo hace falta `docker compose up -d --build` si cambias `package.json` o el `Dockerfile`.
 
-Limitaciones dentro del contenedor: Claude Code y Codex no están instalados (las misiones que actúan pasan a Ollama), el modo «Control total» ejecuta `sh` de Linux en vez de PowerShell y no ve tu Windows, y los botones «Encender servidor» no pueden arrancar Ollama ni LM Studio del PC.
+Limitaciones dentro del contenedor: Codex no está instalado, el contenedor corre como el usuario `node` (no root), el modo «Control total» ejecuta `sh` de Linux en vez de PowerShell y no ve tu Windows, y los botones «Encender servidor» no pueden arrancar Ollama ni LM Studio del PC.

@@ -27,6 +27,8 @@ import { createVault, SECRET_NAME_RE, PLACEHOLDER_RE, placeholder, validateSecre
 import { createProbe, collectSystem } from './system.js';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+/** Días que una misión borrada se guarda en la papelera antes de borrarse del todo (TRASH_DAYS, 30 por defecto). */
+export const TRASH_DAYS = Math.max(1, Number(process.env.TRASH_DAYS) || 30);
 import { telegramFromEnv } from './telegram.js';
 import { createDispatcher, askClaude } from './dispatcher.js';
 import { checkUpload, saveFile, readStored, removeFile, removeTaskDir, isImage, extOf, MAX_FILE_BYTES, MAX_FILES_PER_TASK, MAX_TOTAL_BYTES } from './attachments.js';
@@ -59,12 +61,23 @@ function parseServers(raw) {
 const MAX_REVIEWERS = 4;
 
 /** Enciende un servidor local. Sin shell: se lanza el programa con argumentos fijos (el puerto sale de la configuración, nunca de la petición). */
+/** ¿El servidor está en otra máquina? (p. ej. la oficina en Docker y Ollama en el PC: host.docker.internal) */
+export const isRemoteUrl = (url) => { try { return !/^(localhost|127\.0\.0\.1|\[::1\])$/i.test(new URL(url).hostname); } catch { return false; } };
+const lmUrl = () => process.env.LMSTUDIO_URL || 'http://127.0.0.1:1234/v1';
+/** Desde Docker no se pueden abrir ni cerrar programas de Windows: se dice claro y cómo hacerlo a mano. */
+const remoteError = (label, action) => new Error(`La oficina corre en Docker y ${label} está en tu PC: desde aquí no puedo ${action}lo. `
+  + (label === 'Ollama'
+    ? (action === 'apagar' ? 'Ciérralo en Windows: icono de Ollama junto al reloj (clic derecho) → «Quit Ollama».' : 'Ábrelo en Windows desde el menú Inicio («Ollama»).')
+    : (action === 'apagar' ? 'Detén su servidor en LM Studio (pestaña Developer → Stop) o cierra la app.' : 'Abre LM Studio y activa su servidor local (pestaña Developer → Start).')));
+
 export const defaultServerCtl = {
   lmstudio: (port) => new Promise((resolve, reject) => {
+    if (isRemoteUrl(lmUrl())) return reject(remoteError('LM Studio', 'encender'));
     const run = (retry) => execFile(config.lmsBin, ['server', 'start', '--port', String(port)], { timeout: 30_000, windowsHide: true }, (err) => (err && err.code !== 'ENOENT' && retry ? setTimeout(() => run(false), 2000) : err ? reject(new Error(err.code === 'ENOENT' ? 'No encontré el programa «lms» de LM Studio (define LMS_BIN en .env)' : err.message)) : resolve()));
     run(true);
   }),
   ollama: () => new Promise((resolve, reject) => {
+    if (isRemoteUrl(config.ollamaUrl)) return reject(remoteError('Ollama', 'encender'));
     const child = spawnProc(config.ollamaBin, ['serve'], { detached: true, stdio: 'ignore', windowsHide: true });
     child.once('error', (e) => reject(new Error(e.code === 'ENOENT' ? 'No encontré el programa «ollama» (define OLLAMA_BIN en .env)' : e.message)));
     child.once('spawn', () => { child.unref(); resolve(); }); // sigue vivo aunque se cierre la oficina
@@ -72,10 +85,12 @@ export const defaultServerCtl = {
   /** Apaga el servidor. Ollama no tiene comando de apagado: se cierran sus procesos (y la bandeja, que si no lo reabre). */
   stop: {
     lmstudio: () => new Promise((resolve, reject) => {
+      if (isRemoteUrl(lmUrl())) return reject(remoteError('LM Studio', 'apagar'));
       execFile(config.lmsBin, ['server', 'stop'], { timeout: 30_000, windowsHide: true }, (err) => (err ? reject(new Error(err.code === 'ENOENT' ? 'No encontré el programa «lms» de LM Studio (define LMS_BIN en .env)' : err.message)) : resolve()));
     }),
     ollama: async () => {
-      const kill = (name) => new Promise((resolve) => execFile('taskkill', ['/F', '/IM', name], { windowsHide: true }, () => resolve()));
+      if (isRemoteUrl(config.ollamaUrl)) throw remoteError('Ollama', 'apagar');
+      const kill =(name) => new Promise((resolve) => execFile('taskkill', ['/F', '/IM', name], { windowsHide: true }, () => resolve()));
       await kill('ollama app.exe'); await kill('ollama.exe');
     },
   },
@@ -167,6 +182,22 @@ export function createApp({ db = openDb(), lmsCtl = defaultLmsCtl, runnerOpts = 
     req.on('error', fail);
   });
   const dropAttachments = (id) => removeTaskDir(attachmentsDir, id).catch(() => {});
+  /** Borra del todo una misión y sus pasos: descarta cambios sin aplicar, adjuntos, chat y la fila. */
+  async function purgeTask(id) {
+    for (const c of db.allChildren(id)) await purgeTask(c.id);
+    runner.cancel(id);
+    await runner.discardChanges(id).catch(() => {}); // sin cambios pendientes no hace nada
+    db.deleteTask(id);
+    await dropAttachments(id);
+    broadcast({ type: 'deleted', id });
+  }
+  /** La papelera se vacía sola: lo que lleva más de TRASH_DAYS días se borra del todo. */
+  async function purgeOldTrash() {
+    const ids = db.trashOlderThan(TRASH_DAYS);
+    for (const id of ids) if (db.getTask(id)) await purgeTask(id);
+    if (ids.length) { db.audit('trash.auto', null, `${ids.length} misiones de más de ${TRASH_DAYS} días`); broadcast({ type: 'trash' }); }
+    return ids.length;
+  }
 
   // Anti DNS-rebinding / CSRF: solo aceptamos Host local y, si hay Origin, que sea local.
   const localHost = (h) => /^(127\.0\.0\.1|localhost)(:\d+)?$/.test(h ?? '');
@@ -254,6 +285,31 @@ export function createApp({ db = openDb(), lmsCtl = defaultLmsCtl, runnerOpts = 
     const m = (re) => url.pathname.match(re);
     const method = req.method;
     let r;
+    // Una misión en la papelera solo se puede ver (su chat), restaurar o borrar del todo.
+    const tm = m(/^\/api\/tasks\/(\d+)(?:\/([\w-]+))?$/);
+    if (tm && !(tm[2] === 'restore' || (!tm[2] && method === 'DELETE') || (tm[2] === 'events' && method === 'GET')) && db.getTask(Number(tm[1]))?.deleted_at) {
+      return send(res, 410, { error: 'Esta misión está en la papelera: restáurala para retomarla' });
+    }
+    // ---------- papelera ----------
+    if (method === 'GET' && url.pathname === '/api/trash') return send(res, 200, { days: TRASH_DAYS, items: db.trashList() });
+    if (method === 'DELETE' && url.pathname === '/api/trash') { // vaciar: borra del todo
+      const items = db.trashList();
+      for (const t of items) await purgeTask(t.id);
+      db.audit('trash.empty', null, `${items.length} misiones`);
+      broadcast({ type: 'trash' });
+      return send(res, 200, { purged: items.length });
+    }
+    if (method === 'POST' && (r = m(/^\/api\/tasks\/(\d+)\/restore$/))) {
+      const id = Number(r[1]);
+      const task = db.getTask(id);
+      if (!task?.deleted_at) return send(res, 404, { error: 'No está en la papelera' });
+      const ids = db.restoreTask(id);
+      for (const x of ids) emit(x);
+      runner.log(id, 'info', '♻ Restaurada desde la papelera');
+      db.audit('task.restore', id, task.title);
+      broadcast({ type: 'trash' });
+      return send(res, 200, db.getTask(id));
+    }
 
     if (method === 'GET' && url.pathname === '/api/state') {
       return send(res, 200, {
@@ -751,14 +807,21 @@ export function createApp({ db = openDb(), lmsCtl = defaultLmsCtl, runnerOpts = 
       const task = db.getTask(id);
       if (!task) return send(res, 404, { error: 'No existe' });
       if (method === 'DELETE') {
-        runner.cancel(id);
-        for (const c of db.children(id)) { runner.cancel(c.id); await runner.discardChanges(c.id).catch(() => {}); db.deleteTask(c.id); await dropAttachments(c.id); broadcast({ type: 'deleted', id: c.id }); }
-        await runner.discardChanges(id).catch(() => {}); // sin cambios pendientes no hace nada
-        db.deleteTask(id);
-        await dropAttachments(id);
-        db.audit('task.delete', id, task.title);
+        // Primero a la papelera (con su chat, adjuntos y cambios sin aplicar); de la papelera, o con ?permanent=1, se borra del todo.
+        if (task.deleted_at || url.searchParams.get('permanent') === '1') {
+          await purgeTask(id);
+          db.audit('task.delete', id, task.title);
+          broadcast({ type: 'trash' });
+          return send(res, 200, { ok: true, purged: true });
+        }
+        const kids = db.children(id);
+        for (const x of [id, ...kids.map((c) => c.id)]) runner.cancel(x);
+        db.trashTask(id, [id, ...kids.map((c) => c.id)]);
+        for (const c of kids) broadcast({ type: 'deleted', id: c.id });
+        db.audit('task.trash', id, task.title);
         broadcast({ type: 'deleted', id });
-        return send(res, 200, { ok: true });
+        broadcast({ type: 'trash' });
+        return send(res, 200, { ok: true, trashed: true, days: TRASH_DAYS });
       }
       if (method === 'PATCH') {
         const body = await readJson(req);
@@ -944,19 +1007,22 @@ export function createApp({ db = openDb(), lmsCtl = defaultLmsCtl, runnerOpts = 
   wss.on('connection', (ws) => { sockets.add(ws); ws.on('close', () => sockets.delete(ws)); });
 
   /** Comprueba qué motores locales tienen el servidor apagado y se lo pasa al runner (Auto los esquiva). */
+  // Claude Code cuenta como «caído» si su CLI no está instalado (p. ej. dentro de Docker): Auto manda la misión a Ollama.
   async function refreshDown() {
-    const ol = await probe.ollama().catch(() => ({ ok: false }));
-    runner.setDown(db.disabledEngines().includes('ollama') || ol.ok ? [] : ['ollama']);
+    const off = db.disabledEngines();
+    const [ol, cl] = await Promise.all([probe.ollama().catch(() => ({ ok: false })), probe.claude().catch(() => ({ ok: false }))]);
+    runner.setDown([...(off.includes('ollama') || ol.ok ? [] : ['ollama']), ...(off.includes('claude') || cl.ok ? [] : ['claude'])]);
     return runner.down();
   }
 
-  return { server, db, runner, scheduler, logger, refreshDown };
+  return { server, db, runner, scheduler, logger, refreshDown, purgeOldTrash };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) { // vale en Windows y en Linux (Docker)
-  const { server, scheduler, logger, refreshDown } = createApp({ logger: createLogger({ echo: true }) });
+  const { server, scheduler, logger, refreshDown, purgeOldTrash } = createApp({ logger: createLogger({ echo: true }) });
   server.listen(config.port, config.host, () => {
     scheduler.start();
+    purgeOldTrash().catch((e) => logger.warn(`Papelera: ${e.message}`)); setInterval(() => purgeOldTrash().catch(() => {}), 6 * 3600_000).unref();
     refreshDown(); setInterval(refreshDown, 15_000).unref(); // monitor de servidores locales (solo en producción, no en tests)
     // Bot de Telegram opcional: habla con esta misma API por localhost, así reutiliza todas sus validaciones.
     const local = async (method, path, body) => {

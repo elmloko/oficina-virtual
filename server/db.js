@@ -22,7 +22,7 @@ export const DEFAULT_SETTINGS = {
 const LIMIT_KEYS = new Set(['max_claude', 'max_ollama', 'max_api', 'max_codex', 'max_lmstudio']);
 
 const TASK_COLUMNS = ['title', 'description', 'project', 'agent', 'engine', 'mode', 'status', 'result', 'error',
-  'cost_usd', 'started_at', 'finished_at', 'parent_id', 'depends_on', 'kind', 'schedule_id', 'model', 'reply_text', 'branch', 'worktree', 'base_sha', 'change_state', 'chain_fired', 'workdir', 'used_model', 'allow_all', 'recipe', 'chain'];
+  'cost_usd', 'started_at', 'finished_at', 'parent_id', 'depends_on', 'kind', 'schedule_id', 'model', 'reply_text', 'branch', 'worktree', 'base_sha', 'change_state', 'chain_fired', 'workdir', 'used_model', 'allow_all', 'recipe', 'chain', 'deleted_at'];
 
 function addColumnIfMissing(db, table, column, ddl) {
   const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
@@ -129,6 +129,7 @@ export function openDb(file = config.dbFile) {
   addColumnIfMissing(db, 'tasks', 'workdir', 'TEXT'); // carpeta nueva creada en Documentos para esta misión
   addColumnIfMissing(db, 'tasks', 'allow_all', 'INTEGER NOT NULL DEFAULT 0'); // «Permitir todo»: el agente ya no te pregunta en esta misión
   addColumnIfMissing(db, 'tasks', 'consult_of', 'INTEGER'); // misión creada porque la #consult_of pidió ayuda a este agente
+  addColumnIfMissing(db, 'tasks', 'deleted_at', 'TEXT'); // papelera: la misión (con su chat) se puede restaurar hasta que se vacíe
   addColumnIfMissing(db, 'tasks', 'recipe', 'TEXT'); // modo de trabajo que actúa (fix, laravel, srv_pull…): «mode» guarda su permiso
   addColumnIfMissing(db, 'tasks', 'reply_text', 'TEXT'); // respuesta del usuario en vuelo (o cancelada, lista para editar)
 
@@ -139,11 +140,21 @@ export function openDb(file = config.dbFile) {
 
   const q = {
     get: db.prepare('SELECT * FROM tasks WHERE id = ?'),
-    list: db.prepare('SELECT * FROM tasks ORDER BY id DESC'),
-    children: db.prepare('SELECT * FROM tasks WHERE parent_id = ? ORDER BY id'),
+    list: db.prepare('SELECT * FROM tasks WHERE deleted_at IS NULL ORDER BY id DESC'),
+    children: db.prepare('SELECT * FROM tasks WHERE parent_id = ? AND deleted_at IS NULL ORDER BY id'),
+    allChildren: db.prepare('SELECT * FROM tasks WHERE parent_id = ? ORDER BY id'),
+    trash: db.prepare(`SELECT t.id, t.title, t.agent, t.project, t.status, t.kind, t.deleted_at, t.created_at,
+                          (SELECT COUNT(*) FROM tasks k WHERE k.parent_id = t.id AND k.deleted_at = t.deleted_at) AS steps,
+                          (SELECT COUNT(*) FROM events e WHERE e.task_id = t.id AND e.kind = 'user') AS replies
+                        FROM tasks t WHERE t.deleted_at IS NOT NULL
+                          AND NOT EXISTS (SELECT 1 FROM tasks p WHERE p.id = t.parent_id AND p.deleted_at = t.deleted_at)
+                        ORDER BY t.deleted_at DESC, t.id DESC`),
+    trashOlder: db.prepare("SELECT id FROM tasks WHERE deleted_at IS NOT NULL AND deleted_at < datetime('now', ?) ORDER BY id DESC"),
+    setDeleted: db.prepare('UPDATE tasks SET deleted_at = ? WHERE id = ?'),
+    restoreBatch: db.prepare('UPDATE tasks SET deleted_at = NULL WHERE deleted_at = ? AND (id = ? OR parent_id = ?) RETURNING id'),
     del: db.prepare('DELETE FROM tasks WHERE id = ?'),
     addMsg: db.prepare('INSERT INTO messages (task_id, child_id, from_agent, to_agent, kind, text) VALUES (?, ?, ?, ?, ?, ?) RETURNING *'),
-    msgs: db.prepare('SELECT * FROM (SELECT * FROM messages ORDER BY id DESC LIMIT ?) ORDER BY id'),
+    msgs: db.prepare('SELECT * FROM (SELECT * FROM messages WHERE task_id NOT IN (SELECT id FROM tasks WHERE deleted_at IS NOT NULL) ORDER BY id DESC LIMIT ?) ORDER BY id'),
     taskMsgs: db.prepare('SELECT * FROM messages WHERE task_id = ? OR child_id = ? ORDER BY id'),
     linkMsg: db.prepare('UPDATE messages SET child_id = ? WHERE id = ? RETURNING *'),
     delMsgs: db.prepare('DELETE FROM messages WHERE task_id = ? OR child_id = ?'),
@@ -165,8 +176,8 @@ export function openDb(file = config.dbFile) {
                                AVG((julianday(finished_at) - julianday(started_at)) * 86400) AS avg_s
                                FROM tasks WHERE finished_at IS NOT NULL AND date(finished_at, 'localtime') = date('now', 'localtime')
                                GROUP BY engine, status`),
-    recentFailures: db.prepare(`SELECT id, title, agent, engine, error, finished_at FROM tasks WHERE status = 'failed' ORDER BY id DESC LIMIT ?`),
-    byStatus: db.prepare('SELECT status, COUNT(*) AS n FROM tasks GROUP BY status'),
+    recentFailures: db.prepare(`SELECT id, title, agent, engine, error, finished_at FROM tasks WHERE status = 'failed' AND deleted_at IS NULL ORDER BY id DESC LIMIT ?`),
+    byStatus: db.prepare('SELECT status, COUNT(*) AS n FROM tasks WHERE deleted_at IS NULL GROUP BY status'),
     setSetting: db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'),
     addAudit: db.prepare('INSERT INTO audit (action, task_id, detail) VALUES (?, ?, ?)'),
     audit: db.prepare('SELECT * FROM audit ORDER BY id DESC LIMIT ?'),
@@ -198,6 +209,14 @@ export function openDb(file = config.dbFile) {
     listTasks: () => q.list.all().map(parseTask),
     children: (id) => q.children.all(id).map(parseTask),
     deleteTask: (id) => { q.delMsgs.run(id, id); return q.del.run(id).changes > 0; },
+    allChildren: (id) => q.allChildren.all(id).map(parseTask),
+    /** Papelera: marca la misión y sus pasos con la misma hora (así se restauran juntos). */
+    trashTask: (id, ids = [id]) => { const at = new Date().toISOString().replace('T', ' ').slice(0, 19); for (const x of ids) q.setDeleted.run(at, x); return at; },
+    trashList: () => q.trash.all(),
+    /** Devuelve la misión y los pasos que se borraron con ella; los ids restaurados. */
+    restoreTask: (id) => { const t = q.get.get(id); return t?.deleted_at ? q.restoreBatch.all(t.deleted_at, id, id).map((r) => r.id) : []; },
+    /** Misiones en la papelera desde hace más de `days` días (para vaciarla sola). */
+    trashOlderThan: (days) => q.trashOlder.all(`-${Math.max(0, Number(days) || 0)} days`).map((r) => r.id),
     /** Mensajes entre agentes (consultas y respuestas). */
     addMessage: (m) => q.addMsg.get(m.task_id, m.child_id ?? null, m.from_agent, m.to_agent, m.kind, String(m.text ?? '').slice(0, 6000)),
     linkMessage: (id, childId) => q.linkMsg.get(childId, id),

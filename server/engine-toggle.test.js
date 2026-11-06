@@ -125,3 +125,27 @@ test('refreshDown: el runner conoce si Ollama está sin servidor y lo olvida al 
   assert.deepEqual(await refreshDown(), []);
   server.close();
 });
+
+test('Claude Code sin instalar (Docker): Auto manda a Ollama lo que iría a Claude, aunque edite; elegido a mano no se desvía', async () => {
+  assert.equal(route({ agent: 'devops' }, [], ['claude']).engine, 'ollama');
+  assert.equal(route({ agent: 'backend', mode: 'edit' }, [], ['claude']).engine, 'ollama');
+  assert.match(route({ agent: 'backend' }, [], ['claude', 'ollama']).blocked, /No hay motor disponible: Claude Code no está instalado aquí y Ollama está apagado/); // sin alternativa: lo dice claro
+  assert.equal(route({ agent: 'x', engine: 'claude' }, [], ['claude']).engine, 'claude');
+  let has = false;
+  const probe = { claude: async () => ({ ok: has }), codex: async () => ({ ok: false }), ollama: async () => ({ ok: true, models: [] }) };
+  const { db, refreshDown, server } = createApp({ db: openDb(':memory:'), probe });
+  assert.deepEqual(await refreshDown(), ['claude']);
+  has = true;
+  assert.deepEqual(await refreshDown(), []);
+  has = false; db.setEngineEnabled('claude', false); // desactivado a propósito: ya lo trata «off»
+  assert.deepEqual(await refreshDown(), []);
+  server.close();
+});
+
+test('isRemoteUrl: en Docker Ollama y LM Studio están en el PC (host.docker.internal) y no se pueden encender ni apagar desde la oficina', async () => {
+  const { isRemoteUrl } = await import('./index.js');
+  assert.equal(isRemoteUrl('http://127.0.0.1:11434'), false);
+  assert.equal(isRemoteUrl('http://localhost:1234/v1'), false);
+  assert.equal(isRemoteUrl('http://host.docker.internal:11434'), true);
+  assert.equal(isRemoteUrl('no es url'), false);
+});

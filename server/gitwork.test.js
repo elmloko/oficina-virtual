@@ -178,6 +178,8 @@ test('borrar una misión con cambios pendientes también elimina su rama y su co
   const wt = join(worktrees, String(t.id));
   assert.ok(existsSync(wt));
   assert.equal((await call('DELETE', `/api/tasks/${t.id}`)).status, 200);
+  assert.ok(existsSync(wt), 'en la papelera los cambios sin aplicar se conservan');
+  assert.equal((await call('DELETE', `/api/tasks/${t.id}?permanent=1`)).status, 200);
   assert.ok(!existsSync(wt));
   assert.equal(G(repoDir, 'branch', '--list', `oficina/m${t.id}`), '');
 });

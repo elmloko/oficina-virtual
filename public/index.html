@@ -24,6 +24,7 @@
         <button role="tab" data-view="board" aria-selected="false">Tablero</button>
         <button role="tab" data-view="routines" aria-selected="false">Rutinas</button>
         <button role="tab" data-view="costs" aria-selected="false">Uso</button>
+        <button role="tab" data-view="trash" aria-selected="false">Papelera <span id="trash-badge" class="badge" hidden>0</span></button>
         <button role="tab" data-view="system" aria-selected="false">Sistema</button>
       </nav>
       <div id="stats" aria-live="polite"></div>
@@ -31,8 +32,24 @@
   </header>
 
   <section id="view-office" class="view">
-    <div class="stage"><canvas id="office" aria-label="Oficina virtual: agentes en sus puestos" role="img"></canvas></div>
-    <p class="legend"><span class="dot work"></span>trabajando <span class="dot queued"></span>en cola <span class="dot review"></span>por revisar <span class="dot fail"></span>falló · clic en un agente para ver su misión o asignarle una<span id="comms-ticker" hidden></span></p>
+    <div class="office-main">
+      <div class="stage"><canvas id="office" aria-label="Oficina virtual: agentes en sus puestos" role="img"></canvas></div>
+      <p class="legend"><span class="dot work"></span>trabajando <span class="dot queued"></span>en cola <span class="dot review"></span>por revisar <span class="dot fail"></span>falló · clic en un agente para ver su misión o asignarle una<span id="comms-ticker" hidden></span></p>
+    </div>
+    <aside id="inbox" aria-label="Bandeja: misiones que necesitan tu atención">
+      <button type="button" id="inbox-toggle" class="inbox-toggle" aria-expanded="true" title="Mostrar u ocultar la bandeja">💬 <span id="inbox-count" class="badge" hidden>0</span></button>
+      <div class="inbox-pane">
+        <div class="inbox-head"><h2>Bandeja</h2><span class="muted" id="inbox-sub"></span></div>
+        <div class="inbox-filters" role="group" aria-label="Filtrar la bandeja">
+          <button type="button" data-f="all" aria-pressed="true">Todo</button>
+          <button type="button" data-f="question" aria-pressed="false">❓ Preguntas</button>
+          <button type="button" data-f="review" aria-pressed="false">✓ Revisar</button>
+          <button type="button" data-f="failed" aria-pressed="false">✖ Fallidas</button>
+        </div>
+        <div id="inbox-list" role="list"></div>
+        <div id="inbox-chat" hidden></div>
+      </div>
+    </aside>
   </section>
 
   <section id="view-attention" class="view" hidden>
@@ -59,6 +76,14 @@
   </section>
 
 
+
+  <section id="view-trash" class="view" hidden>
+    <div class="panel">
+      <div class="panel-head"><h2>Papelera</h2><button id="trash-empty" class="danger" hidden>Vaciar papelera</button></div>
+      <p class="hint" id="trash-hint">Las misiones que eliminas quedan aquí con todo su chat, adjuntos y cambios sin aplicar. Restáuralas para retomarlas donde las dejaste.</p>
+      <div id="trash-list"></div>
+    </div>
+  </section>
 
   <section id="view-routines" class="view" hidden>
     <div class="panel">

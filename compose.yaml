@@ -5,7 +5,7 @@ services:
   oficina:
     build: .
     container_name: oficina-virtual
-    restart: unless-stopped
+    restart: "no" # no arranca sola: al encender el PC la oficina se inicia en local (iniciar-oficina-oculto.vbs)
     ports:
       - "127.0.0.1:${OFICINA_PORT:-4000}:4000"   # solo accesible desde tu PC, nunca desde la red
     extra_hosts:
@@ -31,10 +31,13 @@ services:
       - ${HTDOCS_HOST:-C:/xampp/htdocs}:/htdocs
       - ${DOCS_HOST:-${USERPROFILE}/OneDrive/Documentos}:/documentos
       - ${USERPROFILE}/Downloads:/descargas:ro
-      - ${USERPROFILE}/.claude/agents:/agents:ro
+      - ${USERPROFILE}/.claude/agents:/agents     # escritura: «Importar agentes» guarda aquí (nunca pisa uno existente)
+      - claude-home:/home/node/.claude            # sesión propia de Claude Code en Docker (se inicia una vez, ver README)
       # Código de la oficina EN VIVO (solo lectura): public/ se ve al recargar la página;
       # server/ reinicia el servidor solo (server/watch-poll.js). Sin --build tras cada cambio.
       - ./server:/app/server:ro
       - ./public:/app/public:ro
     command: ["node", "server/watch-poll.js"]
 
+volumes:
+  claude-home:

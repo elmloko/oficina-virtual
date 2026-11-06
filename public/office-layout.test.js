@@ -16,6 +16,22 @@ test('deptOf: agentes conocidos, palabras clave y valor por defecto', () => {
   assert.equal(deptOf('algo-raro'), 'hangar');
 });
 
+test('deptOf: agentes en español van a la sala de su equivalente en inglés', () => {
+  assert.equal(deptOf('arquitecto'), deptOf('architect'));
+  assert.equal(deptOf('revisor'), deptOf('reviewer'));
+  assert.equal(deptOf('seguridad'), deptOf('security'));
+  assert.equal(deptOf('documentador'), deptOf('docs'));
+  assert.equal(deptOf('depurador'), deptOf('debugger'));
+  assert.equal(deptOf('rendimiento'), deptOf('performance'));
+  assert.equal(deptOf('base-datos'), deptOf('dba'));
+  // agentes futuros por palabra clave en español
+  assert.equal(deptOf('arquitecto-cloud'), 'mando');
+  assert.equal(deptOf('pruebas-carga'), 'inteligencia');
+  assert.equal(deptOf('diseñador-web'), 'taller');
+  assert.equal(deptOf('investigador'), 'reconocimiento');
+  assert.equal(deptOf('redactor'), 'diplomacia');
+});
+
 test('ningún agente aparece en dos departamentos', () => {
   const seen = new Set();
   for (const d of DEPARTMENTS) for (const a of d.agents) { assert.ok(!seen.has(a), `duplicado: ${a}`); seen.add(a); }
@@ -42,6 +58,23 @@ test('layout: una posición por agente, dentro de su sala y sin solaparse', () =
     assert.ok(!seen.has(k), `${c.agent} solapado`);
     seen.add(k);
     assert.equal(c.state, 'idle');
+  }
+});
+
+test('salas abarrotadas: todos dentro (incluido el margen de deambular) y sin posiciones repetidas', () => {
+  for (const n of [16, 17, 18, 25, 40, 60]) {
+    const agents = names(Array.from({ length: n }, (_, i) => `zz-agente-${i}`)); // nombres desconocidos → todos al hangar
+    const tasks = [{ id: 1, agent: 'zz-agente-0', status: 'running' }];
+    const { rooms, chars } = layoutOffice(agents, tasks);
+    const room = rooms.find((r) => r.id === 'hangar').rect;
+    const seen = new Set();
+    for (const c of chars) {
+      const slack = c.seat === 'lounge' ? { x: 14, y: 4 } : { x: 0, y: 0 }; // wanderTarget
+      assert.ok(c.x - CHAR.w / 2 - slack.x >= room.x && c.x + CHAR.w / 2 + slack.x <= room.x + room.w, `n=${n}: ${c.agent} fuera de la sala (x=${c.x - room.x})`);
+      assert.ok(c.y - CHAR.h >= room.y && c.y + slack.y <= room.y + room.h, `n=${n}: ${c.agent} fuera de la sala (y=${c.y - room.y})`);
+      assert.ok(!seen.has(`${c.x},${c.y}`), `n=${n}: ${c.agent} solapado`);
+      seen.add(`${c.x},${c.y}`);
+    }
   }
 });
 

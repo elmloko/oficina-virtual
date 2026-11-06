@@ -176,11 +176,14 @@ test('ejecutar: claude recibe las rutas en el prompt y --add-dir; un motor local
   assert.doesNotMatch(calls.at(-1).input, /Archivos adjuntos/);
 });
 
-test('eliminar la misión borra sus adjuntos del disco y de la base', async () => {
+test('eliminar la misión la manda a la papelera con sus adjuntos; borrarla de la papelera los elimina del disco y de la base', async () => {
   const t = await newTask();
   const a = await (await upload(t.id, 'temporal.txt', Buffer.from('x'))).json();
   assert.ok(existsSync(fileFor(attDir, a)));
   assert.equal((await json('DELETE', `/api/tasks/${t.id}`)).status, 200);
+  assert.ok(existsSync(fileFor(attDir, a)), 'en la papelera el adjunto se conserva');
+  assert.equal(app.db.attachments(t.id).length, 1);
+  assert.equal((await json('DELETE', `/api/tasks/${t.id}`)).status, 200); // segunda vez: borrado definitivo
   assert.equal(existsSync(fileFor(attDir, a)), false);
   assert.equal(app.db.attachments(t.id).length, 0);
 });

@@ -723,3 +723,70 @@ em.cat-task { color: var(--gold); border-color: var(--gold); } em.cat-sys { colo
 .opts-form .chks { display: flex; flex-wrap: wrap; gap: 4px 12px; }
 .opts-form .chks label { display: inline-flex; gap: 4px; align-items: center; }
 .opts-form button[type=submit] { justify-self: start; }
+
+/* ---------- bandeja tipo chat (vista Oficina, a la derecha) ---------- */
+#view-office:not([hidden]) { flex-direction: row; align-items: stretch; gap: 10px; }
+.office-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; align-items: center; }
+#inbox { flex: none; width: 440px; display: flex; flex-direction: column; min-height: 0; background: var(--panel); border: 2px solid var(--line); position: relative; }
+#inbox.collapsed { width: 46px; }
+#inbox.collapsed .inbox-pane { display: none; }
+.inbox-toggle { position: absolute; top: 6px; left: 6px; z-index: 1; padding: 2px 6px; }
+#inbox:not(.collapsed) .inbox-toggle { left: auto; right: 6px; }
+#inbox.collapsed .inbox-toggle { position: static; margin: 6px auto; display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.inbox-pane { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+.inbox-head { display: flex; align-items: baseline; gap: 8px; padding: 8px 48px 4px 12px; }
+.inbox-head h2 { margin: 0; font-size: 15px; color: var(--gold); }
+.inbox-filters { display: flex; gap: 4px; padding: 4px 10px 8px; flex-wrap: wrap; border-bottom: 2px solid var(--line); }
+.inbox-filters button { font-size: 12px; padding: 2px 8px; }
+.inbox-filters button[aria-pressed="true"] { border-color: var(--gold); color: var(--gold); }
+#inbox-list { overflow-y: auto; overflow-x: hidden; flex: 1; min-height: 0; }
+.ib-main { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.ib-title, .ib-prev { display: block; }
+.ib-item { display: grid; grid-template-columns: 36px 1fr; gap: 8px; padding: 9px 10px; border-bottom: 1px solid var(--line); cursor: pointer; width: 100%; text-align: left; background: none; border-left: 3px solid transparent; border-top: 0; border-right: 0; }
+.ib-item:hover, .ib-item:focus-visible { background: var(--panel-2); }
+.ib-item.question { border-left-color: var(--gold); }
+.ib-item.failed { border-left-color: var(--red); }
+.ib-item.plan { border-left-color: var(--violet); }
+.ib-item.review { border-left-color: var(--blue); }
+.ib-avatar { width: 36px; height: 36px; display: grid; place-items: center; font-weight: bold; color: #0b0f1a; font-size: 15px; position: relative; }
+.ib-avatar .k { position: absolute; right: -5px; bottom: -5px; font-size: 11px; background: var(--panel); border: 1px solid var(--line); line-height: 1; padding: 1px 2px; }
+.ib-top { display: flex; gap: 6px; align-items: baseline; min-width: 0; }
+.ib-top strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+.ib-top time { color: var(--muted); font-size: 11px; flex: none; }
+.ib-title { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ib-prev { font-size: 12px; color: var(--text); opacity: .8; display: -webkit-box !important; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.ib-item.unread .ib-top strong::after { content: ' ●'; color: var(--gold); }
+.ib-item.unread .ib-prev { opacity: 1; font-weight: bold; }
+.ib-empty { padding: 24px 14px; color: var(--muted); text-align: center; }
+#inbox-chat { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+#inbox-chat[hidden] { display: none; }
+.ic-head { display: flex; gap: 8px; align-items: center; padding: 8px 10px; border-bottom: 2px solid var(--line); }
+.ic-head .ic-who { min-width: 0; flex: 1; }
+.ic-head strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ic-head .muted { font-size: 11px; }
+.ic-thread { flex: 1; min-height: 120px; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.ic-thread > * { flex-shrink: 0; } /* sin esto las burbujas largas se aplastan a una línea */
+.bubble { max-width: 88%; padding: 8px 12px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; line-height: 1.45; border: 2px solid var(--line); }
+.bubble.me { align-self: flex-end; background: color-mix(in srgb, var(--gold) 14%, var(--panel-2)); border-color: color-mix(in srgb, var(--gold) 45%, var(--line)); }
+.bubble.agent { align-self: flex-start; background: var(--panel-2); }
+.bubble.error { align-self: flex-start; border-color: var(--red); color: var(--red); }
+.bubble.typing { align-self: flex-start; color: var(--muted); font-style: italic; }
+.ic-thread .bubble.long:not(.open) .b-text { max-height: 13em; overflow: hidden; -webkit-mask-image: linear-gradient(#000 70%, transparent); mask-image: linear-gradient(#000 70%, transparent); }
+.ic-thread .b-more { display: block; margin-top: 6px; font-size: 12px; padding: 2px 8px; }
+.bubble .tag { display: block; font-size: 10px; color: var(--muted); margin-bottom: 2px; }
+.ic-actions { display: flex; gap: 6px; padding: 8px 10px 0; flex-wrap: wrap; border-top: 2px solid var(--line); }
+.ic-actions + .ic-reply { border-top: 0; }
+.ic-reply { padding: 8px 10px 10px; border-top: 2px solid var(--line); }
+.ic-reply .reply { display: grid; grid-template-columns: 1fr auto; gap: 6px; align-items: center; margin: 0; }
+.ic-reply .reply textarea { grid-column: 1 / -1; min-height: 56px; resize: vertical; width: 100%; box-sizing: border-box; }
+.ic-reply .reply .files-field { grid-column: 1; margin: 0; }
+.ic-reply .reply .reply-row { grid-column: 2; margin: 0; }
+.ic-reply .reply .h-err { grid-column: 1 / -1; }
+.ic-reply .reply .h-err:empty { display: none; }
+@media (max-width: 1100px) { #inbox { width: 360px; } }
+@media (max-width: 800px) {
+  #view-office:not([hidden]) { flex-direction: column; }
+  #inbox, #inbox.collapsed { width: 100%; max-height: 55vh; }
+  #inbox.collapsed { max-height: 46px; }
+  #inbox.collapsed .inbox-toggle { flex-direction: row; margin: 6px; }
+}

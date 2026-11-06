@@ -33,9 +33,12 @@ export function route({ agent, engine = 'auto', mode = 'read', project = null },
     // En automático se esquiva el motor apagado si el otro puede hacer el trabajo.
     const out = [...off, ...down];
     if (finalEngine === 'ollama' && out.includes('ollama')) finalEngine = 'claude';
-    else if (finalEngine === 'claude' && off.includes('claude') && !out.includes('ollama')) finalEngine = 'ollama';
+    else if (finalEngine === 'claude' && out.includes('claude') && !out.includes('ollama')) finalEngine = 'ollama'; // apagado o sin instalar (p. ej. en Docker)
   }
-  const blocked = off.includes(finalEngine) ? `${ENGINE_NAME[finalEngine]} está desactivado en Sistema` : null;
+  const noEngine = engine === 'auto' && ['claude', 'ollama'].every((e) => [...off, ...down].includes(e));
+  const blocked = off.includes(finalEngine) ? `${ENGINE_NAME[finalEngine]} está desactivado en Sistema`
+    : noEngine && down.includes(finalEngine) ? `No hay motor disponible: ${down.includes('claude') ? 'Claude Code no está instalado aquí' : 'Claude Code está desactivado'} y Ollama está ${down.includes('ollama') ? 'apagado' : 'desactivado'}. Enciende Ollama en tu PC (o elige otro motor en la misión) y vuelve a lanzarla.`
+    : null;
   return {
     blocked,
     engine: finalEngine,

@@ -763,3 +763,45 @@ test('prompt: el título es solo una etiqueta; las instrucciones son la descripc
   assert.ok(pb.includes('INSTRUCCIONES (haz exactamente esto):\nSolo título como instrucción'));
   assert.ok(!pb.includes('NO la tomes como instrucción'));
 });
+
+test('papelera: borrar una misión la guarda con su chat; se restaura y se puede retomar, o se borra del todo', async () => {
+  const t = (await call('POST', '/api/tasks', { title: 'Chat a recuperar', description: 'Hola', agent: 'backend' })).body;
+  app.db.addEvent(t.id, 'user', 'mi respuesta importante');
+  const obj = app.db.createTask({ title: 'Objetivo', agent: 'backend', kind: 'objective' });
+  const step = app.db.createTask({ title: 'Paso', agent: 'backend', parent_id: obj.id });
+
+  assert.equal((await call('DELETE', `/api/tasks/${t.id}`)).body.trashed, true);
+  assert.ok(!(await call('GET', '/api/state')).body.tasks.some((x) => x.id === t.id), 'ya no aparece en el tablero');
+  assert.equal((await call('POST', `/api/tasks/${t.id}/run`, {})).status, 410, 'en la papelera no se ejecuta');
+  assert.equal((await call('PATCH', `/api/tasks/${t.id}`, { agent: 'tester' })).status, 410);
+  assert.ok((await call('GET', `/api/tasks/${t.id}/events`)).body.some((e) => e.text === 'mi respuesta importante'), 'el chat se puede leer');
+
+  await call('DELETE', `/api/tasks/${obj.id}`); // el objetivo se lleva sus pasos a la papelera
+  const trash = (await call('GET', '/api/trash')).body;
+  assert.equal(trash.days, 30);
+  const mine = trash.items.filter((x) => [t.id, obj.id, step.id].includes(x.id)).map((x) => x.id); // otros tests también borran misiones
+  assert.deepEqual(mine.sort(), [t.id, obj.id].sort(), 'los pasos no salen sueltos');
+  assert.equal(trash.items.find((x) => x.id === obj.id).steps, 1);
+  assert.equal(trash.items.find((x) => x.id === t.id).replies, 1);
+
+  const back = await call('POST', `/api/tasks/${obj.id}/restore`);
+  assert.equal(back.status, 200);
+  const live = (await call('GET', '/api/state')).body.tasks.map((x) => x.id);
+  assert.ok(live.includes(obj.id) && live.includes(step.id), 'vuelve con sus pasos');
+  assert.equal((await call('POST', `/api/tasks/${obj.id}/restore`)).status, 404);
+
+  await call('POST', `/api/tasks/${t.id}/restore`);
+  assert.ok(app.db.events(t.id).some((e) => e.text === 'mi respuesta importante'), 'el chat vuelve intacto');
+  assert.equal((await call('PATCH', `/api/tasks/${t.id}`, { agent: 'tester' })).status, 200, 'se puede retomar');
+
+  await call('DELETE', `/api/tasks/${t.id}`);
+  assert.equal((await call('DELETE', `/api/tasks/${t.id}`)).body.purged, true, 'desde la papelera se borra del todo');
+  assert.equal(app.db.getTask(t.id), undefined);
+  assert.equal(app.db.events(t.id).length, 0);
+
+  await call('DELETE', `/api/tasks/${obj.id}`);
+  app.db.raw.prepare("UPDATE tasks SET deleted_at = datetime('now', '-31 days') WHERE id IN (?, ?)").run(obj.id, step.id);
+  assert.equal(await app.purgeOldTrash(), 2, 'pasados 30 días se vacía sola');
+  assert.equal(app.db.getTask(step.id), undefined);
+  assert.ok(!(await call('GET', '/api/trash')).body.items.some((x) => x.id === obj.id));
+});

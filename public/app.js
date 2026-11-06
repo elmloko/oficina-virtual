@@ -3,6 +3,7 @@ import { createOffice, drawSkinPreview } from './office.js';
 import { SKIN_LIST, AUTO, skinById, resolveSkin, deptView } from './skins.js';
 import { DEPARTMENTS } from './office-layout.js';
 import { attentionItems, transition, KIND_LABEL } from './attention.js';
+import { INBOX_KIND, preview as inboxPreview, chatThread, seenKey, agentHue } from './inbox.js';
 import { createAlerts, SOUNDS } from './alerts.js';
 import { threads, activeLinks, ticker as tickerText, prune } from './comms.js';
 import { filterTasks, isFiltering, NO_PROJECT } from './filters.js';
@@ -83,6 +84,7 @@ function showView(v) {
   for (const s of document.querySelectorAll('.view')) s.hidden = s.id !== `view-${v}`;
   requestAnimationFrame(fitOffice);
   if (v === 'costs') refreshCosts();
+  if (v === 'trash') refreshTrash();
   clearInterval(showView.timer);
   if (v === 'system') { refreshSystem(); showView.timer = setInterval(refreshSystem, 2000); }
   render();
@@ -251,6 +253,7 @@ function render() {
   const attn = attentionItems([...state.tasks.values()]);
   paintBadge(attn.length);
   if (state.view === 'attention') renderAttention(attn);
+  if (state.view === 'office') renderInbox(attn);
   if (state.view === 'board') renderBoard();
   if (state.view === 'routines') renderRoutines();
   if (state.view === 'costs') renderMetrics();
@@ -508,7 +511,12 @@ function drawer(t) {
   pdfBtn.onclick = guard(async () => printPdf(await exportMd(), `Misión #${t.id} ${t.title}`));
   act.append(mdBtn, pdfBtn);
   const del = el('button', { className: 'danger', textContent: 'Eliminar' });
-  del.onclick = guard(async () => { if (await confirmDialog('Eliminar misión', isObj && kids.length ? 'Se eliminarán también sus pasos.' : '¿Eliminar esta misión?')) await api(`/api/tasks/${t.id}`, { method: 'DELETE' }); });
+  del.onclick = guard(async () => {
+    const days = state.trash?.days ?? 30;
+    if (!await confirmDialog('Eliminar misión', `${isObj && kids.length ? 'Irá a la papelera junto con sus pasos.' : 'Irá a la papelera con todo su chat.'} Podrás restaurarla durante ${days} días.`)) return;
+    await api(`/api/tasks/${t.id}`, { method: 'DELETE' });
+    toast('Misión enviada a la papelera', false);
+  });
   act.append(del);
 
   optionsPanel(t);
@@ -1218,11 +1226,60 @@ function setupForms() {
   for (const b of document.querySelectorAll('#audit-filter button')) b.onclick = () => { state.auditFilter = b.dataset.f; renderAudit(); };
   $('#goto-engines').onclick = () => setSysTab('motores');
   $('#goto-routines').onclick = () => document.querySelector('[data-view="routines"]').click();
+  $('#trash-empty').onclick = guard(async () => {
+    const n = state.trash?.items.length ?? 0;
+    if (!n || !await confirmDialog('Vaciar papelera', `Se borrarán para siempre ${n} misión${n === 1 ? '' : 'es'} con su chat. Esto no se puede deshacer.`)) return;
+    await api('/api/trash', { method: 'DELETE' });
+    await refreshTrash();
+  });
+  refreshTrash();
   $('#settings-form').onsubmit = guard(async (e) => {
     e.preventDefault();
     state.settings = await api('/api/settings', { method: 'PUT', body: JSON.stringify(Object.fromEntries(new FormData(e.target))) });
     toast('Ajustes guardados', false);
   });
+}
+
+// ---------- papelera: misiones borradas que se pueden restaurar ----------
+const utc = (s) => (s && !/[zZ]|[+-]dd:?dd$/.test(s) ? `${s.replace(' ', 'T')}Z` : s); // SQLite guarda UTC sin zona
+async function refreshTrash() {
+  try { state.trash = await api('/api/trash'); } catch { return; }
+  paintTrashBadge();
+  if (state.view === 'trash') renderTrash();
+}
+function paintTrashBadge() {
+  const n = state.trash?.items.length ?? 0;
+  const b = $('#trash-badge'); b.hidden = !n; b.textContent = String(n);
+}
+function renderTrash() {
+  const box = $('#trash-list');
+  const { items = [], days = 30 } = state.trash ?? {};
+  $('#trash-empty').hidden = !items.length;
+  $('#trash-hint').textContent = `Las misiones que eliminas quedan aquí ${days} días con todo su chat, adjuntos y cambios sin aplicar. Restáuralas para retomarlas donde las dejaste; pasado ese tiempo se borran solas.`;
+  box.replaceChildren();
+  if (!items.length) { box.append(el('p', { className: 'hint', textContent: 'La papelera está vacía.' })); return; }
+  for (const t of items) {
+    const left = Math.max(0, Math.ceil(days - (Date.now() - new Date(utc(t.deleted_at)).getTime()) / 86400000));
+    const extra = [t.kind === 'objective' ? `objetivo · ${t.steps} paso${t.steps === 1 ? '' : 's'}` : null, t.replies ? `${t.replies} mensaje${t.replies === 1 ? '' : 's'} tuyo${t.replies === 1 ? '' : 's'}` : null].filter(Boolean);
+    const info = el('div', {},
+      el('strong', { textContent: `#${t.id} ${t.title}` }),
+      el('div', { className: 'hint', textContent: [t.agent, t.project || 'sin proyecto', STATUS_ES[t.status] ?? t.status, ...extra, `borrada ${ago(utc(t.deleted_at))}`, `se borra del todo en ${left} día${left === 1 ? '' : 's'}`].join(' · ') }));
+    const restore = el('button', { className: 'primary', textContent: '♻ Restaurar' });
+    restore.onclick = guard(async () => {
+      await post(`/api/tasks/${t.id}/restore`);
+      await refreshState();
+      toast(`#${t.id} restaurada`, false);
+      await refreshTrash();
+      openDrawer(t.id); // directo a su chat, para retomarla
+    });
+    const purge = el('button', { className: 'danger', textContent: 'Borrar del todo' });
+    purge.onclick = guard(async () => {
+      if (!await confirmDialog('Borrar del todo', `«${t.title}» y su chat se borrarán para siempre. Esto no se puede deshacer.`)) return;
+      await api(`/api/tasks/${t.id}`, { method: 'DELETE' });
+      await refreshTrash();
+    });
+    box.append(el('div', { className: 'row' }, info, el('div', { className: 'btns' }, restore, purge)));
+  }
 }
 
 // ---------- rutinas ----------
@@ -2156,6 +2213,8 @@ function connect() {
       state.tasks.delete(m.id);
       if (state.open === m.id) state.open = null;
       render();
+    } else if (m.type === 'trash') {
+      refreshTrash();
     } else if (m.type === 'vault') {
       refreshVault();
     } else if (m.type === 'agents-changed') {
@@ -2369,12 +2428,146 @@ function attnCard({ kind, task: t }) {
   return card;
 }
 
+// ---------- bandeja tipo chat (vista Oficina): lo que necesita tu atención, sin salir del mapa ----------
+const INBOX_KEY = 'oficina.inbox';
+const inbox = { filter: 'all', open: null, sig: '', chatSig: '', seen: new Set(), collapsed: false, dirty: false };
+try { const s = JSON.parse(localStorage.getItem(INBOX_KEY) ?? '{}'); inbox.collapsed = !!s.collapsed; inbox.seen = new Set(s.seen ?? []); } catch { /* sin almacenamiento: vale esta sesión */ }
+const saveInbox = () => { try { localStorage.setItem(INBOX_KEY, JSON.stringify({ collapsed: inbox.collapsed, seen: [...inbox.seen].slice(-300) })); } catch { /* sin almacenamiento */ } };
+const INBOX_ORDER = { question: 0, failed: 1, plan: 2, review: 3 };
+
+function setupInbox() {
+  const aside = $('#inbox');
+  const paintCollapsed = () => { aside.classList.toggle('collapsed', inbox.collapsed); $('#inbox-toggle').setAttribute('aria-expanded', String(!inbox.collapsed)); requestAnimationFrame(fitOffice); };
+  $('#inbox-toggle').onclick = () => { inbox.collapsed = !inbox.collapsed; inbox.sig = ''; inbox.chatSig = ''; saveInbox(); paintCollapsed(); render(); };
+  for (const b of document.querySelectorAll('.inbox-filters button')) {
+    b.onclick = () => {
+      inbox.filter = b.dataset.f;
+      for (const x of document.querySelectorAll('.inbox-filters button')) x.setAttribute('aria-pressed', String(x === b));
+      inbox.sig = ''; closeInboxChat();
+    };
+  }
+  aside.addEventListener('focusout', () => { if (inbox.dirty) setTimeout(() => { if (!aside.contains(document.activeElement)) render(); }, 0); });
+  paintCollapsed();
+}
+
+function closeInboxChat() { inbox.open = null; inbox.chatSig = ''; inbox.sig = ''; $('#inbox-chat').hidden = true; $('#inbox-list').hidden = false; render(); }
+
+function renderInbox(items) {
+  const aside = $('#inbox');
+  const count = $('#inbox-count');
+  count.hidden = !items.length; count.textContent = String(items.length);
+  if (inbox.collapsed) return;
+  if (aside.contains(document.activeElement) && document.activeElement.matches('textarea')) { inbox.dirty = true; return; } // no pisar lo que escribes
+  inbox.dirty = false;
+  const q = items.filter((i) => i.kind === 'question').length;
+  $('#inbox-sub').textContent = items.length ? `${items.length} pendiente${items.length === 1 ? '' : 's'}${q ? ` · ${q} pregunta${q === 1 ? '' : 's'}` : ''}` : 'al día';
+  if (inbox.open) { renderInboxChat(); return; }
+  const shown = items.filter((i) => inbox.filter === 'all' || i.kind === inbox.filter)
+    .sort((a, b) => INBOX_ORDER[a.kind] - INBOX_ORDER[b.kind] || String(b.task.finished_at ?? b.task.updated_at).localeCompare(String(a.task.finished_at ?? a.task.updated_at)));
+  const sig = JSON.stringify(shown.map((i) => [i.kind, seenKey(i.task), inbox.seen.has(seenKey(i.task))]));
+  const list = $('#inbox-list');
+  if (sig === inbox.sig) { for (const tm of list.querySelectorAll('time')) tm.textContent = since(tm.dataset.ts); return; }
+  inbox.sig = sig;
+  if (!shown.length) { list.replaceChildren(el('div', { className: 'ib-empty', textContent: items.length ? 'Nada en este filtro.' : 'Nada pendiente: todos tus agentes están al día. ✨' })); return; }
+  list.replaceChildren(...shown.map(({ kind, task: t }) => {
+    const who = t.kind === 'objective' ? 'coordinador' : t.agent;
+    const pending = kind === 'plan' ? children(t.id).filter((k) => ['backlog', 'failed'].includes(k.status)).length : 0;
+    const ts = t.finished_at ?? t.updated_at ?? '';
+    const avatar = el('span', { className: 'ib-avatar', textContent: who.slice(0, 2).toUpperCase() }, el('span', { className: 'k', textContent: INBOX_KIND[kind].icon }));
+    avatar.setAttribute('aria-hidden', 'true');
+    avatar.style.background = `hsl(${agentHue(who)} 65% 62%)`;
+    const time = el('time', { textContent: since(ts) });
+    time.dataset.ts = ts;
+    const row = el('button', { type: 'button', className: `ib-item ${kind}${inbox.seen.has(seenKey(t)) ? '' : ' unread'}`, title: `${INBOX_KIND[kind].label} · #${t.id} ${t.title}` },
+      avatar,
+      el('span', { className: 'ib-main' },
+        el('span', { className: 'ib-top' }, el('strong', { textContent: who }), time),
+        el('span', { className: 'ib-title', textContent: `${INBOX_KIND[kind].label} · #${t.id} ${t.title}` }),
+        el('span', { className: 'ib-prev', textContent: inboxPreview(kind, t, pending) })));
+    row.setAttribute('role', 'listitem');
+    row.onclick = () => (kind === 'plan' ? openDrawer(t.id) : openInboxChat(t.id));
+    return row;
+  }));
+}
+
+function openInboxChat(id) {
+  inbox.open = id; inbox.chatSig = '';
+  const t = state.tasks.get(id);
+  if (t) { inbox.seen.add(seenKey(t)); saveInbox(); }
+  $('#inbox-list').hidden = true; $('#inbox-chat').hidden = false;
+  renderInboxChat();
+}
+
+async function renderInboxChat() {
+  const box = $('#inbox-chat');
+  const t = state.tasks.get(inbox.open);
+  if (!t) { closeInboxChat(); return; }
+  const sig = `${t.id}:${t.status}:${t.updated_at}:${t.change_state}`;
+  if (sig === inbox.chatSig) return;
+  inbox.chatSig = sig;
+  if (['review', 'done', 'failed'].includes(t.status)) { inbox.seen.add(seenKey(t)); saveInbox(); }
+  let events = [];
+  try { events = await api(`/api/tasks/${t.id}/events`); } catch { /* sin historial: se muestra lo que hay */ }
+  if (inbox.open !== t.id || inbox.chatSig !== sig) return; // cambió mientras cargaba
+  const who = t.kind === 'objective' ? 'coordinador' : t.agent;
+  const back = el('button', { type: 'button', textContent: '←', title: 'Volver a la bandeja' });
+  back.setAttribute('aria-label', 'Volver a la bandeja');
+  back.onclick = closeInboxChat;
+  const full = el('button', { type: 'button', textContent: '⤢', title: 'Abrir la misión completa (cambios, adjuntos, opciones)' });
+  full.setAttribute('aria-label', 'Abrir la misión completa');
+  full.onclick = () => openDrawer(t.id);
+  const head = el('div', { className: 'ic-head' }, back,
+    el('div', { className: 'ic-who' }, el('strong', { textContent: `${who} · #${t.id}` }), el('span', { className: 'muted', textContent: `${t.title} · ${STATUS_ES[t.status] ?? t.status}${t.change_state === 'pending' ? ' · ✎ cambios por aplicar' : ''}` })),
+    full);
+  const thread = el('div', { className: 'ic-thread' });
+  thread.setAttribute('role', 'log');
+  thread.setAttribute('aria-label', `Conversación con ${who}`);
+  for (const b of chatThread(t, events)) {
+    const long = b.text.length > 600; // las respuestas largas se pliegan: «Ver todo» las abre dentro de la burbuja
+    const bubble = el('div', { className: `bubble ${b.who}${long ? ' long' : ''}` },
+      ...(b.first ? [el('span', { className: 'tag', textContent: 'instrucciones' })] : []),
+      el('div', { className: 'b-text', textContent: b.text }));
+    if (long) {
+      const more = el('button', { type: 'button', className: 'b-more', textContent: 'Ver todo ▾' });
+      more.setAttribute('aria-expanded', 'false');
+      more.onclick = () => {
+        const open = bubble.classList.toggle('open');
+        more.textContent = open ? 'Ver menos ▴' : 'Ver todo ▾';
+        more.setAttribute('aria-expanded', String(open));
+      };
+      bubble.append(more);
+    }
+    thread.append(bubble);
+  }
+  const act = el('div', { className: 'ic-actions' });
+  if (t.status === 'failed') {
+    const retry = el('button', { type: 'button', className: 'primary', textContent: 'Reintentar' });
+    retry.onclick = guard(() => withConfirm(`/api/tasks/${t.id}/run`, 'Esta misión puede editar archivos de tu proyecto o actuar sobre un servidor (lo fuerte te lo preguntará antes). ¿Permitirlo?'));
+    act.append(retry);
+  } else if (t.status === 'review') {
+    const ok = el('button', { type: 'button', textContent: 'Aprobar ✓', title: 'Darla por terminada' });
+    ok.onclick = guard(async () => { await api(`/api/tasks/${t.id}`, { method: 'PATCH', body: JSON.stringify({ status: 'done' }) }); toast(`#${t.id} aprobada`, false); closeInboxChat(); });
+    act.append(ok);
+  }
+  if (t.change_state === 'pending') {
+    const ch = el('button', { type: 'button', textContent: 'Ver cambios', title: 'Revisa y aplica los cambios en la misión completa' });
+    ch.onclick = () => openDrawer(t.id);
+    act.append(ch);
+  }
+  const reply = ['review', 'failed', 'done'].includes(t.status) ? el('div', { className: 'ic-reply' }, replyForm(t)) : null;
+  const ta = reply?.querySelector('textarea');
+  if (ta) { ta.rows = 2; ta.placeholder = 'Responde al agente… (Ctrl+Enter envía)'; }
+  box.replaceChildren(head, thread, ...(act.childElementCount ? [act] : []), ...(reply ? [reply] : []));
+  thread.scrollTop = thread.scrollHeight;
+}
+
 office = createOffice($('#office'), {
   onSelectAgent: (name) => openAgent(name),
 });
 setupSkins();
 applySkin();
 setupAlerts();
+setupInbox();
 await refreshState();
 setupForms();
 showView('office');

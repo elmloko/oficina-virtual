@@ -565,7 +565,9 @@ export function createRunner(db, emit, { spawnFn = spawn, fetchFn = fetch, regis
         while ((i = buf.indexOf('\n')) >= 0) { onLine(buf.slice(0, i)); buf = buf.slice(i + 1); }
       });
       child.stderr.on('data', (d) => { stderr += d; });
-      child.on('error', (e) => reject(new Error(`No se pudo lanzar claude: ${e.message}`)));
+      child.on('error', (e) => reject(new Error(e.code === 'ENOENT'
+        ? 'Claude Code no está instalado aquí (en Docker no viene incluido): elige Ollama u otro motor en la misión, o deja el motor en Automático'
+        : `No se pudo lanzar claude: ${e.message}`)));
       child.on('close', (code) => {
         if (buf) onLine(buf);
         if (final && !final.is_error) resolve({ result: final.result ?? '', cost: final.total_cost_usd });
