@@ -333,7 +333,8 @@ const when = (ts) => { try { return parseTs(ts).toLocaleTimeString('es', { hour:
 
 function bubble(m) {
   const long = m.text.length > 500;
-  const body = long ? el('details', {}, el('summary', { textContent: `${m.text.slice(0, 220)}…` }), el('div', { className: 'b-full', textContent: m.text })) : el('div', { className: 'b-text', textContent: m.text });
+  // mensajes entre agentes: vienen en Markdown (el resumen plegado se queda en texto plano)
+  const body = long ? el('details', {}, el('summary', { textContent: `${m.text.slice(0, 220)}…` }), renderResult(el('div', { className: 'b-full' }), m.text)) : renderResult(el('div', { className: 'b-text' }), m.text);
   return el('div', { className: `bubble ${m.kind}` },
     el('div', { className: 'b-head' }, el('strong', { textContent: m.from_agent }), el('span', { className: 'muted', textContent: `→ ${m.to_agent} · ${when(m.created_at)}` })),
     body);
@@ -2580,7 +2581,8 @@ async function renderInboxChat() {
     const long = b.text.length > 600; // las respuestas largas se pliegan: «Ver todo» las abre dentro de la burbuja
     const bubble = el('div', { className: `bubble ${b.who}${long ? ' long' : ''}` },
       ...(b.first ? [el('span', { className: 'tag', textContent: 'instrucciones' })] : []),
-      el('div', { className: 'b-text', textContent: b.text }));
+      // lo que escribe el agente llega en Markdown; tus mensajes se muestran tal cual los escribiste
+      b.who === 'agent' ? renderResult(el('div', { className: 'b-text' }), b.text) : el('div', { className: 'b-text', textContent: b.text }));
     if (long) {
       const more = el('button', { type: 'button', className: 'b-more', textContent: 'Ver todo ▾' });
       more.setAttribute('aria-expanded', 'false');
