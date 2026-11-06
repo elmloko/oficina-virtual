@@ -55,18 +55,19 @@ export function recommend(results) {
 
 /**
  * Une una medición con las anteriores: lo medido ahora reemplaza (por nombre) a lo de antes y el resto se conserva,
- * así medir de nuevo o reintentar un modelo no borra los demás. `installed`: si se da, se olvidan los ya desinstalados.
+ * así medir de nuevo o reintentar un modelo no borra los demás. `installed`: si se da, se marcan (`gone`) los ya desinstalados, sin borrar sus métricas.
  * `changed_from`: el recomendado anterior si esta medición encontró uno mejor (null si no cambió o no había).
  */
 export function mergeBench(prev, { results, skipped = [], at, free_gb, installed = null }) {
   const keep = (n) => !installed || installed.includes(n);
   const fresh = new Map(results.map((r) => [r.name, { ...r, at }]));
-  const old = (prev?.results ?? []).filter((r) => keep(r.name) && !fresh.has(r.name)).map((r) => ({ ...r, at: r.at ?? prev.at }));
-  const all = [...fresh.values(), ...old];
+  // las métricas de modelos desinstalados NO se borran (se marcan `gone`): así probar y quitar modelos no pierde lo medido
+  const old = (prev?.results ?? []).filter((r) => !fresh.has(r.name)).map((r) => ({ ...r, at: r.at ?? prev.at }));
+  const all = [...fresh.values(), ...old].map((r) => ({ ...r, gone: installed ? !installed.includes(r.name) : !!r.gone }));
   const measured = new Set(all.map((r) => r.name));
   const touched = new Set([...fresh.keys(), ...skipped.map((s) => s.name)]);
   const oldSkipped = (prev?.skipped ?? []).filter((s) => keep(s.name) && !touched.has(s.name));
-  const best = recommend(all);
+  const best = recommend(all.filter((r) => !r.gone)); // un modelo desinstalado nunca es el recomendado
   const before = prev?.best ?? null;
   return {
     at, free_gb, results: all,

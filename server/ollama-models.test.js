@@ -35,7 +35,8 @@ test('mergeBench: reintentar uno conserva los demás, olvida los desinstalados y
   const installed = ['qwen3:4b', 'gemma:12b', 'grande:27b'];
   // reintento de gemma: ahora responde a buen ritmo y, por ser más grande, pasa a ser el recomendado
   const m = mergeBench(prev, { results: [ok('gemma:12b', 7, 5.1)], at: 'hoy', free_gb: 8, installed });
-  assert.deepEqual(m.results.map((r) => [r.name, r.ok, r.at]), [['gemma:12b', true, 'hoy'], ['qwen3:4b', true, 'ayer']]); // viejo:1b ya no está instalado
+  // viejo:1b ya no está instalado, pero su métrica se conserva (marcada `gone`) y nunca será el recomendado
+  assert.deepEqual(m.results.map((r) => [r.name, r.ok, r.at, r.gone]), [['gemma:12b', true, 'hoy', false], ['qwen3:4b', true, 'ayer', false], ['viejo:1b', true, 'ayer', true]]);
   assert.deepEqual([m.best, m.changed_from], ['gemma:12b', 'qwen3:4b']);
   assert.deepEqual(m.skipped.map((s) => s.name), ['grande:27b'], 'lo omitido antes se conserva');
   // otra medición sin cambio de recomendado: no hay aviso

@@ -1644,7 +1644,9 @@ function renderSystem() {
 
   // motores y modelos (solo se reconstruye si cambian los datos, para no perder lo que escribes)
   state.benches ??= {};
-  for (const e of ['ollama', 'lmstudio']) if (!state.benches[e]) refreshBench(e);
+  // se vuelve a pedir cada 15 s (no solo la primera vez) para reflejar mediciones hechas en otra pestaña o tras reiniciar
+  state.benchAt ??= {};
+  for (const e of ['ollama', 'lmstudio']) if (!state.benches[e]?.running && (!state.benches[e] || Date.now() - (state.benchAt[e] ?? 0) > 15_000)) { state.benchAt[e] = Date.now(); refreshBench(e); }
   renderIfChanged($('#sys-engines'), { b: state.benches, m: state.modelInfo, c: [s.claude.enabled, s.claude.ok, s.claude.version], o: [s.ollama.enabled, s.ollama.ok, s.ollama.models?.length ?? 0], x: [s.codex.enabled, s.codex.ok, s.codex.version], p: s.providers, n: state.netMore }, () => enginesView(s));
   fillSettings();
 }
@@ -1653,7 +1655,7 @@ function renderSystem() {
 const PICK_ENGINES = ['claude', 'codex', 'ollama', 'lmstudio'];
 function modelOptions(engine, current) {
   const info = state.modelInfo ?? {};
-  const seen = info.defaults?.[engine];
+  const seen = serversDown().has(engine) ? null : info.defaults?.[engine]; // con el servidor apagado no se inventa un «predeterminado»
   const list = [...(info[engine] ?? [])];
   if (current && !list.some((m) => m.value === current)) list.push({ value: current, label: current });
   const none = engine === 'lmstudio' ? ' (el que tengas cargado)' : ' (el de tu sesión)';
@@ -1715,7 +1717,9 @@ async function refreshBench(engine) {
       else toast(`Medición de ${BENCH_LABEL[engine]} terminada. ${b.best ? `Recomendado: ★ ${b.best}` : 'Ningún modelo respondió bien: abre la tabla para ver por qué.'}`, false);
     }
     if (state.system) renderSystem();
-  } catch { /* el servidor puede estar reiniciando */ }
+  } catch { // servidor reiniciando: se deja lo que hay en pantalla y se reintenta (antes se quedaba congelado)
+    clearTimeout(benchTimers[engine]); benchTimers[engine] = setTimeout(() => refreshBench(engine), 3000);
+  }
 }
 const FORCE_WARNING = 'Los que no caben en la memoria libre pueden ir muy lentos, tardar varios minutos cada uno o fallar al cargar. Mientras tanto la computadora puede ir lenta.';
 /** `models`: medir solo esos (botón «Reintentar» de una fila); el resto de resultados se conserva. */
@@ -1828,21 +1832,23 @@ function benchPanel(engine, canRun = true) {
     await startBench(engine, true, names);
   });
   const sizeCell = (x) => el('td', { className: 'num', textContent: x.size ? `${x.size_est ? '~' : ''}${(x.size / 1e9).toFixed(1)} GB` : '—' });
-  const nameCell = (name) => el('td', { className: 'm-name', title: name }, ...(name === b.best ? [el('b', { className: 'star', textContent: '★ ' })] : []), span(name), ...(name === cur ? [el('em', { className: 'in-use', textContent: 'en uso' })] : []));
+  const nameCell = (name, gone = false) => el('td', { className: 'm-name', title: gone ? `${name} (ya no está instalado; se conserva su medición)` : name }, ...(name === b.best ? [el('b', { className: 'star', textContent: '★ ' })] : []), span(name), ...(gone ? [el('em', { className: 'in-use', textContent: 'no instalado' })] : []), ...(name === cur ? [el('em', { className: 'in-use', textContent: 'en uso' })] : []));
   const now = (name) => b.running && name === b.current;
 
-  const doneRows = b.results.map((r) => el('tr', { className: [r.name === b.best && 'best', now(r.name) && 'measuring', !r.ok && 'failed'].filter(Boolean).join(' ') },
-    nameCell(r.name), sizeCell(r),
+  // desinstalado: su métrica se conserva y se ve atenuada; si el motor está apagado (lista vacía) se usa la marca guardada
+  const isGone = (r) => (installed.length ? !installed.includes(r.name) : !!r.gone);
+  const doneRows = b.results.map((r) => el('tr', { className: [r.name === b.best && 'best', now(r.name) && 'measuring', !r.ok && 'failed', isGone(r) && 'gone'].filter(Boolean).join(' '), style: isGone(r) ? 'opacity:.55' : '' },
+    nameCell(r.name, isGone(r)), sizeCell(r),
     el('td', { className: `num ${r.ok ? (r.tps >= 4 ? 'good' : 'bad') : 'bad'}`, textContent: r.ok ? `${r.approx ? '~' : ''}${r.tps} tok/s` : '—' }),
     el('td', { className: 'num', textContent: `${r.seconds} s`, title: r.at ? `Medido el ${new Date(r.at).toLocaleString()}` : '' }),
     el('td', { className: 'snip', title: now(r.name) ? '' : (r.text || r.error || '') }, now(r.name) ? el('span', { className: 'spin', textContent: '⏳ midiendo de nuevo…' }) : span(r.ok ? r.text : `✕ ${r.error}`)),
     el('td', { className: 'bench-act' },
-      ...(r.ok && cur !== r.name ? [el('button', { textContent: 'Usar', title: `Que ${BENCH_LABEL[engine]} use ${r.name} en las misiones nuevas`, onclick: guard(async () => {
+      ...(r.ok && cur !== r.name && !isGone(r) ? [el('button', { textContent: 'Usar', title: `Que ${BENCH_LABEL[engine]} use ${r.name} en las misiones nuevas`, onclick: guard(async () => {
         await api(`/api/system/engines/${engine}/model`, { method: 'PUT', body: JSON.stringify({ model: r.name }) });
         toast(`${BENCH_LABEL[engine]} usará ${r.name} (aplica a las misiones nuevas)`, false);
         await refreshModels();
       }) })] : []),
-      el('button', { textContent: r.ok ? '↻' : 'Reintentar', title: `Medir de nuevo solo ${r.name} (lo demás se conserva)`, disabled: busy, onclick: measureOnly([r.name], false) }))));
+      el('button', { textContent: r.ok ? '↻' : 'Reintentar', title: `Medir de nuevo solo ${r.name} (lo demás se conserva)`, disabled: busy || isGone(r), onclick: measureOnly([r.name], false) }))));
 
   const pendingRows = pending.map((s) => el('tr', { className: `pending${now(s.name) ? ' measuring' : ''}` },
     nameCell(s.name), sizeCell(s),
@@ -1912,7 +1918,7 @@ function localEngineItem(key, label, info, detail, kind, kindClass) {
     name: label, kind, kindClass, on: key === 'ollama' ? info.enabled && info.ok : info.enabled, ok: info.ok,
     detail: !info.enabled ? `apagado · ${detail ?? ''}` : key === 'ollama' && !info.ok ? 'servidor apagado: usa el interruptor para encenderlo' : (detail ?? ''),
     model: modelSelect(key, label),
-    panel: key === 'ollama' && info.enabled ? benchPanel('ollama', info.ok) : null,
+    panel: key === 'ollama' && info.enabled && info.ok ? benchPanel('ollama', true) : null, // apagado o no instalado: sin tabla ni métricas viejas
     tools: key === 'ollama' && info.enabled && info.ok ? [scanButton('ollama'), benchButton('ollama'), probarOllama.button] : [],
     status: key === 'ollama' && info.enabled ? benchStatus('ollama', info.ok) : null,
     more: key === 'ollama' && info.enabled ? [probarOllama.res] : [],
@@ -1969,7 +1975,7 @@ function providerItem(p) {
     name: lm ? 'LM Studio' : p.name, kind: lm ? 'Local' : 'Internet', kindClass: lm ? 'k-local' : 'k-net',
     on: lm ? p.enabled && lmUp !== false : p.enabled, ok: lm ? lmUp !== false : true, detail,
     model: lm && p.enabled ? modelSelect('lmstudio', 'LM Studio') : el('span', { className: 'muted', textContent: p.configured || lm ? p.model : `modelo: ${p.model}` }),
-    actions, panel: lm && p.enabled ? benchPanel('lmstudio', lmUp !== false) : null, tools, more: [res, keyform],
+    actions, panel: lm && p.enabled && lmUp ? benchPanel('lmstudio', true) : null, tools, more: [res, keyform],
     status: lm && p.enabled ? benchStatus('lmstudio', lmUp !== false) : null,
   });
 }
