@@ -75,7 +75,32 @@ h3 { color: var(--gold); font-size: 12px; letter-spacing: 2px; text-transform: u
 #d-log .user .who, #a-log .user .who, .h-log .user .who { color: var(--green); text-align: right; }
 #d-log .user:hover, #d-log .user:focus-visible, #a-log .user:hover, .h-log .user:hover { background: #154027; outline: none; }
 #d-log .text, #a-log .text, .h-log .text { border-left: 2px solid var(--violet); padding-left: 6px; }
-#d-result { white-space: pre-wrap; overflow-wrap: anywhere; background: #000; border: 2px solid var(--line); padding: 8px; margin: 0; max-height: 40vh; overflow: auto; }
+#d-result { white-space: pre-wrap; overflow-wrap: anywhere; background: #000; border: 2px solid var(--line); padding: 8px; margin: 0; max-height: 40vh; overflow: auto; font-family: monospace; }
+/* tablas Markdown dentro de un resultado: se leen como tabla; si no caben, se desplazan en horizontal sin romper el panel */
+.md-table-wrap { overflow-x: auto; margin: 6px 0; white-space: normal; }
+.md-table { border-collapse: collapse; width: 100%; font-family: inherit; font-size: inherit; }
+.md-table th, .md-table td { border: 1px solid var(--line); padding: 4px 8px; text-align: left; vertical-align: top; overflow-wrap: normal; word-break: normal; min-width: 7ch; }
+.md-table td { max-width: 60ch; }
+.md-table th { background: rgba(255, 255, 255, .08); white-space: nowrap; }
+.md-table tbody tr:nth-child(even) td { background: rgba(255, 255, 255, .03); }
+/* resto del Markdown de un resultado (clase .md la pone renderResult) */
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md .md-p { margin: 0 0 8px; }
+.md .md-h { font-weight: bold; color: var(--gold); margin: 14px 0 6px; line-height: 1.3; }
+.md .md-h1 { font-size: 1.3em; }
+.md .md-h2 { font-size: 1.15em; border-bottom: 1px solid var(--line); padding-bottom: 3px; }
+.md .md-h3 { font-size: 1.05em; }
+.md .md-h4 { color: var(--text); }
+.md .md-list { margin: 0 0 8px; padding-left: 2.4em; }
+.md .md-list .md-list { margin: 3px 0; padding-left: 1.8em; }
+.md li { margin: 3px 0; }
+.md li::marker { color: var(--gold); }
+.md li > .md-p { margin: 0 0 3px; }
+.md code { background: rgba(255, 255, 255, .1); padding: 0 3px; }
+.md .md-code { white-space: pre; overflow-x: auto; background: rgba(255, 255, 255, .05); border: 1px solid var(--line); padding: 6px 8px; margin: 0 0 8px; font-family: monospace; }
+.md .md-code code { background: none; padding: 0; }
+.md .md-hr { border: 0; border-top: 1px solid var(--line); margin: 10px 0; }
 
 @media (max-width: 700px) { header { flex-wrap: wrap; } #board { grid-template-columns: repeat(6, 80vw); } }
 
@@ -161,7 +186,7 @@ label.chk input { padding: 0; }
 .h-item summary { cursor: pointer; padding: 6px 8px; font-size: 12px; display: grid; gap: 2px; overflow-wrap: anywhere; }
 .h-item summary .muted { color: var(--muted); }
 .h-body { padding: 0 8px 8px; display: grid; gap: 6px; }
-.h-result { white-space: pre-wrap; overflow-wrap: anywhere; background: #000; border: 2px solid var(--line); padding: 8px; margin: 0; max-height: 32vh; overflow: auto; font-size: 12px; }
+.h-result { white-space: pre-wrap; overflow-wrap: anywhere; background: #000; border: 2px solid var(--line); padding: 8px; margin: 0; max-height: 32vh; overflow: auto; font-size: 12px; font-family: monospace; }
 .h-head { padding: 6px 8px; font-size: 12px; display: grid; gap: 2px; overflow-wrap: anywhere; }
 .h-head .muted { color: var(--muted); }
 .h-last { border-width: 2px; }

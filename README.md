@@ -30,7 +30,7 @@ La elección se guarda en el navegador de cada equipo; `?skin=sith` fuerza uno p
 
 ## Responder a un agente
 
-Al tocar un avatar se abre su panel: misión actual con registro en vivo, **última respuesta** y historial. Bajo la última respuesta (y dentro de cada misión terminada del historial) hay un campo para contestarle (Ctrl+Enter envía): la misma misión se vuelve a ejecutar y el agente continúa con la conversación como contexto (`POST /api/tasks/:id/reply`).
+Al tocar un avatar se abre su panel: misión actual con registro en vivo, **última respuesta** y historial. Bajo la última respuesta (y dentro de cada misión terminada del historial) hay un campo para contestarle (Enter envía, Shift+Enter hace salto de línea): la misma misión se vuelve a ejecutar y el agente continúa con la conversación como contexto (`POST /api/tasks/:id/reply`).
 
 - Cada ejecución es independiente (`--no-session-persistence`): la conversación viaja en el prompt (respuesta anterior del agente + mensaje del usuario, últimos 12 mensajes), por eso funciona igual con Claude, Ollama y proveedores en internet. No hay sesión viva a la que inyectar texto: mientras una misión corre, la respuesta se habilita cuando termina.
 - Si la misión edita archivos, pide la misma confirmación que al ejecutarla. Respetan los mismos topes de presupuesto, cola y modo de solo lectura de infraestructura.

@@ -9,6 +9,7 @@ import { threads, activeLinks, ticker as tickerText, prune } from './comms.js';
 import { filterTasks, isFiltering, NO_PROJECT } from './filters.js';
 import { agentMetrics, summarize, parseTs } from './metrics.js';
 import { taskToMarkdown, tasksToMarkdown, printableHtml, MODE_ES } from './exporter.js';
+import { parseBlocks, inlineTokens } from './markdown.js';
 
 const COLUMNS = [
   ['backlog', 'Hangar (pendientes)'],
@@ -28,6 +29,48 @@ const el = (tag, props = {}, ...kids) => {
   for (const k of kids) n.append(k);
   return n;
 };
+
+// ---------- Markdown de los resultados (siempre con textContent, nunca HTML) ----------
+const inlineNodes = (s) => {
+  const build = (toks) => toks.map((k) => k.t === 'text' ? k.v : k.t === 'code' ? el('code', { textContent: k.v }) : el(k.t === 'b' ? 'strong' : 'em', {}, ...build(k.kids)));
+  return build(inlineTokens(s));
+};
+
+function mdNodes(blocks) {
+  return blocks.map((b) => {
+    if (b.type === 'heading') {
+      const h = el('div', { className: `md-h md-h${Math.min(b.level, 4)}` }, ...inlineNodes(b.text));
+      h.setAttribute('role', 'heading'); h.setAttribute('aria-level', String(b.level + 2)); // dentro del panel, debajo de sus h3
+      return h;
+    }
+    if (b.type === 'list') {
+      const list = el(b.ordered ? 'ol' : 'ul', { className: 'md-list' });
+      if (b.ordered && b.start !== 1) list.start = b.start;
+      for (const it of b.items) { // un elemento de solo texto va directo en el <li>, sin caja extra
+        const only = it.blocks.length === 1 && it.blocks[0].type === 'text';
+        list.append(el('li', {}, ...(only ? inlineNodes(it.blocks[0].text) : mdNodes(it.blocks))));
+      }
+      return list;
+    }
+    if (b.type === 'code') return el('pre', { className: 'md-code' }, el('code', { textContent: b.text }));
+    if (b.type === 'rule') return el('hr', { className: 'md-hr' });
+    if (b.type === 'table') {
+      const cell = (tag, raw, align) => { const c = el(tag, {}, ...inlineNodes(raw)); if (align) c.style.textAlign = align; return c; };
+      return el('div', { className: 'md-table-wrap' }, el('table', { className: 'md-table' },
+        el('thead', {}, el('tr', {}, ...b.header.map((h, i) => cell('th', h, b.align[i])))),
+        el('tbody', {}, ...b.rows.map((r) => el('tr', {}, ...r.map((v, i) => cell('td', v, b.align[i])))))));
+    }
+    return el('div', { className: 'md-p' }, ...inlineNodes(b.text));
+  });
+}
+
+/** Rellena `node` con el resultado en Markdown: títulos, listas, tablas, código y negritas. */
+function renderResult(node, text, empty = '') {
+  if (!text) { node.textContent = empty; return node; }
+  node.classList.add('md');
+  node.replaceChildren(...mdNodes(parseBlocks(text)));
+  return node;
+}
 
 const state = {
   tasks: new Map(), agents: [], projects: [], providers: [], system: null, logs: [], stats: null, settings: {}, templates: [], schedules: [], costs: null, messages: [], flights: [], lastMsg: null,
@@ -417,15 +460,17 @@ function card(t) {
   if (t.depends_on?.length) meta.append(el('span', { textContent: `espera ${t.depends_on.map((d) => '#' + d).join(' ')}` }));
   c.append(el('div', { className: 't', textContent: `#${t.id} ${t.title}` }), meta);
   c.addEventListener('dragstart', (e) => e.dataTransfer.setData('text/plain', String(t.id)));
-  c.addEventListener('click', () => openDrawer(t.id));
-  c.addEventListener('keydown', (e) => { if (e.key === 'Enter') openDrawer(t.id); });
+  c.addEventListener('click', () => openDrawer(t.id, 'board'));
+  c.addEventListener('keydown', (e) => { if (e.key === 'Enter') openDrawer(t.id, 'board'); });
   return c;
 }
 
 // ---------- panel lateral ----------
-async function openDrawer(id) {
+/** `from`: desde dónde se abrió ('board' = tarjeta del Tablero); decide si se cierra solo al responder. */
+async function openDrawer(id, from = null) {
   closeAgent();
   state.open = id;
+  state.openFrom = from;
   $('#d-log').replaceChildren();
   for (const ev of await api(`/api/tasks/${id}/events`)) logLine(ev);
   drawer(state.tasks.get(id));
@@ -459,7 +504,7 @@ function drawer(t) {
   const deps = t.depends_on?.length ? ` · depende de ${t.depends_on.map((d) => '#' + d).join(', ')}` : '';
   $('#d-meta').title = t.workdir ? `Carpeta: ${t.workdir}` : '';
   $('#d-meta').textContent = `${t.kind === 'objective' ? 'coordinador' : t.agent} · ${t.project || 'sin proyecto'} · ${t.engine}${t.used_model || t.model ? ':' + (t.used_model || t.model) : ''}/${MODE_ES[t.recipe || t.mode] ?? t.mode} · ${t.status}${deps}${t.error ? ' · ' + t.error : ''}`;
-  $('#d-result').textContent = t.result || '';
+  renderResult($('#d-result'), t.result);
   $('#d-instr').replaceChildren(...instructionBlocks(t));
   const act = $('#d-actions');
   act.replaceChildren();
@@ -830,7 +875,7 @@ async function fillHistoryBody(body, t) {
   try { events = await api(`/api/tasks/${t.id}/events`); } catch (e) { body.replaceChildren(el('div', { className: 'h-err', textContent: e.message })); return; }
   const parts = [];
   if (t.error) parts.push(el('div', { className: 'h-err', textContent: `Error: ${t.error}` }));
-  parts.push(el('h3', { textContent: 'Resultado' }), el('pre', { className: 'h-result', textContent: t.result || 'Sin resultado.' }));
+  parts.push(el('h3', { textContent: 'Resultado' }), renderResult(el('div', { className: 'h-result' }), t.result, 'Sin resultado.'));
   if (events.length) {
     const log = el('div', { className: 'h-log' });
     for (const ev of events.slice(-40)) appendLine(log, ev, t);
@@ -903,12 +948,17 @@ function attachHistoryKeys(ta) {
 function replyForm(t) {
   const form = el('form', { className: 'reply' });
   const recovered = !agentUi.drafts.has(t.id) && !!t.reply_text; // mensaje cancelado: vuelve al campo para corregirlo
-  const ta = el('textarea', { rows: 3, maxLength: 4000, placeholder: 'Responde al agente o dale otra indicación… (Ctrl+Enter para enviar · ↑ tus mensajes anteriores)', value: agentUi.drafts.get(t.id) ?? t.reply_text ?? '' });
+  const ta = el('textarea', { rows: 3, maxLength: 4000, placeholder: 'Responde al agente o dale otra indicación… (Enter envía · Shift+Enter nueva línea · ↑ tus mensajes anteriores)', value: agentUi.drafts.get(t.id) ?? t.reply_text ?? '' });
   ta.setAttribute('aria-label', `Responder a #${t.id}`);
   ta.dataset.task = t.id;
   ta.oninput = () => agentUi.drafts.set(t.id, ta.value);
   attachHistoryKeys(ta);
-  ta.onkeydown = (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); form.requestSubmit(); } };
+  // Enter envía (como un chat); Shift+Enter hace salto de línea. No envía a mitad de una composición (acentos/IME) ni dos veces seguidas.
+  ta.onkeydown = (e) => {
+    if (e.key !== 'Enter' || e.shiftKey || e.altKey || e.isComposing || e.keyCode === 229) return;
+    e.preventDefault();
+    if (!send.disabled) form.requestSubmit();
+  };
   if (!agentUi.files.has(t.id)) agentUi.files.set(t.id, []);
   const picker = filePicker(agentUi.files.get(t.id), { pasteTarget: ta });
   const send = el('button', { type: 'submit', className: 'primary', textContent: 'Enviar y continuar' });
@@ -933,6 +983,10 @@ function replyForm(t) {
         rememberSent(clean); agentUi.drafts.delete(t.id); ta.value = '';
         toast(vaulted.length ? `🔑 Guardé ${vaulted.join(', ')} en tus secretos: el agente solo ve el nombre y lo usa sin verlo` : 'Respuesta enviada: el agente sigue trabajando', false);
         if (vaulted.length) refreshVault();
+        // En el Tablero, al contestar una misión «Por revisar» el panel se cierra para seguir con la siguiente
+        if (t.status === 'review' && state.openFrom === 'board' && state.open === t.id && form.closest('#drawer')) {
+          state.open = null; state.openFrom = null; $('#drawer').hidden = true;
+        }
       }
     } catch (x) { err.textContent = x.message; } finally { send.disabled = false; }
   };
@@ -951,7 +1005,7 @@ function lastSection(t) {
         el('span', { className: 'muted', textContent: [STATUS_ES[t.status] ?? t.status, t.engine, secs != null && fmtDur(secs)].filter(Boolean).join(' · ') })),
       el('div', { className: 'h-body' },
         ...(t.error ? [el('div', { className: 'h-err', textContent: `Error: ${t.error}` })] : []),
-        el('pre', { className: 'h-result', textContent: t.result || 'Sin resultado.' }),
+        renderResult(el('div', { className: 'h-result' }), t.result, 'Sin resultado.'),
         ...(changesBlock(t) ? [changesBlock(t)] : []),
         replyForm(t))),
   ];
@@ -2556,7 +2610,7 @@ async function renderInboxChat() {
   }
   const reply = ['review', 'failed', 'done'].includes(t.status) ? el('div', { className: 'ic-reply' }, replyForm(t)) : null;
   const ta = reply?.querySelector('textarea');
-  if (ta) { ta.rows = 2; ta.placeholder = 'Responde al agente… (Ctrl+Enter envía)'; }
+  if (ta) { ta.rows = 2; ta.placeholder = 'Responde al agente… (Enter envía · Shift+Enter nueva línea)'; }
   box.replaceChildren(head, thread, ...(act.childElementCount ? [act] : []), ...(reply ? [reply] : []));
   thread.scrollTop = thread.scrollHeight;
 }
