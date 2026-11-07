@@ -1657,7 +1657,11 @@ function modelOptions(engine, current) {
   const info = state.modelInfo ?? {};
   const seen = serversDown().has(engine) ? null : info.defaults?.[engine]; // con el servidor apagado no se inventa un «predeterminado»
   const list = [...(info[engine] ?? [])];
-  if (current && !list.some((m) => m.value === current)) list.push({ value: current, label: current });
+  if (current && !list.some((m) => m.value === current)) {
+    // elegido antes pero que ya no existe en este equipo: se avisa en vez de presentarlo como un modelo normal
+    const known = !['ollama', 'lmstudio'].includes(engine) || !serversDown().has(engine) && list.length > 0;
+    list.push({ value: current, label: known && ['ollama', 'lmstudio'].includes(engine) ? `⚠ ${current} · no está instalado` : current });
+  }
   const none = engine === 'lmstudio' ? ' (el que tengas cargado)' : ' (el de tu sesión)';
   return [el('option', { value: '', textContent: `Predeterminado${seen ? ` · ${engine === 'claude' ? 'hoy: ' : ''}${seen}` : none}` }), ...list.map((m) => el('option', { value: m.value, textContent: `${m.recommended ? '★ ' : ''}${m.label}${m.recommended ? ' · recomendado para el día a día' : ''}` }))];
 }
@@ -1723,17 +1727,17 @@ async function refreshBench(engine) {
 }
 const FORCE_WARNING = 'Los que no caben en la memoria libre pueden ir muy lentos, tardar varios minutos cada uno o fallar al cargar. Mientras tanto la computadora puede ir lenta.';
 /** `models`: medir solo esos (botón «Reintentar» de una fila); el resto de resultados se conserva. */
-async function startBench(engine, force = false, models = null) {
+async function startBench(engine, force = false, models = null, reset = false) {
   state.benches ??= {};
   try {
-    state.benches[engine] = await post(`/api/system/${engine}/benchmark`, { force, ...(models ? { models } : {}) });
+    state.benches[engine] = await post(`/api/system/${engine}/benchmark`, { force, ...(models ? { models } : {}), ...(reset ? { reset: true } : {}) });
   } catch (e) {
     // ninguno cabe ahora: ofrecer medirlos igualmente en vez de quedarse en el error
     if (force || !e.data?.can_force) throw e;
     if (await confirmDialog('Medir de todos modos', `${e.message} ¿Quieres medirlos igualmente? ${FORCE_WARNING}`)) return startBench(engine, true);
     return;
   }
-  toast(models ? `Midiendo de nuevo ${models.join(', ')}. Los demás resultados se conservan.` : `Midiendo ${force ? 'todos ' : ''}tus modelos de ${BENCH_LABEL[engine]}, de uno en uno. Tarda unos minutos y no hace falta que esperes aquí.`, false);
+  toast(reset ? `Midiendo de cero todos los modelos de ${BENCH_LABEL[engine]}, de uno en uno. Las mediciones anteriores se reemplazan a medida que termina cada uno.` : models ? `Midiendo de nuevo ${models.join(', ')}. Los demás resultados se conservan.` :`Midiendo ${force ? 'todos ' : ''}tus modelos de ${BENCH_LABEL[engine]}, de uno en uno. Tarda unos minutos y no hace falta que esperes aquí.`, false);
   clearTimeout(benchTimers[engine]); benchTimers[engine] = setTimeout(() => refreshBench(engine), 2000);
   renderSystem();
 }
@@ -1864,6 +1868,11 @@ function benchPanel(engine, canRun = true) {
     : [`${okN} medido${okN === 1 ? '' : 's'}`, failN && `${failN} con fallo`, pending.length && `${pending.length} sin medir`].filter(Boolean).join(' · ') + (b.best ? ` · ★ ${b.best}${b.changed_from ? ' (nuevo)' : ''}` : '');
   const stop = b.running ? el('button', { className: 'danger', textContent: 'Detener', onclick: guard(async () => { await api(`/api/system/${engine}/benchmark`, { method: 'DELETE' }); }) }) : null;
   const allPending = !b.running && pending.length > 1 ? el('button', { textContent: `Medir los ${pending.length} sin medir`, disabled: busy, onclick: measureOnly(pending.map((s) => s.name), pending.some((s) => /RAM/.test(s.reason))) }) : null;
+  const remeasureAll = !b.running && installed.length ? el('button', { textContent: `Volver a medir los ${installed.length} de cero`, disabled: busy, title: 'Descarta las mediciones actuales y mide de nuevo todos los modelos instalados, de uno en uno', onclick: guard(async (e) => {
+    if (!(await confirmDialog('Volver a medir todos de cero', `Se medirán otra vez los ${installed.length} modelos de ${BENCH_LABEL[engine]}, incluidos los especializados y los que no caben en la memoria libre, y las mediciones actuales se irán reemplazando. Tarda varios minutos. ${FORCE_WARNING}`))) return;
+    e.target.disabled = true;
+    await startBench(engine, true, null, true);
+  }) }) : null;
   const better = !b.running && b.changed_from && b.best ? el('div', { className: 'better', textContent: `★ Nuevo recomendado: ${b.best}. Es mejor que ${b.changed_from} (el anterior): ${betterReason(b)}. Las misiones sin modelo elegido ya lo usan.` }) : null;
   const meta = !b.running && b.at ? `Última medición: ${new Date(b.at).toLocaleString()}${b.free_gb != null ? ` · RAM libre entonces: ${b.free_gb} GB` : ''}` : 'Los resultados anteriores se conservan mientras mide.';
   const estimated = b.results.some((r) => r.size_est);
@@ -1877,7 +1886,7 @@ function benchPanel(engine, canRun = true) {
     el('table', {},
       el('thead', {}, el('tr', {}, ...[['Modelo', ''], ['Tamaño', 'num'], ['Velocidad', 'num'], ['Tiempo', 'num'], ['Respuesta', ''], ['', '']].map(([t, c]) => el('th', { className: c, textContent: t })))),
       el('tbody', {}, ...doneRows, ...pendingRows)),
-    el('div', { className: 'bench-foot' }, el('div', { className: 'muted' }, el('div', { textContent: meta }), el('div', { textContent: legend })), ...(allPending ? [allPending] : [])));
+    el('div', { className: 'bench-foot' }, el('div', { className: 'muted' }, el('div', { textContent: meta }), el('div', { textContent: legend })), ...(allPending || remeasureAll ? [el('div', { className: 'bench-btns' }, ...[allPending, remeasureAll].filter(Boolean))] : [])));
 }
 
 /** Una fila: nombre y tipo | estado | modelo | acciones. `more` = zona desplegable (clave, resultado de «Probar»). */

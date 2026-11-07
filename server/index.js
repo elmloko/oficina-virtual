@@ -396,7 +396,7 @@ export function createApp({ db = openDb(), lmsCtl = defaultLmsCtl, runnerOpts = 
         ollama: ol.ok ? ollamaChatModels(ol.models, ollamaDefault) : [],
         lmstudio: lm ?? [], lmstudio_up: lm !== null, ollama_up: !!ol.ok,
         engine_models: db.engineModels(), default_seen: db.defaultSeen(),
-        defaults: { claude: db.defaultSeen().claude, ollama: ollamaDefault, codex: null, lmstudio: null },
+        defaults: { claude: db.defaultSeen().claude, ollama: ol.ok ? ollamaDefault : null, codex: null, lmstudio: null },
       });
     }
     // --- probar Ollama: una pregunta mínima al modelo que usas (carga el modelo, así que puede tardar) ---
@@ -478,7 +478,8 @@ export function createApp({ db = openDb(), lmsCtl = defaultLmsCtl, runnerOpts = 
           const body = await readJson(req).catch(() => ({}));
           // «Reintentar»: solo esos modelos, aunque no quepan en la RAM libre (lo pediste tú expresamente)
           const only = Array.isArray(body.models) ? body.models.filter((n) => typeof n === 'string' && MODEL_RE.test(n)) : null;
-          const force = body.force === true || !!only?.length; // «medir también los omitidos»
+          const reset = body.reset === true && !only?.length; // «volver a medir todos de cero»: todos los instalados, sin conservar lo medido antes
+          const force = body.force === true || !!only?.length || reset; // «medir también los omitidos»
           let models; let baseUrl; let fetchFn; let measureFn;
           let reclaim = 0; // bytes de modelos ya cargados que se descargan antes de medir
           if (engine === 'ollama') {
@@ -512,7 +513,11 @@ export function createApp({ db = openDb(), lmsCtl = defaultLmsCtl, runnerOpts = 
           Object.assign(bench, { running: true, current: null, total: candidates.length, results: [], skipped, free_gb: Math.round(freeGb * 10) / 10, abort: new AbortController() });
           db.audit(`${engine}.benchmark`, null, `${candidates.length} modelos`);
           logger.info(`Midiendo ${candidates.length} modelos de ${label}`);
-          const base = db.engineBench(engine); // lo de antes: se conserva lo que esta medición no vuelva a medir
+          let base = db.engineBench(engine); // lo de antes: se conserva lo que esta medición no vuelva a medir
+          // de cero: se descartan las mediciones de los modelos instalados (se medirán todos otra vez); las de los ya
+          // desinstalados se conservan y no hay «recomendado anterior» con el que comparar
+          if (reset && base) base = { ...base, results: (base.results ?? []).filter((r) => !installed.includes(r.name)), skipped: [], best: null, changed_from: null };
+          if (reset) db.audit(`${engine}.benchmark.reset`, null, `${candidates.length} modelos`);
           const save = (results) => {
             const merged = mergeBench(base, { results, skipped, at: new Date().toISOString(), free_gb: bench.free_gb, installed });
             db.setEngineBench(engine, merged);

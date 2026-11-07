@@ -815,3 +815,5 @@ em.cat-task { color: var(--gold); border-color: var(--gold); } em.cat-sys { colo
   #inbox.collapsed { max-height: 46px; }
   #inbox.collapsed .inbox-toggle { flex-direction: row; margin: 6px; }
 }
+
+.bench-foot > .bench-btns { flex: none; display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }

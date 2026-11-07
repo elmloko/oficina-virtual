@@ -151,6 +151,16 @@ test('API: medir, ver resultado y recomendación, guardarlo, y no medir si Ollam
     assert.equal(m.defaults.ollama, 'gemma3:4b');
     assert.equal(m.ollama.find((x) => x.value === 'gemma3:4b').recommended, true);
     assert.ok(db.auditLog(10).some((a) => a.action === 'ollama.benchmark'));
+    // «volver a medir de cero»: mide TODOS los instalados (también el de código), descarta lo anterior de ellos y conserva lo de un desinstalado
+    db.setEngineBench('ollama', { ...db.ollamaBench(), results: [...db.ollamaBench().results, { name: 'viejo:1b', size: GB, ok: true, tps: 30, at: 'ayer' }] });
+    const again = await call('POST', '/api/system/ollama/benchmark', { reset: true });
+    assert.equal(again.status, 202);
+    assert.equal(again.body.total, 3);
+    for (let i = 0; i < 150; i++) { view = (await call('GET', '/api/system/ollama/benchmark')).body; if (!view.running) break; await new Promise((r) => setTimeout(r, 20)); }
+    assert.deepEqual(view.results.map((r) => r.name).sort(), ['gemma3:4b', 'llama3.2:3b', 'qwen2.5-coder:7b', 'viejo:1b']);
+    assert.equal(view.results.find((r) => r.name === 'viejo:1b').gone, true);
+    assert.deepEqual(view.skipped, []);
+    assert.ok(db.auditLog(20).some((a) => a.action === 'ollama.benchmark.reset'));
   } finally { app.server.close(); app.server.closeAllConnections?.(); }
 });
 
