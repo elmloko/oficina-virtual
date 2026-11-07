@@ -561,6 +561,8 @@ function drawer(t) {
     const days = state.trash?.days ?? 30;
     if (!await confirmDialog('Eliminar misión', `${isObj && kids.length ? 'Irá a la papelera junto con sus pasos.' : 'Irá a la papelera con todo su chat.'} Podrás restaurarla durante ${days} días.`)) return;
     await api(`/api/tasks/${t.id}`, { method: 'DELETE' });
+    state.open = null; state.openFrom = null; $('#drawer').hidden = true; // se cierra el panel de la derecha: esa misión ya no existe en el tablero
+    render();
     toast('Misión enviada a la papelera', false);
   });
   act.append(del);
