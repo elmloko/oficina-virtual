@@ -68,7 +68,11 @@ function mdNodes(blocks) {
 function renderResult(node, text, empty = '') {
   if (!text) { node.textContent = empty; return node; }
   node.classList.add('md');
+  if (node.dataset.src === text) return node; // mismo texto: no se vuelve a dibujar (conserva el scroll y lo que estés seleccionando)
+  const top = node.scrollTop;
+  node.dataset.src = text;
   node.replaceChildren(...mdNodes(parseBlocks(text)));
+  node.scrollTop = top;
   return node;
 }
 
@@ -842,6 +846,8 @@ function reuseMessage(from, text) {
 
 /** Una línea del registro. Lo que escribiste tú y lo que dice el agente van rotulados para distinguirlos; `t` = la misión. */
 function appendLine(box, ev, t = null) {
+  // solo baja al final si ya estabas al final: si subiste a leer, no te mueve
+  const stick = ev.kind === 'user' || box.scrollTop + box.clientHeight >= box.scrollHeight - 24; // lo que tú escribes sí lleva al final
   if (ev.kind === 'answer') return; // copia interna de la respuesta anterior; ya se ve como resultado
   if (ev.kind === 'user') {
     const line = el('div', { className: 'user', title: 'Clic para reutilizar este mensaje', tabIndex: 0 }, el('b', { className: 'who', textContent: 'TÚ' }), span(ev.text));
@@ -860,7 +866,7 @@ function appendLine(box, ev, t = null) {
   } else {
     box.append(el('div', { className: ev.kind, textContent: ev.kind === 'tool' ? `⚙ ${ev.text}` : ev.kind === 'consult' ? `🤝 ${ev.text}` : ev.text }));
   }
-  box.scrollTop = box.scrollHeight;
+  if (stick) box.scrollTop = box.scrollHeight;
 }
 
 function openAgent(name) {
@@ -1655,10 +1661,13 @@ function renderSystem() {
 
 /** Opciones de modelo de un motor: la primera es siempre el predeterminado de tu sesión. */
 const PICK_ENGINES = ['claude', 'codex', 'ollama', 'lmstudio'];
+/** Orden alfabético de nombres de modelo (sin distinguir mayúsculas ni acentos; «3b» antes que «12b»). */
+const byName = (a, b) => a.localeCompare(b, 'es', { sensitivity: 'base', numeric: true });
 function modelOptions(engine, current) {
   const info = state.modelInfo ?? {};
   const seen = serversDown().has(engine) ? null : info.defaults?.[engine]; // con el servidor apagado no se inventa un «predeterminado»
   const list = [...(info[engine] ?? [])];
+  if (['ollama', 'lmstudio'].includes(engine)) list.sort((a, b) => byName(a.label, b.label)); // los de Claude/Codex conservan su orden (de mejor a más ligero)
   if (current && !list.some((m) => m.value === current)) {
     // elegido antes pero que ya no existe en este equipo: se avisa en vez de presentarlo como un modelo normal
     const known = !['ollama', 'lmstudio'].includes(engine) || !serversDown().has(engine) && list.length > 0;
@@ -1887,7 +1896,8 @@ function benchPanel(engine, canRun = true) {
     ...(better ? [better] : []),
     el('table', {},
       el('thead', {}, el('tr', {}, ...[['Modelo', ''], ['Tamaño', 'num'], ['Velocidad', 'num'], ['Tiempo', 'num'], ['Respuesta', ''], ['', '']].map(([t, c]) => el('th', { className: c, textContent: t })))),
-      el('tbody', {}, ...doneRows, ...pendingRows)),
+      // todos los modelos (medidos y sin medir) en una sola lista, por orden alfabético
+      el('tbody', {}, ...[...doneRows.map((tr, i) => [b.results[i].name, tr]), ...pendingRows.map((tr, i) => [pending[i].name, tr])].sort((x, y) => byName(x[0], y[0])).map(([, tr]) => tr))),
     el('div', { className: 'bench-foot' }, el('div', { className: 'muted' }, el('div', { textContent: meta }), el('div', { textContent: legend })), ...(allPending || remeasureAll ? [el('div', { className: 'bench-btns' }, ...[allPending, remeasureAll].filter(Boolean))] : [])));
 }
 
