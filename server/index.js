@@ -14,7 +14,7 @@ import { exportBundle, readUpload, planImport, applyImport, scanSources, pickSca
 import { insideBase } from './workspace.js';
 import { CLAUDE_MODELS, ollamaChatModels } from './system.js';
 import { OLLAMA_MODELS } from './router.js';
-import { pickDefault, benchCandidates, runBenchmark, mergeBench, chatModels, listLmStudio, measureLmStudio } from './ollama-models.js';
+import { pickDefault, benchCandidates, runBenchmark, mergeBench, recommend, chatModels, listLmStudio, measureLmStudio } from './ollama-models.js';
 import { freemem } from 'node:os';
 import { spawn as spawnProc, execFile } from 'node:child_process';
 import { loadProviders, publicProviders, knownProviders, testProvider, MODEL_RE } from './providers.js';
@@ -380,12 +380,26 @@ export function createApp({ db = openDb(), lmsCtl = defaultLmsCtl, runnerOpts = 
     if (method === 'GET' && url.pathname === '/api/models') {
       if (url.searchParams.has('fresh')) probe.ollama.reset?.(); // «Buscar modelos»: leer lo instalado ahora mismo
       const ol = await probe.ollama().catch(() => ({ ok: false }));
+      // «Buscar modelos»: lo que ya no está instalado desaparece también de las mediciones guardadas (si el servidor respondió y no hay una medición en curso)
+      const forget = (engine, names) => {
+        const bn = benchOf(engine);
+        if (!url.searchParams.has('fresh') || bn.running || bn.starting) return;
+        const b = db.engineBench(engine);
+        if (!b) return;
+        const results = (b.results ?? []).filter((r) => names.includes(r.name));
+        const skipped = (b.skipped ?? []).filter((s) => names.includes(s.name));
+        if (results.length === (b.results ?? []).length && skipped.length === (b.skipped ?? []).length) return;
+        db.setEngineBench(engine, { ...b, results, skipped, best: recommend(results), changed_from: null });
+        logger.info(`${engine === 'ollama' ? 'Ollama' : 'LM Studio'}: se olvidan las mediciones de modelos que ya no están instalados`);
+      };
+      if (ol.ok) forget('ollama', chatModels(ol.models).map((x) => x.name));
       const ollamaDefault = (ol.ok && pickDefault(ol.models, db.ollamaBench())) || OLLAMA_MODELS.light; // el mejor instalado EN ESTE equipo
       let lm = null; // LM Studio solo responde si su servidor local está encendido
       const lmp = providers.lmstudio;
       if (lmp) {
         try {
           const j = await (await ollamaFetch(`${lmp.baseUrl}/models`, { signal: AbortSignal.timeout(1500) })).json();
+          forget('lmstudio', (j.data ?? []).filter((x) => !/embed/i.test(x.id)).map((x) => x.id));
           const best = db.engineBench('lmstudio')?.best;
           lm = (j.data ?? []).filter((x) => !/embed/i.test(x.id)).map((x) => ({ value: x.id, label: x.id, recommended: x.id === best }));
         } catch { lm = null; }

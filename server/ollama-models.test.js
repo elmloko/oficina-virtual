@@ -161,6 +161,13 @@ test('API: medir, ver resultado y recomendación, guardarlo, y no medir si Ollam
     assert.equal(view.results.find((r) => r.name === 'viejo:1b').gone, true);
     assert.deepEqual(view.skipped, []);
     assert.ok(db.auditLog(20).some((a) => a.action === 'ollama.benchmark.reset'));
+    // desinstalo uno: sin «Buscar» sigue (atenuado); al buscar, desaparece de las mediciones junto con el ya desinstalado de antes
+    models.splice(models.findIndex((x) => x.name === 'llama3.2:3b'), 1);
+    await call('GET', '/api/models');
+    assert.ok((await call('GET', '/api/system/ollama/benchmark')).body.results.some((r) => r.name === 'llama3.2:3b'));
+    await call('GET', '/api/models?fresh=1');
+    view = (await call('GET', '/api/system/ollama/benchmark')).body;
+    assert.deepEqual(view.results.map((r) => r.name).sort(), ['gemma3:4b', 'qwen2.5-coder:7b']);
   } finally { app.server.close(); app.server.closeAllConnections?.(); }
 });
 

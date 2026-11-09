@@ -1791,7 +1791,7 @@ const scanButton = (engine) => el('button', { textContent: 'Buscar modelos', tit
   const before = new Set((state.modelInfo?.[engine] ?? []).map((m) => m.value));
   e.target.disabled = true; e.target.textContent = 'Buscando…';
   try {
-    await refreshModels(true); await refreshSystem();
+    await refreshModels(true); await refreshBench(engine); await refreshSystem(); // el servidor olvida las mediciones de lo que ya no está instalado
     const found = state.modelInfo?.[engine] ?? [];
     const added = found.filter((m) => !before.has(m.value)).map((m) => m.value);
     toast(!found.length ? `${BENCH_LABEL[engine]}: no hay modelos de chat instalados` : `${BENCH_LABEL[engine]}: ${found.length} modelo${found.length === 1 ? '' : 's'} encontrado${found.length === 1 ? '' : 's'}${added.length ? ` · nuevos: ${added.join(', ')}` : ''}`, false);
